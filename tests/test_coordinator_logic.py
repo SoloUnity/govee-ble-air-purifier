@@ -45,6 +45,19 @@ async def test_coordinator_fetches_power_status_pm25_and_filter_life() -> None:
     assert POLLING_INTERVAL == timedelta(seconds=45)
 
 
+def test_coordinator_accepts_custom_polling_interval() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    coordinator = GoveeCoordinator(
+        None,
+        FakeClient(),
+        polling_interval=timedelta(seconds=120),
+        update_method_only=True,
+    )
+
+    assert coordinator.polling_interval == timedelta(seconds=120)
+
+
 @pytest.mark.asyncio
 async def test_setting_fan_mode_turns_device_on_when_off_and_remembers_mode() -> None:
     from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator

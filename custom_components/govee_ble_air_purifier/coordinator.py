@@ -7,9 +7,10 @@ from datetime import timedelta
 import logging
 from typing import Any
 
+from .const import DEFAULT_POLLING_INTERVAL_SECONDS
 from .profiles import H7124_PROFILE, ModelProfile
 
-POLLING_INTERVAL = timedelta(seconds=45)
+POLLING_INTERVAL = timedelta(seconds=DEFAULT_POLLING_INTERVAL_SECONDS)
 LOGGER = logging.getLogger(__name__)
 
 try:  # pragma: no cover - exercised in Home Assistant, not pure unit tests
@@ -48,10 +49,12 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         client: Any,
         *,
         profile: ModelProfile = H7124_PROFILE,
+        polling_interval: timedelta = POLLING_INTERVAL,
         update_method_only: bool = False,
     ) -> None:
         self.client = client
         self.profile = profile
+        self.polling_interval = polling_interval
         self.data: GoveeData | None = None
         self._last_fan_mode: str | None = None
         self._standalone = update_method_only or DataUpdateCoordinator is object
@@ -60,7 +63,7 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
                 hass,
                 LOGGER,
                 name="Govee BLE Air Purifier",
-                update_interval=POLLING_INTERVAL,
+                update_interval=polling_interval,
             )
 
     async def _async_update_data(self) -> GoveeData:

@@ -79,6 +79,10 @@ def test_readme_documents_hacs_and_manual_installation() -> None:
     assert "Restart Home Assistant" in readme
     assert "custom_components/govee_ble_air_purifier" in readme
     assert "issue tracker" in readme.lower()
+    assert "discovered purifiers" in readme.lower()
+    assert "signal strength" in readme.lower()
+    assert "polling interval" in readme.lower()
+    assert "5 to 300 seconds" in readme
 
 
 def test_hacs_packaging_metadata_does_not_use_placeholders() -> None:

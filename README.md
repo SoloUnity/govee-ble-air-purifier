@@ -20,9 +20,17 @@ Selecting a fan mode while the purifier is off powers it on first, then sends th
 
 ## Polling
 
-The coordinator polls every 45 seconds. This is a middle ground between responsive air-quality/filter updates and avoiding excessive active BLE connections for a device that allows only one central connection at a time.
+The default coordinator polling interval is 45 seconds. This is a middle ground between responsive air-quality/filter updates and avoiding excessive active BLE connections for a device that allows only one central connection at a time.
+
+You can set the polling interval during setup and later from the integration options. Supported values are 5 to 300 seconds. Use a longer interval if Bluetooth is unreliable, the purifier is far from the adapter/proxy, or the adapter is shared with many BLE devices.
 
 Polling reads power and status in one BLE connection with one notification subscription. Command handling is serialized, and selecting a fan mode while the purifier is off batches power-on and fan-mode writes in one connection where possible.
+
+## Setup
+
+When Home Assistant has already seen compatible BLE advertisements, setup lists discovered purifiers with their BLE local name, address, approximate signal strength, and Bluetooth source/proxy when available. Signal strength is an RSSI-based hint for closeness, not a precise distance measurement.
+
+If no discovered purifier is listed, or if you know the BLE address already, choose manual setup and enter the address directly. You can also set a custom name during setup.
 
 ## Installation
 
@@ -34,14 +42,16 @@ Polling reads power and status in one BLE connection with one notification subsc
 4. Install `Govee BLE Air Purifier` from HACS.
 5. Restart Home Assistant.
 6. Open Settings > Devices & services.
-7. Use Bluetooth discovery for a `GVH7124*` device, or add the integration manually with the BLE address.
+7. Choose from discovered purifiers, or add the integration manually with the BLE address.
+8. Set the polling interval, or keep the default 45 seconds.
 
 ### Manual Installation
 
 1. Copy `custom_components/govee_ble_air_purifier` into your Home Assistant `custom_components` directory.
 2. Restart Home Assistant.
 3. Open Settings > Devices & services.
-4. Use Bluetooth discovery for a `GVH7124*` device, or add the integration manually with the BLE address.
+4. Choose from discovered purifiers, or add the integration manually with the BLE address.
+5. Set the polling interval, or keep the default 45 seconds.
 
 The issue tracker is `https://github.com/SoloUnity/govee-ble-air-purifier/issues`.
 

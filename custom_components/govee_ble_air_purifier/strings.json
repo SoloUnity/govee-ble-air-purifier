@@ -3,20 +3,49 @@
     "step": {
       "user": {
         "title": "Govee BLE Air Purifier",
-        "description": "Enter the BLE address for your GVH7124 air purifier. Bluetooth discovery is preferred when available.",
+        "description": "Choose a discovered GVH7124 purifier, or enter a BLE address manually. Signal strength is approximate and depends on your Home Assistant Bluetooth adapter or proxy.",
         "data": {
-          "address": "BLE address",
-          "name": "Name"
+          "discovered_device": "Discovered purifier",
+          "address": "BLE address for manual setup",
+          "name": "Name",
+          "polling_interval": "Polling interval in seconds"
+        },
+        "data_description": {
+          "address": "Only required when Discovered purifier is set to Enter address manually.",
+          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life."
         }
       },
       "bluetooth_confirm": {
         "title": "Add {name}?",
-        "description": "Set up this Govee H7124 BLE air purifier. Make sure the Govee app is closed because only one BLE central can connect at a time."
+        "description": "Set up this Govee H7124 BLE air purifier. Make sure the Govee app is closed because only one BLE central can connect at a time.",
+        "data": {
+          "polling_interval": "Polling interval in seconds"
+        },
+        "data_description": {
+          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life."
+        }
       }
+    },
+    "error": {
+      "address_required": "Enter a BLE address or choose a discovered purifier."
     },
     "abort": {
       "already_configured": "This air purifier is already configured.",
       "not_supported": "This discovered BLE device is not a supported Govee H7124 air purifier."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Govee BLE Air Purifier Options",
+        "description": "Adjust how often Home Assistant actively connects to the purifier over BLE.",
+        "data": {
+          "polling_interval": "Polling interval in seconds"
+        },
+        "data_description": {
+          "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices."
+        }
+      }
     }
   },
   "entity": {
