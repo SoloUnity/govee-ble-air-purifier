@@ -69,6 +69,40 @@ class _VoluptuousIn:
         return value
 
 
+class _VoluptuousAll:
+    def __init__(self, *validators: object) -> None:
+        self.validators = validators
+
+    def __call__(self, value: object) -> object:
+        return value
+
+
+class _VoluptuousCoerce:
+    def __init__(self, value_type: type) -> None:
+        self.type = value_type
+
+    def __call__(self, value: object) -> object:
+        return value
+
+
+class _VoluptuousRange:
+    def __init__(self, *, min: int, max: int) -> None:
+        self.min = min
+        self.max = max
+
+    def __call__(self, value: object) -> object:
+        return value
+
+
+def _assert_schema_values_are_serializable(schema: object) -> None:
+    for value in schema.schema.values():
+        if isinstance(value, (_VoluptuousAll, _VoluptuousIn)):
+            continue
+        assert not (
+            callable(value) and not isinstance(value, type)
+        ), f"custom callable schema value is not serializable: {value}"
+
+
 def _install_homeassistant_modules(
     monkeypatch: pytest.MonkeyPatch, bluetooth_module: ModuleType
 ) -> None:
@@ -85,6 +119,8 @@ def _install_homeassistant_modules(
     const_module.CONF_ADDRESS = "address"
     const_module.CONF_NAME = "name"
     data_entry_flow_module.FlowResult = dict
+    voluptuous_module.All = _VoluptuousAll
+    voluptuous_module.Coerce = _VoluptuousCoerce
     voluptuous_module.Invalid = _VoluptuousInvalid
     voluptuous_module.In = _VoluptuousIn
     voluptuous_module.Optional = lambda key, default=None: _VoluptuousMarker(
@@ -93,6 +129,7 @@ def _install_homeassistant_modules(
     voluptuous_module.Required = lambda key, default=None: _VoluptuousMarker(
         key, default
     )
+    voluptuous_module.Range = _VoluptuousRange
     voluptuous_module.Schema = _VoluptuousSchema
 
     homeassistant_module.config_entries = config_entries_module
@@ -152,3 +189,23 @@ async def test_user_step_renders_without_selector_helpers(
 
     assert result["type"] == "form"
     assert result["step_id"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_config_flow_schemas_do_not_expose_custom_callable_validators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+    user_result = await flow.async_step_user()
+    _assert_schema_values_are_serializable(user_result["data_schema"])
+
+    options_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
+        SimpleNamespace(options={})
+    )
+    options_result = await options_flow.async_step_init()
+    _assert_schema_values_are_serializable(options_result["data_schema"])

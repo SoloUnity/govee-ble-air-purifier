@@ -17,6 +17,8 @@ from .const import (
     CONF_PROFILE,
     DEFAULT_POLLING_INTERVAL_SECONDS,
     DOMAIN,
+    MAX_POLLING_INTERVAL_SECONDS,
+    MIN_POLLING_INTERVAL_SECONDS,
 )
 from .profiles import H7124_PROFILE, get_profile, normalize_ble_address
 from .setup_helpers import (
@@ -164,7 +166,7 @@ def _user_schema(
             vol.Required(
                 CONF_POLLING_INTERVAL,
                 default=DEFAULT_POLLING_INTERVAL_SECONDS,
-            ): _polling_interval_validator,
+            ): _polling_interval_schema_value(),
         }
     )
 
@@ -179,7 +181,7 @@ def _polling_interval_schema(
             vol.Required(
                 CONF_POLLING_INTERVAL,
                 default=default,
-            ): _polling_interval_validator,
+            ): _polling_interval_schema_value(),
         }
     )
 
@@ -194,10 +196,13 @@ def _select_options(
     return options
 
 
-def _polling_interval_validator(value: object) -> int:
-    """Voluptuous validator for the polling interval."""
+def _polling_interval_schema_value() -> vol.All:
+    """Return a serializer-safe polling interval validator for HA forms."""
 
-    try:
-        return validate_polling_interval_seconds(value)
-    except ValueError as err:
-        raise vol.Invalid(str(err)) from err
+    return vol.All(
+        vol.Coerce(int),
+        vol.Range(
+            min=MIN_POLLING_INTERVAL_SECONDS,
+            max=MAX_POLLING_INTERVAL_SECONDS,
+        ),
+    )
