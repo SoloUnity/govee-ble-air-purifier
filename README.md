@@ -28,7 +28,9 @@ Polling reads power and status in one BLE connection with one notification subsc
 
 ## Setup
 
-When Home Assistant has already seen compatible BLE advertisements, setup lists discovered purifiers with their BLE local name, address, approximate signal strength, and Bluetooth source/proxy when available. Signal strength is an RSSI-based hint for closeness, not a precise distance measurement.
+HACS only installs the integration files. After HACS installs the files and Home Assistant restarts, Home Assistant will not create an automatic discovered-device prompt. Add the integration yourself from Settings > Devices & services > Add Integration.
+
+When you manually start setup, Home Assistant requests an active Bluetooth scan and lists recently seen compatible purifiers with their BLE local name, address, approximate signal strength, and Bluetooth source/proxy when available. Signal strength is an RSSI-based hint for closeness, not a precise distance measurement.
 
 If no discovered purifier is listed, or if you know the BLE address already, choose manual setup and enter the address directly. You can also set a custom name during setup.
 
@@ -41,7 +43,7 @@ If no discovered purifier is listed, or if you know the BLE address already, cho
 3. Add `https://github.com/SoloUnity/govee-ble-air-purifier` with category `Integration`.
 4. Install `Govee BLE Air Purifier` from HACS.
 5. Restart Home Assistant.
-6. Open Settings > Devices & services.
+6. Open Settings > Devices & services > Add Integration.
 7. Choose from discovered purifiers, or add the integration manually with the BLE address.
 8. Set the polling interval, or keep the default 45 seconds.
 
@@ -49,7 +51,7 @@ If no discovered purifier is listed, or if you know the BLE address already, cho
 
 1. Copy `custom_components/govee_ble_air_purifier` into your Home Assistant `custom_components` directory.
 2. Restart Home Assistant.
-3. Open Settings > Devices & services.
+3. Open Settings > Devices & services > Add Integration.
 4. Choose from discovered purifiers, or add the integration manually with the BLE address.
 5. Set the polling interval, or keep the default 45 seconds.
 

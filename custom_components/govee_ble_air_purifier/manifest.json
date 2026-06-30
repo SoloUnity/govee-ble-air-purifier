@@ -1,12 +1,6 @@
 {
   "domain": "govee_ble_air_purifier",
   "name": "Govee BLE Air Purifier",
-  "bluetooth": [
-    {
-      "local_name": "GVH7124*",
-      "connectable": true
-    }
-  ],
   "codeowners": ["@SoloUnity"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],

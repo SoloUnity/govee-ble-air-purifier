@@ -3,35 +3,25 @@
     "step": {
       "user": {
         "title": "Govee BLE Air Purifier",
-        "description": "Choose a discovered GVH7124 purifier, or enter a BLE address manually. Signal strength is approximate and depends on your Home Assistant Bluetooth adapter or proxy.",
+        "description": "Choose a recently seen GVH7124 purifier, or enter a BLE address manually. Home Assistant scans for Bluetooth devices when you open this setup flow, but this integration does not create automatic discovery prompts.",
         "data": {
-          "discovered_device": "Discovered purifier",
+          "discovered_device": "Recently seen purifier",
           "address": "BLE address for manual setup",
           "name": "Name",
           "polling_interval": "Polling interval in seconds"
         },
         "data_description": {
-          "address": "Only required when Discovered purifier is set to Enter address manually.",
-          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life."
-        }
-      },
-      "bluetooth_confirm": {
-        "title": "Add {name}?",
-        "description": "Set up this Govee H7124 BLE air purifier. Make sure the Govee app is closed because only one BLE central can connect at a time.",
-        "data": {
-          "polling_interval": "Polling interval in seconds"
-        },
-        "data_description": {
+          "address": "Only required when Recently seen purifier is set to Enter address manually.",
           "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life."
         }
       }
     },
     "error": {
-      "address_required": "Enter a BLE address or choose a discovered purifier."
+      "address_required": "Enter a BLE address or choose a recently seen purifier."
     },
     "abort": {
       "already_configured": "This air purifier is already configured.",
-      "not_supported": "This discovered BLE device is not a supported Govee H7124 air purifier."
+      "not_supported": "This BLE device is not a supported Govee H7124 air purifier."
     }
   },
   "options": {

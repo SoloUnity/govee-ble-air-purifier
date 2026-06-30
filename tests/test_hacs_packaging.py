@@ -38,7 +38,18 @@ def test_integration_manifest_has_hacs_required_metadata() -> None:
     assert manifest["integration_type"] == "device"
     assert manifest["dependencies"] == ["bluetooth_adapters"]
     assert "bleak-retry-connector" in manifest["requirements"][0]
-    assert manifest["bluetooth"] == [{"local_name": "GVH7124*", "connectable": True}]
+    assert "bluetooth" not in manifest
+
+
+def test_config_flow_is_manual_only() -> None:
+    config_flow = (
+        ROOT / "custom_components" / DOMAIN / "config_flow.py"
+    ).read_text(encoding="utf-8")
+
+    assert "async_step_user" in config_flow
+    assert "async_request_active_scan" in config_flow
+    assert "async_step_bluetooth" not in config_flow
+    assert "async_step_bluetooth_confirm" not in config_flow
 
 
 def test_integration_manifest_keys_match_hassfest_order() -> None:
@@ -77,6 +88,8 @@ def test_readme_documents_hacs_and_manual_installation() -> None:
     assert "category" in readme
     assert "Integration" in readme
     assert "Restart Home Assistant" in readme
+    assert "Add Integration" in readme
+    assert "will not create an automatic discovered-device prompt" in readme
     assert "custom_components/govee_ble_air_purifier" in readme
     assert "issue tracker" in readme.lower()
     assert "discovered purifiers" in readme.lower()
