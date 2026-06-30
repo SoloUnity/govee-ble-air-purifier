@@ -30,7 +30,7 @@ Polling reads power and status in one BLE connection with one notification subsc
 
 1. In Home Assistant, open HACS.
 2. Open Custom repositories.
-3. Add this repository URL with category `Integration`.
+3. Add `https://github.com/SoloUnity/govee-ble-air-purifier` with category `Integration`.
 4. Install `Govee BLE Air Purifier` from HACS.
 5. Restart Home Assistant.
 6. Open Settings > Devices & services.
@@ -43,7 +43,7 @@ Polling reads power and status in one BLE connection with one notification subsc
 3. Open Settings > Devices & services.
 4. Use Bluetooth discovery for a `GVH7124*` device, or add the integration manually with the BLE address.
 
-The metadata currently uses `https://github.com/custom-components/govee-ble-air-purifier` as the repository and issue tracker location. Update `custom_components/govee_ble_air_purifier/manifest.json` and these instructions before publishing under a different GitHub owner or repository name.
+The issue tracker is `https://github.com/SoloUnity/govee-ble-air-purifier/issues`.
 
 ## Example Dashboard Card
 

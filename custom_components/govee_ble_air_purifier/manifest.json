@@ -7,11 +7,11 @@
       "connectable": true
     }
   ],
-  "codeowners": ["@custom-components"],
+  "codeowners": ["@SoloUnity"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
-  "documentation": "https://github.com/custom-components/govee-ble-air-purifier",
-  "issue_tracker": "https://github.com/custom-components/govee-ble-air-purifier/issues",
+  "documentation": "https://github.com/SoloUnity/govee-ble-air-purifier",
+  "issue_tracker": "https://github.com/SoloUnity/govee-ble-air-purifier/issues",
   "integration_type": "device",
   "iot_class": "local_polling",
   "requirements": ["bleak-retry-connector>=3.10.0"],

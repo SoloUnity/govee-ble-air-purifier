@@ -4,6 +4,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOMAIN = "govee_ble_air_purifier"
+REPOSITORY_URL = "https://github.com/SoloUnity/govee-ble-air-purifier"
+ISSUE_TRACKER_URL = f"{REPOSITORY_URL}/issues"
+PLACEHOLDER_REPOSITORY = "custom-components"
+PLACEHOLDER_CODEOWNER = "@custom-components"
 
 
 def _read_json(path: Path) -> dict:
@@ -26,9 +30,9 @@ def test_integration_manifest_has_hacs_required_metadata() -> None:
     assert manifest["domain"] == DOMAIN
     assert manifest["name"] == "Govee BLE Air Purifier"
     assert manifest["version"]
-    assert manifest["documentation"].startswith("https://github.com/")
-    assert manifest["issue_tracker"].startswith("https://github.com/")
-    assert manifest["codeowners"]
+    assert manifest["documentation"] == REPOSITORY_URL
+    assert manifest["issue_tracker"] == ISSUE_TRACKER_URL
+    assert manifest["codeowners"] == ["@SoloUnity"]
     assert manifest["config_flow"] is True
     assert manifest["iot_class"] == "local_polling"
     assert manifest["integration_type"] == "device"
@@ -43,6 +47,7 @@ def test_validation_workflow_runs_hacs_and_hassfest() -> None:
     )
 
     assert "hacs/action@main" in workflow
+    assert workflow.index("actions/checkout@v4") < workflow.index("hacs/action@main")
     assert 'category: "integration"' in workflow
     assert "home-assistant/actions/hassfest@master" in workflow
     assert "secrets." not in workflow
@@ -53,9 +58,21 @@ def test_readme_documents_hacs_and_manual_installation() -> None:
 
     assert "HACS" in readme
     assert "Custom repositories" in readme
+    assert REPOSITORY_URL in readme
     assert "category" in readme
     assert "Integration" in readme
     assert "Restart Home Assistant" in readme
     assert "custom_components/govee_ble_air_purifier" in readme
-    assert "update" in readme.lower()
     assert "issue tracker" in readme.lower()
+
+
+def test_hacs_packaging_metadata_does_not_use_placeholders() -> None:
+    paths = [
+        ROOT / "custom_components" / DOMAIN / "manifest.json",
+        ROOT / "README.md",
+    ]
+
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert PLACEHOLDER_REPOSITORY not in text
+        assert PLACEHOLDER_CODEOWNER not in text
