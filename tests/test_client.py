@@ -83,6 +83,24 @@ class _TestableGoveeBleClient(GoveeBleClient):
         return await operation(self.fake_client)
 
 
+class _RecordingTimeoutClient(GoveeBleClient):
+    def __init__(self) -> None:
+        super().__init__(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+        self.timeout: float | None = None
+
+    async def _async_write_and_wait_many(
+        self,
+        requests: tuple[tuple[bytes, Any], ...],
+        *,
+        timeout: float = 10.0,
+    ) -> tuple[bytes, ...]:
+        self.timeout = timeout
+        return (
+            build_frame(bytes.fromhex("aa 01 01")),
+            build_frame(bytes.fromhex("aa 19 00 00 2a 00 00 55")),
+        )
+
+
 @pytest.mark.asyncio
 async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
     fake = FakeBleakClient()
@@ -101,6 +119,18 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.state_query_command, False),
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.status_query_command, False),
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_state_uses_shorter_poll_timeout() -> None:
+    client = _RecordingTimeoutClient()
+
+    assert await client.async_get_state() == GoveeData(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+    )
+    assert client.timeout == 5.0
 
 
 @pytest.mark.asyncio

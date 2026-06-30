@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -37,6 +38,27 @@ class FakeClient:
         self.power = True
         self.commands.append(b"power_on_and_" + FAN_MODE_COMMANDS[mode])
         return GoveeData(is_on=True, fan_mode=mode)
+
+
+class FakeHass:
+    def __init__(self) -> None:
+        self.tasks: list[asyncio.Task] = []
+
+    def async_create_task(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self.tasks.append(task)
+        return task
+
+
+async def _cleanup_tasks(tasks: list[asyncio.Task]) -> None:
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _enable_background_refresh_tasks(coordinator, hass: FakeHass) -> None:
+    coordinator._standalone = False
+    coordinator._hass = hass
 
 
 @pytest.mark.asyncio
@@ -136,3 +158,73 @@ async def test_coordinator_uses_profile_fan_modes_and_batches_power_on() -> None
     assert client.commands == [b"power_on_and_" + H7124_PROFILE.fan_mode_commands["Auto"]]
     with pytest.raises(ValueError, match="Unsupported fan mode"):
         await coordinator.async_set_fan_mode("Off")
+
+
+@pytest.mark.asyncio
+async def test_background_refresh_scheduling_is_coalesced() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    coordinator = GoveeCoordinator(None, FakeClient(), update_method_only=True)
+    _enable_background_refresh_tasks(coordinator, hass)
+
+    try:
+        coordinator._schedule_background_refresh()
+        first_task = hass.tasks[-1]
+
+        coordinator._schedule_background_refresh()
+        second_task = hass.tasks[-1]
+        await asyncio.sleep(0)
+
+        assert first_task.cancelled()
+        assert second_task is not first_task
+        assert not second_task.cancelled()
+    finally:
+        await _cleanup_tasks(hass.tasks)
+
+
+@pytest.mark.asyncio
+async def test_power_command_cancels_pending_background_refresh() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = FakeClient()
+    coordinator = GoveeCoordinator(None, client, update_method_only=True)
+    coordinator.data = GoveeData(is_on=False, pm25=12, filter_life=87, fan_mode="Low")
+    _enable_background_refresh_tasks(coordinator, hass)
+
+    try:
+        coordinator._schedule_background_refresh()
+        pending_refresh = hass.tasks[-1]
+
+        await coordinator.async_set_power(True)
+        await asyncio.sleep(0)
+
+        assert pending_refresh.cancelled()
+        assert client.commands == [b"power_on"]
+    finally:
+        await _cleanup_tasks(hass.tasks)
+
+
+@pytest.mark.asyncio
+async def test_fan_mode_command_cancels_pending_background_refresh() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = FakeClient()
+    client.power = True
+    coordinator = GoveeCoordinator(None, client, update_method_only=True)
+    coordinator.data = GoveeData(is_on=True, pm25=12, filter_life=87, fan_mode="Low")
+    _enable_background_refresh_tasks(coordinator, hass)
+
+    try:
+        coordinator._schedule_background_refresh()
+        pending_refresh = hass.tasks[-1]
+
+        await coordinator.async_set_fan_mode("Turbo")
+        await asyncio.sleep(0)
+
+        assert pending_refresh.cancelled()
+        assert client.commands == [FAN_MODE_COMMANDS["Turbo"]]
+    finally:
+        await _cleanup_tasks(hass.tasks)

@@ -18,6 +18,7 @@ from .protocol import (
 )
 
 DEFAULT_TIMEOUT = 10.0
+POLL_TIMEOUT = 5.0
 COMMAND_CONFIRMATION_TIMEOUT = 2.0
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ class GoveeBleClient:
             (
                 (self._profile.state_query_command, self._profile.is_power_state_response),
                 (self._profile.status_query_command, self._profile.is_status_response),
-            )
+            ),
+            timeout=POLL_TIMEOUT,
         )
         status = self._profile.decode_status(status_frame)
         return GoveeData(
