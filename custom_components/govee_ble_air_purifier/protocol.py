@@ -53,6 +53,11 @@ FAN_MODE_COMMANDS: dict[str, bytes] = {
     "Turbo": bytes.fromhex("3a 05 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 38"),
 }
 FAN_MODE_LABELS = list(FAN_MODE_COMMANDS)
+MODE_PUSH_LABELS: dict[int, str] = {
+    0x03: "Auto",
+    0x05: "Sleep",
+    0x07: "Turbo",
+}
 
 
 def is_power_state_response(frame: bytes) -> bool:
@@ -65,6 +70,56 @@ def is_status_response(frame: bytes) -> bool:
     """Return True if frame looks like an aa19 status response."""
 
     return len(frame) == FRAME_LENGTH and frame[0] == 0xAA and frame[1] == 0x19
+
+
+def is_mode_push(frame: bytes) -> bool:
+    """Return True if frame looks like an ee05 mode push."""
+
+    return len(frame) == FRAME_LENGTH and frame[0] == 0xEE and frame[1] == 0x05
+
+
+def is_command_echo(frame: bytes, command: bytes) -> bool:
+    """Return True when a notification exactly echoes a command frame."""
+
+    if frame != command:
+        return False
+    try:
+        validate_frame(frame)
+    except ProtocolError:
+        return False
+    return True
+
+
+def is_power_confirmation(frame: bytes, is_on: bool) -> bool:
+    """Return True when an aa01 frame confirms the requested power state."""
+
+    try:
+        return decode_power_state(frame) is is_on
+    except ProtocolError:
+        return False
+
+
+def decode_mode_push(frame: bytes) -> str:
+    """Decode Sleep, Auto, or Turbo from an ee05 mode push."""
+
+    validate_frame(frame)
+    if not is_mode_push(frame):
+        raise ProtocolError("Not an ee05 mode push")
+    try:
+        return MODE_PUSH_LABELS[frame[2]]
+    except KeyError as err:
+        raise ProtocolError(f"Unknown mode push byte 0x{frame[2]:02x}") from err
+
+
+def is_fan_mode_confirmation(frame: bytes, mode: str, command: bytes) -> bool:
+    """Return True when a frame confirms a fan mode command."""
+
+    if is_command_echo(frame, command):
+        return True
+    try:
+        return decode_mode_push(frame) == mode
+    except ProtocolError:
+        return False
 
 
 def decode_power_state(frame: bytes) -> bool:

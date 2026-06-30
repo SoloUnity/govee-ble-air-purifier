@@ -16,8 +16,12 @@ from custom_components.govee_ble_air_purifier.protocol import (
     STATUS_QUERY_COMMAND,
     ProtocolError,
     build_frame,
+    decode_mode_push,
     decode_power_state,
     decode_status,
+    is_command_echo,
+    is_fan_mode_confirmation,
+    is_power_confirmation,
     normalize_ble_name,
     validate_frame,
 )
@@ -71,6 +75,58 @@ def test_decode_status_uses_big_endian_pm25_and_filter_percent() -> None:
         bytes.fromhex("aa 19 81 03 82 01 00 64 00 00 00 00 00 00 00 00 00 00 00 d6")
     )
     assert state == GoveeAirPurifierState(pm25=898, filter_life=100)
+
+
+def test_power_confirmation_matches_requested_aa01_state() -> None:
+    off_frame = bytes.fromhex(
+        "aa 01 00 00 81 00 01 01 00 00 00 00 00 00 00 00 00 00 00 2a"
+    )
+    on_frame = bytes.fromhex(
+        "aa 01 01 00 81 00 01 01 00 00 00 00 00 00 00 00 00 00 00 2b"
+    )
+
+    assert is_power_confirmation(off_frame, False) is True
+    assert is_power_confirmation(on_frame, True) is True
+    assert is_power_confirmation(off_frame, True) is False
+    assert is_power_confirmation(FAN_MODE_COMMANDS["Low"], True) is False
+
+
+def test_command_echo_requires_exact_command_frame() -> None:
+    assert is_command_echo(FAN_MODE_COMMANDS["Low"], FAN_MODE_COMMANDS["Low"])
+    assert not is_command_echo(FAN_MODE_COMMANDS["Low"], FAN_MODE_COMMANDS["High"])
+
+
+@pytest.mark.parametrize(
+    ("frame", "mode"),
+    [
+        (
+            bytes.fromhex(
+                "ee 05 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ee"
+            ),
+            "Sleep",
+        ),
+        (
+            bytes.fromhex(
+                "ee 05 03 00 00 14 00 00 00 00 00 00 00 00 00 00 00 00 00 fc"
+            ),
+            "Auto",
+        ),
+        (
+            bytes.fromhex(
+                "ee 05 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ec"
+            ),
+            "Turbo",
+        ),
+    ],
+)
+def test_decode_mode_push_for_modes_that_emit_ee05(frame: bytes, mode: str) -> None:
+    assert decode_mode_push(frame) == mode
+    assert is_fan_mode_confirmation(frame, mode, FAN_MODE_COMMANDS[mode])
+
+
+def test_fan_mode_confirmation_accepts_exact_echo_for_all_modes() -> None:
+    for mode, command in FAN_MODE_COMMANDS.items():
+        assert is_fan_mode_confirmation(command, mode, command)
 
 
 def test_validate_frame_rejects_bad_length_and_checksum() -> None:

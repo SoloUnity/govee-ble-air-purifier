@@ -10,9 +10,15 @@ from typing import Any
 
 from .coordinator import GoveeData
 from .profiles import H7124_PROFILE, ModelProfile
-from .protocol import ProtocolError, validate_frame
+from .protocol import (
+    ProtocolError,
+    is_fan_mode_confirmation,
+    is_power_confirmation,
+    validate_frame,
+)
 
 DEFAULT_TIMEOUT = 10.0
+COMMAND_CONFIRMATION_TIMEOUT = 2.0
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -47,7 +53,7 @@ class GoveeBleClient:
             filter_life=status.filter_life,
         )
 
-    async def async_set_power(self, is_on: bool) -> None:
+    async def async_set_power(self, is_on: bool) -> bool:
         """Set purifier power."""
 
         command = (
@@ -55,28 +61,51 @@ class GoveeBleClient:
             if is_on
             else self._profile.power_off_command
         )
-        await self._async_write_without_response(command)
+        frame = await self._async_write_and_wait(
+            command,
+            lambda frame: is_power_confirmation(frame, is_on),
+            timeout=COMMAND_CONFIRMATION_TIMEOUT,
+        )
+        return self._profile.decode_power_state(frame)
 
-    async def async_set_fan_mode(self, mode: str) -> None:
+    async def async_set_fan_mode(self, mode: str) -> str:
         """Set purifier fan mode using canonical 3a05 commands."""
 
         try:
             command = self._profile.fan_mode_commands[mode]
         except KeyError as err:
             raise ValueError(f"Unsupported fan mode: {mode}") from err
-        await self._async_write_without_response(command)
+        await self._async_write_and_wait(
+            command,
+            lambda frame: is_fan_mode_confirmation(frame, mode, command),
+            timeout=COMMAND_CONFIRMATION_TIMEOUT,
+        )
+        return mode
 
-    async def async_set_power_and_fan_mode(self, mode: str) -> None:
+    async def async_set_power_and_fan_mode(self, mode: str) -> GoveeData:
         """Power on and set fan mode in one serialized BLE connection."""
 
         try:
             mode_command = self._profile.fan_mode_commands[mode]
         except KeyError as err:
             raise ValueError(f"Unsupported fan mode: {mode}") from err
-        async with self._lock:
-            await self._async_write_commands_without_response(
-                (self._profile.power_on_command, mode_command)
-            )
+        power_frame, _mode_frame = await self._async_write_and_wait_many(
+            (
+                (
+                    self._profile.power_on_command,
+                    lambda frame: is_power_confirmation(frame, True),
+                ),
+                (
+                    mode_command,
+                    lambda frame: is_fan_mode_confirmation(frame, mode, mode_command),
+                ),
+            ),
+            timeout=COMMAND_CONFIRMATION_TIMEOUT,
+        )
+        return GoveeData(
+            is_on=self._profile.decode_power_state(power_frame),
+            fan_mode=mode,
+        )
 
     async def _async_write_without_response(self, command: bytes) -> None:
         async with self._lock:

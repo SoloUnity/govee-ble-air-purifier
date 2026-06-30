@@ -60,6 +60,16 @@ class FakeBleakClient:
             self.notify_handler(
                 None, build_frame(bytes.fromhex("aa 19 00 00 2a 00 00 55"))
             )
+        if command == H7124_PROFILE.power_on_command:
+            self.notify_handler(
+                None, build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01"))
+            )
+        if command == H7124_PROFILE.power_off_command:
+            self.notify_handler(
+                None, build_frame(bytes.fromhex("aa 01 00 00 81 00 01 01"))
+            )
+        if command in H7124_PROFILE.fan_mode_commands.values():
+            self.notify_handler(None, command)
 
 
 class _TestableGoveeBleClient(GoveeBleClient):
@@ -175,4 +185,34 @@ async def test_power_and_mode_command_is_batched_in_one_connection() -> None:
             H7124_PROFILE.fan_mode_commands["Sleep"],
             False,
         ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_power_command_waits_for_aa01_confirmation() -> None:
+    fake = FakeBleakClient()
+    client = _TestableGoveeBleClient(fake)
+
+    assert await client.async_set_power(True) is True
+
+    assert client.connection_count == 1
+    assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.writes == [
+        (H7124_PROFILE.write_char_uuid, H7124_PROFILE.power_on_command, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fan_mode_command_waits_for_exact_echo_confirmation() -> None:
+    fake = FakeBleakClient()
+    client = _TestableGoveeBleClient(fake)
+
+    assert await client.async_set_fan_mode("Low") == "Low"
+
+    assert client.connection_count == 1
+    assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.writes == [
+        (H7124_PROFILE.write_char_uuid, H7124_PROFILE.fan_mode_commands["Low"], False),
     ]

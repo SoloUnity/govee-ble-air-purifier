@@ -13,8 +13,10 @@ class FakeClient:
         self.power = False
         self.pm25 = 12
         self.filter_life = 87
+        self.state_fetches = 0
 
     async def async_get_state(self) -> GoveeData:
+        self.state_fetches += 1
         return GoveeData(
             is_on=self.power,
             pm25=self.pm25,
@@ -25,13 +27,16 @@ class FakeClient:
     async def async_set_power(self, is_on: bool) -> None:
         self.power = is_on
         self.commands.append(b"power_on" if is_on else b"power_off")
+        return self.power
 
     async def async_set_fan_mode(self, mode: str) -> None:
         self.commands.append(FAN_MODE_COMMANDS[mode])
+        return mode
 
     async def async_set_power_and_fan_mode(self, mode: str) -> None:
         self.power = True
         self.commands.append(b"power_on_and_" + FAN_MODE_COMMANDS[mode])
+        return GoveeData(is_on=True, fan_mode=mode)
 
 
 @pytest.mark.asyncio
@@ -56,6 +61,47 @@ def test_coordinator_accepts_custom_polling_interval() -> None:
     )
 
     assert coordinator.polling_interval == timedelta(seconds=120)
+
+
+@pytest.mark.asyncio
+async def test_setting_power_updates_data_without_full_refresh() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = FakeClient()
+    coordinator = GoveeCoordinator(None, client, update_method_only=True)
+    coordinator.data = GoveeData(is_on=False, pm25=12, filter_life=87, fan_mode="Low")
+
+    await coordinator.async_set_power(True)
+
+    assert client.commands == [b"power_on"]
+    assert client.state_fetches == 0
+    assert coordinator.data == GoveeData(
+        is_on=True,
+        pm25=12,
+        filter_life=87,
+        fan_mode="Low",
+    )
+
+
+@pytest.mark.asyncio
+async def test_setting_fan_mode_updates_data_without_full_refresh() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = FakeClient()
+    client.power = True
+    coordinator = GoveeCoordinator(None, client, update_method_only=True)
+    coordinator.data = GoveeData(is_on=True, pm25=12, filter_life=87, fan_mode="Low")
+
+    await coordinator.async_set_fan_mode("Turbo")
+
+    assert client.commands == [FAN_MODE_COMMANDS["Turbo"]]
+    assert client.state_fetches == 0
+    assert coordinator.data == GoveeData(
+        is_on=True,
+        pm25=12,
+        filter_life=87,
+        fan_mode="Turbo",
+    )
 
 
 @pytest.mark.asyncio
