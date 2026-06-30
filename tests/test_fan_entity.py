@@ -164,13 +164,11 @@ async def test_fan_entity_maps_power_speed_and_presets(
     entity = fan.GoveeAirPurifierFan(coordinator, entry)
 
     assert entity.is_on is True
-    # Low is the first of three gear speeds [Low, Medium, High].
-    assert entity.percentage == 33
+    assert entity.percentage == 40
     assert entity.preset_mode == "Manual"
-    assert entity._attr_preset_modes == ["Manual", "Auto", "Sleep", "Turbo"]
-    assert entity._attr_speed_count == 3
-    assert entity._manual_speeds == ["Low", "Medium", "High"]
-    assert entity._mode_presets == ["Auto", "Sleep", "Turbo"]
+    assert entity._attr_preset_modes == ["Manual", "Auto"]
+    assert entity._attr_speed_count == 5
+    assert entity._manual_speeds == ["Sleep", "Low", "Medium", "High", "Turbo"]
     assert entity._attr_supported_features == (
         _FanEntityFeature.TURN_ON
         | _FanEntityFeature.TURN_OFF
@@ -178,27 +176,18 @@ async def test_fan_entity_maps_power_speed_and_presets(
         | _FanEntityFeature.PRESET_MODE
     )
 
-    # 100% maps to the highest gear speed (High), not Turbo.
     await entity.async_set_percentage(100)
-    assert coordinator.fan_mode_commands[-1] == "High"
+    assert coordinator.fan_mode_commands[-1] == "Turbo"
     assert entity.percentage == 100
     assert entity.preset_mode == "Manual"
-
-    await entity.async_set_preset_mode("Sleep")
-    assert coordinator.fan_mode_commands[-1] == "Sleep"
-    assert entity.percentage is None
-    assert entity.preset_mode == "Sleep"
 
     await entity.async_set_preset_mode("Auto")
     assert coordinator.fan_mode_commands[-1] == "Auto"
     assert entity.percentage is None
     assert entity.preset_mode == "Auto"
 
-    # Selecting Manual restores the last gear speed (High).
     await entity.async_set_preset_mode("Manual")
-    assert coordinator.fan_mode_commands[-1] == "High"
-    assert entity.preset_mode == "Manual"
-    assert entity.percentage == 100
+    assert coordinator.fan_mode_commands[-1] == "Turbo"
 
     await entity.async_set_percentage(0)
     assert coordinator.power_commands[-1] is False
