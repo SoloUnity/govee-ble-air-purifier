@@ -1,0 +1,42 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Govee BLE Air Purifier",
+        "description": "Enter the BLE address for your GVH7124 air purifier. Bluetooth discovery is preferred when available.",
+        "data": {
+          "address": "BLE address",
+          "name": "Name"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Add {name}?",
+        "description": "Set up this Govee H7124 BLE air purifier. Make sure the Govee app is closed because only one BLE central can connect at a time."
+      }
+    },
+    "abort": {
+      "already_configured": "This air purifier is already configured.",
+      "not_supported": "This discovered BLE device is not a supported Govee H7124 air purifier."
+    }
+  },
+  "entity": {
+    "switch": {
+      "power": {
+        "name": "Power"
+      }
+    },
+    "select": {
+      "fan_mode": {
+        "name": "Fan mode"
+      }
+    },
+    "sensor": {
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "filter_life": {
+        "name": "Filter life"
+      }
+    }
+  }
+}
