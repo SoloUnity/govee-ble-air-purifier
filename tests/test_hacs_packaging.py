@@ -41,6 +41,21 @@ def test_integration_manifest_has_hacs_required_metadata() -> None:
     assert manifest["bluetooth"] == [{"local_name": "GVH7124*", "connectable": True}]
 
 
+def test_integration_manifest_keys_match_hassfest_order() -> None:
+    manifest = _read_json(ROOT / "custom_components" / DOMAIN / "manifest.json")
+    keys = list(manifest)
+
+    assert keys[:2] == ["domain", "name"]
+    assert keys[2:] == sorted(keys[2:])
+
+
+def test_integration_provides_hacs_brand_icon() -> None:
+    icon = ROOT / "custom_components" / DOMAIN / "brand" / "icon.png"
+
+    assert icon.is_file()
+    assert icon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def test_validation_workflow_runs_hacs_and_hassfest() -> None:
     workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(
         encoding="utf-8"
