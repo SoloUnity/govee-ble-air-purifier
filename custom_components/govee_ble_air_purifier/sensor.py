@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorEntityDescription,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -20,17 +21,11 @@ from .coordinator import GoveeData
 from .entity import GoveeAirPurifierEntity
 
 
-@dataclass(frozen=True)
-class SensorDescription:
+@dataclass(kw_only=True)
+class SensorDescription(SensorEntityDescription):
     """Description for a purifier sensor."""
 
-    key: str
-    translation_key: str
     value_fn: Callable[[GoveeData], int | None]
-    device_class: SensorDeviceClass | None = None
-    native_unit_of_measurement: str | None = None
-    state_class: SensorStateClass | None = None
-    entity_category: EntityCategory | None = None
 
 
 SENSORS = (

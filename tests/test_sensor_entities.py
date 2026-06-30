@@ -1,5 +1,6 @@
 import importlib
 import sys
+from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -16,6 +17,18 @@ class _SensorDeviceClass:
 
 class _SensorStateClass:
     MEASUREMENT = "measurement"
+
+
+@dataclass(kw_only=True)
+class _SensorEntityDescription:
+    key: str
+    translation_key: str | None = None
+    device_class: str | None = None
+    entity_category: str | None = None
+    native_unit_of_measurement: str | None = None
+    state_class: str | None = None
+    suggested_unit_of_measurement: str | None = None
+    translation_placeholders: dict[str, str] | None = None
 
 
 class _EntityCategory:
@@ -47,6 +60,7 @@ def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
 
     sensor_module.SensorDeviceClass = _SensorDeviceClass
     sensor_module.SensorEntity = object
+    sensor_module.SensorEntityDescription = _SensorEntityDescription
     sensor_module.SensorStateClass = _SensorStateClass
     config_entries_module.ConfigEntry = object
     const_module.CONCENTRATION_MICROGRAMS_PER_CUBIC_METER = "µg/m³"
@@ -135,3 +149,13 @@ def test_sensor_metadata_matches_cloud_style_entities(
     assert filter_life.native_unit_of_measurement == "%"
     assert filter_life.state_class == _SensorStateClass.MEASUREMENT
     assert filter_life.entity_category == _EntityCategory.DIAGNOSTIC
+
+
+def test_sensor_descriptions_include_home_assistant_required_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensor = _import_sensor(monkeypatch)
+
+    for description in sensor.SENSORS:
+        assert hasattr(description, "suggested_unit_of_measurement")
+        assert hasattr(description, "translation_placeholders")
