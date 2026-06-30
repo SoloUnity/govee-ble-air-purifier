@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Govee BLE Air Purifier",
-        "description": "Choose a recently seen GVH7124 purifier, or enter a BLE address manually. Home Assistant scans for Bluetooth devices when you open this setup flow, but this integration does not create automatic discovery prompts.",
+        "description": "Choose a recently seen GVH7124 purifier, or enter a BLE address manually. This integration does not create automatic discovery prompts.",
         "data": {
           "discovered_device": "Recently seen purifier",
           "address": "BLE address for manual setup",

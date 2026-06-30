@@ -30,7 +30,7 @@ Polling reads power and status in one BLE connection with one notification subsc
 
 HACS only installs the integration files. After HACS installs the files and Home Assistant restarts, Home Assistant will not create an automatic discovered-device prompt. Add the integration yourself from Settings > Devices & services > Add Integration.
 
-When you manually start setup, Home Assistant requests an active Bluetooth scan and lists recently seen compatible purifiers with their BLE local name, address, approximate signal strength, and Bluetooth source/proxy when available. Signal strength is an RSSI-based hint for closeness, not a precise distance measurement.
+When you manually start setup, newer Home Assistant versions request an active Bluetooth scan; older supported versions use the existing Bluetooth cache. Setup lists recently seen compatible purifiers with their BLE local name, address, approximate signal strength, and Bluetooth source/proxy when available. Signal strength is an RSSI-based hint for closeness, not a precise distance measurement.
 
 If no discovered purifier is listed, or if you know the BLE address already, choose manual setup and enter the address directly. You can also set a custom name during setup.
 

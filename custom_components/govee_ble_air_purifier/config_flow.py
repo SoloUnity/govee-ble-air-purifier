@@ -10,11 +10,6 @@ from homeassistant import config_entries
 from homeassistant.components import bluetooth
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers.selector import (
-    SelectOptionDict,
-    SelectSelector,
-    SelectSelectorConfig,
-)
 
 from .const import (
     CONF_DISCOVERED_DEVICE,
@@ -45,7 +40,10 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         errors: dict[str, str] = {}
         if user_input is None:
-            await bluetooth.async_request_active_scan(self.hass)
+            if request_active_scan := getattr(
+                bluetooth, "async_request_active_scan", None
+            ):
+                await request_active_scan(self.hass)
         discovered_options = _discovered_device_options(self.hass)
         discovered_by_value = {option.value: option for option in discovered_options}
         if user_input is not None:
@@ -160,9 +158,7 @@ def _user_schema(
             vol.Optional(
                 CONF_DISCOVERED_DEVICE,
                 default=default_device,
-            ): SelectSelector(
-                SelectSelectorConfig(options=_select_options(discovered_options))
-            ),
+            ): vol.In(_select_options(discovered_options)),
             vol.Optional(CONF_ADDRESS): str,
             vol.Optional(CONF_NAME, default=H7124_PROFILE.display_name): str,
             vol.Required(
@@ -190,16 +186,11 @@ def _polling_interval_schema(
 
 def _select_options(
     discovered_options: tuple[DiscoveredDeviceOption, ...],
-) -> list[SelectOptionDict]:
+) -> dict[str, str]:
     """Build HA select options for discovered purifiers plus manual entry."""
 
-    options = [
-        SelectOptionDict(value=MANUAL_DEVICE_VALUE, label="Enter address manually")
-    ]
-    options.extend(
-        SelectOptionDict(value=option.value, label=option.label)
-        for option in discovered_options
-    )
+    options = {MANUAL_DEVICE_VALUE: "Enter address manually"}
+    options.update({option.value: option.label for option in discovered_options})
     return options
 
 
