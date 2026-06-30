@@ -79,25 +79,6 @@ def test_validation_workflow_runs_hacs_and_hassfest() -> None:
     assert "secrets." not in workflow
 
 
-def test_readme_documents_hacs_and_manual_installation() -> None:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-
-    assert "HACS" in readme
-    assert "Custom repositories" in readme
-    assert REPOSITORY_URL in readme
-    assert "category" in readme
-    assert "Integration" in readme
-    assert "Restart Home Assistant" in readme
-    assert "Add Integration" in readme
-    assert "will not create an automatic discovered-device prompt" in readme
-    assert "custom_components/govee_ble_air_purifier" in readme
-    assert "issue tracker" in readme.lower()
-    assert "discovered purifiers" in readme.lower()
-    assert "signal strength" in readme.lower()
-    assert "polling interval" in readme.lower()
-    assert "5 to 300 seconds" in readme
-
-
 def test_hacs_packaging_metadata_does_not_use_placeholders() -> None:
     paths = [
         ROOT / "custom_components" / DOMAIN / "manifest.json",

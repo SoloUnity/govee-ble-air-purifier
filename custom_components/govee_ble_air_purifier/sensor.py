@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONCENTRATION_MICROGRAMS_PER_CUBIC_METER, PERCENTAGE
 from homeassistant.core import HomeAssistant
@@ -25,6 +29,7 @@ class SensorDescription:
     value_fn: Callable[[GoveeData], int | None]
     device_class: SensorDeviceClass | None = None
     native_unit_of_measurement: str | None = None
+    state_class: SensorStateClass | None = None
     entity_category: EntityCategory | None = None
 
 
@@ -35,12 +40,14 @@ SENSORS = (
         value_fn=lambda data: data.pm25,
         device_class=SensorDeviceClass.PM25,
         native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorDescription(
         key="filter_life",
         translation_key="filter_life",
         value_fn=lambda data: data.filter_life,
         native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
 )
@@ -66,6 +73,7 @@ class GoveeSensor(GoveeAirPurifierEntity, SensorEntity):
         self._attr_translation_key = description.translation_key
         self._attr_device_class = description.device_class
         self._attr_native_unit_of_measurement = description.native_unit_of_measurement
+        self._attr_state_class = description.state_class
         self._attr_entity_category = description.entity_category
 
     @property
