@@ -47,7 +47,7 @@ async def test_coordinator_fetches_power_status_pm25_and_filter_life() -> None:
     data = await coordinator._async_update_data()
 
     assert data == GoveeData(is_on=False, pm25=12, filter_life=87, fan_mode=None)
-    assert POLLING_INTERVAL == timedelta(seconds=45)
+    assert POLLING_INTERVAL == timedelta(seconds=15)
 
 
 def test_coordinator_accepts_custom_polling_interval() -> None:

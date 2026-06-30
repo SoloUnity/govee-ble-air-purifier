@@ -18,8 +18,14 @@ from .entity import GoveeAirPurifierEntity
 from .profiles import fan_mode_labels
 
 PRESET_MANUAL = "Manual"
-PRESET_AUTO = "Auto"
-MANUAL_SPEED_ORDER = ["Sleep", "Low", "Medium", "High", "Turbo"]
+# Fan modes the firmware treats as top-level work modes (they emit `ee 05`
+# mode pushes and are not part of the gear-speed ladder). These map to the
+# segmented preset picker in the Home Assistant UI, mirroring the Govee
+# cloud capability model used by upstream integrations.
+MODE_PRESET_ORDER = ("Auto", "Sleep", "Turbo")
+# Manual gear speeds the firmware exposes via `3a 05 01 <n>` frames. These
+# render as the stepped percentage control (buttons when count <= 3).
+GEAR_SPEED_ORDER = ("Low", "Medium", "High")
 
 
 async def async_setup_entry(
@@ -46,19 +52,28 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
         super().__init__(coordinator, entry, "fan")
         self._attr_name = None
         profile_modes = fan_mode_labels(coordinator.profile)
-        ordered_manual_speeds = [
-            mode for mode in MANUAL_SPEED_ORDER if mode in profile_modes
+
+        ordered_gear_speeds = [
+            mode for mode in GEAR_SPEED_ORDER if mode in profile_modes
         ]
-        extra_manual_speeds = [
+        extra_gear_speeds = [
             mode
             for mode in profile_modes
-            if mode not in ordered_manual_speeds and mode != PRESET_AUTO
+            if mode not in ordered_gear_speeds and mode not in MODE_PRESET_ORDER
         ]
-        self._manual_speeds = ordered_manual_speeds + extra_manual_speeds
+        self._manual_speeds = ordered_gear_speeds + extra_gear_speeds
         self._attr_speed_count = len(self._manual_speeds)
-        self._attr_preset_modes = [PRESET_MANUAL]
-        if PRESET_AUTO in profile_modes:
-            self._attr_preset_modes.append(PRESET_AUTO)
+
+        ordered_mode_presets = [
+            mode for mode in MODE_PRESET_ORDER if mode in profile_modes
+        ]
+        extra_mode_presets = [
+            mode
+            for mode in profile_modes
+            if mode not in self._manual_speeds and mode not in ordered_mode_presets
+        ]
+        self._mode_presets = ordered_mode_presets + extra_mode_presets
+        self._attr_preset_modes = [PRESET_MANUAL] + self._mode_presets
         self._last_manual_speed = self._default_manual_speed
 
     @property
@@ -77,7 +92,7 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
 
     @property
     def percentage(self) -> int | None:
-        """Return current manual speed as a Home Assistant percentage."""
+        """Return current manual gear speed as a Home Assistant percentage."""
 
         data = self.coordinator.data
         if data is None or data.is_on is False or data.fan_mode not in self._manual_speeds:
@@ -86,13 +101,13 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
 
     @property
     def preset_mode(self) -> str | None:
-        """Return Auto or Manual for the fan preset control."""
+        """Return the active preset mode (Manual or a named mode preset)."""
 
         data = self.coordinator.data
         if data is None:
             return None
-        if data.fan_mode == PRESET_AUTO:
-            return PRESET_AUTO
+        if data.fan_mode in self._mode_presets:
+            return data.fan_mode
         if data.fan_mode in self._manual_speeds or data.is_on:
             return PRESET_MANUAL
         return None
@@ -125,7 +140,7 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
             raise HomeAssistantError(f"Failed to turn purifier off: {err}") from err
 
     async def async_set_percentage(self, percentage: int) -> None:
-        """Set manual purifier speed from a Home Assistant percentage."""
+        """Set manual purifier gear speed from a Home Assistant percentage."""
 
         try:
             if percentage == 0:
@@ -140,11 +155,11 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
             raise HomeAssistantError(f"Failed to set purifier speed: {err}") from err
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
-        """Set Auto or Manual preset mode."""
+        """Set Auto, Sleep, Turbo, or Manual preset mode."""
 
         try:
-            if preset_mode == PRESET_AUTO:
-                await self.coordinator.async_set_fan_mode(PRESET_AUTO)
+            if preset_mode in self._mode_presets:
+                await self.coordinator.async_set_fan_mode(preset_mode)
                 return
             if preset_mode == PRESET_MANUAL:
                 speed = self._current_or_last_manual_speed()

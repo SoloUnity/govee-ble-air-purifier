@@ -73,6 +73,7 @@ def test_polling_interval_validation_accepts_configured_bounds() -> None:
     assert validate_polling_interval_seconds(MIN_POLLING_INTERVAL_SECONDS) == 5
     assert validate_polling_interval_seconds("45") == 45
     assert validate_polling_interval_seconds(MAX_POLLING_INTERVAL_SECONDS) == 300
+    assert DEFAULT_POLLING_INTERVAL_SECONDS == 15
 
 
 @pytest.mark.parametrize("value", [4, 301, "not-a-number"])
