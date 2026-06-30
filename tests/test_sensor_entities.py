@@ -148,7 +148,7 @@ def test_sensor_metadata_matches_cloud_style_entities(
     assert filter_life.device_class is None
     assert filter_life.native_unit_of_measurement == "%"
     assert filter_life.state_class == _SensorStateClass.MEASUREMENT
-    assert filter_life.entity_category == _EntityCategory.DIAGNOSTIC
+    assert filter_life.entity_category is None
 
 
 def test_sensor_descriptions_include_home_assistant_required_fields(
