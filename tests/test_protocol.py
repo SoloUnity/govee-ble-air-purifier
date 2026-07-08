@@ -77,6 +77,23 @@ def test_decode_status_uses_big_endian_pm25_and_filter_percent() -> None:
     assert state == GoveeAirPurifierState(pm25=898, filter_life=100)
 
 
+def test_decode_status_keeps_999_as_valid_pm25() -> None:
+    state = decode_status(build_frame(bytes.fromhex("aa 19 81 03 e7 01 00 64")))
+
+    assert state == GoveeAirPurifierState(pm25=999, filter_life=100)
+
+
+@pytest.mark.parametrize("raw_pm25", [0x03E8, 0xFFFF])
+def test_decode_status_treats_over_range_pm25_as_unknown(raw_pm25: int) -> None:
+    frame = build_frame(
+        bytes.fromhex("aa 19 81")
+        + raw_pm25.to_bytes(2, "big")
+        + bytes.fromhex("01 00 64")
+    )
+
+    assert decode_status(frame) == GoveeAirPurifierState(pm25=None, filter_life=100)
+
+
 def test_power_confirmation_matches_requested_aa01_state() -> None:
     off_frame = bytes.fromhex(
         "aa 01 00 00 81 00 01 01 00 00 00 00 00 00 00 00 00 00 00 2a"

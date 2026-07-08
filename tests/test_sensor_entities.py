@@ -39,6 +39,10 @@ class _CoordinatorEntity:
     def __init__(self, coordinator) -> None:
         self.coordinator = coordinator
 
+    @property
+    def available(self) -> bool:
+        return getattr(self.coordinator, "last_update_success", True)
+
 
 class _DeviceInfo(dict):
     def __init__(self, **kwargs) -> None:
@@ -149,6 +153,55 @@ def test_sensor_metadata_matches_cloud_style_entities(
     assert filter_life.native_unit_of_measurement == "%"
     assert filter_life.state_class == _SensorStateClass.MEASUREMENT
     assert filter_life.entity_category is None
+
+
+@pytest.mark.asyncio
+async def test_pm25_sensor_remains_available_with_cached_value_after_update_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensor = _import_sensor(monkeypatch)
+    coordinator = SimpleNamespace(
+        data=GoveeData(is_on=True, pm25=8, filter_life=94, fan_mode="Low"),
+        profile=SimpleNamespace(model="H7124"),
+        last_update_success=False,
+    )
+    entry = SimpleNamespace(
+        unique_id="aabbccddeeff",
+        data={"name": "Bedroom Purifier"},
+        runtime_data=SimpleNamespace(coordinator=coordinator),
+    )
+    added_entities = []
+
+    await sensor.async_setup_entry(object(), entry, added_entities.extend)
+    pm25, filter_life = added_entities
+
+    assert pm25.native_value == 8
+    assert pm25.available is True
+    assert filter_life.available is False
+
+
+@pytest.mark.asyncio
+async def test_pm25_sensor_is_unavailable_without_cached_value_after_update_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensor = _import_sensor(monkeypatch)
+    coordinator = SimpleNamespace(
+        data=GoveeData(is_on=True, pm25=None, filter_life=94, fan_mode="Low"),
+        profile=SimpleNamespace(model="H7124"),
+        last_update_success=False,
+    )
+    entry = SimpleNamespace(
+        unique_id="aabbccddeeff",
+        data={"name": "Bedroom Purifier"},
+        runtime_data=SimpleNamespace(coordinator=coordinator),
+    )
+    added_entities = []
+
+    await sensor.async_setup_entry(object(), entry, added_entities.extend)
+    pm25, _filter_life = added_entities
+
+    assert pm25.native_value is None
+    assert pm25.available is False
 
 
 def test_sensor_descriptions_include_home_assistant_required_fields(

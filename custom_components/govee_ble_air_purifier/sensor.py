@@ -70,6 +70,14 @@ class GoveeSensor(GoveeAirPurifierEntity, SensorEntity):
         self._attr_entity_category = description.entity_category
 
     @property
+    def available(self) -> bool:
+        """Return true if the sensor can provide a useful value."""
+
+        if self.entity_description.key == "pm25" and self.native_value is not None:
+            return True
+        return bool(getattr(super(), "available", True))
+
+    @property
     def native_value(self) -> int | None:
         """Return sensor value."""
 

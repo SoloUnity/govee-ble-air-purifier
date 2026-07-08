@@ -114,9 +114,10 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
             client_data = await self.client.async_get_state()
         except Exception as err:  # pragma: no cover - depends on HA runtime
             raise UpdateFailed(str(err)) from err
+        current = self.data or GoveeData()
         data = GoveeData(
             is_on=client_data.is_on,
-            pm25=client_data.pm25,
+            pm25=client_data.pm25 if client_data.pm25 is not None else current.pm25,
             filter_life=client_data.filter_life,
             fan_mode=self._last_fan_mode or client_data.fan_mode,
         )

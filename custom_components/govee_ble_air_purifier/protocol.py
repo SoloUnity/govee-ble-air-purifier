@@ -5,6 +5,7 @@ from __future__ import annotations
 from .models import GoveeAirPurifierState
 
 FRAME_LENGTH = 20
+MAX_PM25_UG_M3 = 999
 
 
 class ProtocolError(ValueError):
@@ -139,8 +140,9 @@ def decode_status(frame: bytes) -> GoveeAirPurifierState:
     validate_frame(frame)
     if not is_status_response(frame):
         raise ProtocolError("Not an aa19 status response")
+    raw_pm25 = (frame[3] << 8) | frame[4]
     return GoveeAirPurifierState(
-        pm25=(frame[3] << 8) | frame[4],
+        pm25=raw_pm25 if raw_pm25 <= MAX_PM25_UG_M3 else None,
         filter_life=frame[7],
     )
 

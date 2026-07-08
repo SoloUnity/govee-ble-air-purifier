@@ -72,6 +72,33 @@ async def test_coordinator_fetches_power_status_pm25_and_filter_life() -> None:
     assert POLLING_INTERVAL == timedelta(seconds=15)
 
 
+@pytest.mark.asyncio
+async def test_coordinator_reuses_previous_pm25_when_latest_is_invalid() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = FakeClient()
+    client.pm25 = None
+    coordinator = GoveeCoordinator(None, client, update_method_only=True)
+    coordinator.data = GoveeData(is_on=True, pm25=42, filter_life=87, fan_mode="Low")
+
+    data = await coordinator._async_update_data()
+
+    assert data == GoveeData(is_on=False, pm25=42, filter_life=87, fan_mode=None)
+
+
+@pytest.mark.asyncio
+async def test_coordinator_leaves_pm25_unknown_without_previous_valid_value() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = FakeClient()
+    client.pm25 = None
+    coordinator = GoveeCoordinator(None, client, update_method_only=True)
+
+    data = await coordinator._async_update_data()
+
+    assert data == GoveeData(is_on=False, pm25=None, filter_life=87, fan_mode=None)
+
+
 def test_coordinator_accepts_custom_polling_interval() -> None:
     from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
 
