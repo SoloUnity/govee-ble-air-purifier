@@ -20,6 +20,7 @@ class FakeCoordinator:
         )
         self.last_update_success = True
         self.last_pm25_update_success = pm25 is not None
+        self.pm25_sample_revision = 1 if pm25 is not None else 0
         self.commands: list[str] = []
         self.command_attempts: list[str] = []
         self.command_errors: list[Exception] = []
@@ -58,10 +59,14 @@ class FakeCoordinator:
     def set_update_success(self, successful: bool) -> None:
         self.last_update_success = successful
         self.last_pm25_update_success = successful
+        if successful and self.data.pm25 is not None:
+            self.pm25_sample_revision += 1
         self._notify()
 
     def set_pm25(self, pm25: int | None) -> None:
         self.last_pm25_update_success = pm25 is not None
+        if pm25 is not None:
+            self.pm25_sample_revision += 1
         self.data = GoveeData(
             is_on=self.data.is_on,
             pm25=pm25,
@@ -102,19 +107,25 @@ async def settle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_immediate_rises_jump_directly_to_highest_required_speed() -> None:
+@pytest.mark.parametrize(
+    ("readings", "expected_mode", "expected_speed"),
+    [((10, 16), "Turbo", 100), ((16, 10), "High", 80)],
+)
+async def test_two_upward_readings_use_second_readings_required_speed(
+    readings: tuple[int, int], expected_mode: str, expected_speed: int
+) -> None:
     coordinator = FakeCoordinator(pm25=0)
     del coordinator.last_update_success
     controller = CustomAutoController(None, coordinator, custom_auto_config())
 
     await controller.async_activate()
-    coordinator.set_pm25(10)
+    coordinator.set_pm25(readings[0])
     await settle()
-    coordinator.set_pm25(16)
+    coordinator.set_pm25(readings[1])
     await settle()
 
-    assert coordinator.commands == ["High", "Turbo"]
-    assert controller.current_speed == 100
+    assert coordinator.commands == [expected_mode]
+    assert controller.current_speed == expected_speed
     await controller.async_stop()
 
 
@@ -126,7 +137,8 @@ async def test_activation_from_off_deliberately_powers_on_before_off_detection()
     await controller.async_activate()
 
     assert controller.active is True
-    assert coordinator.commands == ["High"]
+    assert coordinator.commands == ["Sleep"]
+    assert controller.current_speed == 20
     assert coordinator.data.is_on is True
     await controller.async_stop()
 
@@ -146,6 +158,10 @@ async def test_activation_ignores_stale_pm_until_update_recovers() -> None:
     coordinator.set_update_success(True)
     await settle()
 
+    assert coordinator.commands == []
+    coordinator.set_update_success(True)
+    await settle()
+
     assert coordinator.commands == ["Turbo"]
     await controller.async_stop()
 
@@ -161,6 +177,72 @@ async def test_rapid_pm_updates_are_serialized_and_use_latest_highest_requiremen
     await settle()
 
     assert coordinator.commands == ["Turbo"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_command_publication_does_not_count_as_second_upward_reading() -> None:
+    coordinator = FakeCoordinator(pm25=16, mode="Auto")
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+
+    await controller.async_activate()
+    await settle()
+
+    assert coordinator.commands == ["Sleep"]
+    assert controller.current_speed == 20
+    assert controller.diagnostics()["pending_upshift_readings"] == 1
+    assert controller.diagnostics()["pending_upshift_speed"] == 100
+
+    coordinator.set_pm25(16)
+    await settle()
+
+    assert coordinator.commands == ["Sleep", "Turbo"]
+    assert controller.diagnostics()["pending_upshift_readings"] == 0
+    assert controller.diagnostics()["pending_upshift_speed"] is None
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_and_invalid_updates_preserve_upshift_confirmation() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+    await controller.async_activate()
+
+    coordinator.set_pm25(16)
+    await settle()
+    coordinator.set_update_success(False)
+    coordinator.set_pm25(None)
+    await settle()
+
+    assert controller.diagnostics()["pending_upshift_readings"] == 1
+
+    coordinator.set_pm25(16)
+    await settle()
+
+    assert coordinator.commands == ["Turbo"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_valid_non_upward_reading_resets_upshift_confirmation() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+    await controller.async_activate()
+
+    coordinator.set_pm25(16)
+    await settle()
+    coordinator.set_pm25(0)
+    await settle()
+    coordinator.set_pm25(16)
+    await settle()
+
+    assert coordinator.commands == []
+    assert controller.diagnostics()["pending_upshift_readings"] == 1
+
+    coordinator.set_pm25(10)
+    await settle()
+
+    assert coordinator.commands == ["High"]
     await controller.async_stop()
 
 
@@ -378,15 +460,19 @@ async def test_reselecting_auto_keeps_speed_and_existing_downshift_timers() -> N
 
 
 @pytest.mark.asyncio
-async def test_reselecting_auto_still_applies_immediate_upward_correction() -> None:
+async def test_reselecting_auto_does_not_bypass_upshift_confirmation() -> None:
     coordinator = FakeCoordinator(pm25=10, mode="High")
     controller = CustomAutoController(None, coordinator, custom_auto_config())
     await controller.async_activate()
-    coordinator.data = GoveeData(
-        is_on=True, pm25=16, filter_life=90, fan_mode="High"
-    )
+    coordinator.set_pm25(16)
+    await settle()
 
     await controller.async_activate()
+
+    assert coordinator.commands == []
+    assert controller.diagnostics()["pending_upshift_readings"] == 1
+    coordinator.set_pm25(16)
+    await settle()
 
     assert coordinator.commands == ["Turbo"]
     assert controller.current_speed == 100
@@ -395,7 +481,7 @@ async def test_reselecting_auto_still_applies_immediate_upward_correction() -> N
 
 @pytest.mark.asyncio
 async def test_activation_command_failure_rolls_back_all_ownership() -> None:
-    coordinator = FakeCoordinator(pm25=16, mode="Sleep")
+    coordinator = FakeCoordinator(pm25=16, mode="Auto")
     coordinator.command_errors.append(RuntimeError("BLE unavailable"))
     controller = CustomAutoController(None, coordinator, custom_auto_config())
     active_states: list[bool] = []
@@ -413,7 +499,7 @@ async def test_activation_command_failure_rolls_back_all_ownership() -> None:
 
 @pytest.mark.asyncio
 async def test_activation_cancellation_rolls_back_all_ownership() -> None:
-    coordinator = FakeCoordinator(pm25=16, mode="Sleep")
+    coordinator = FakeCoordinator(pm25=16, mode="Auto")
     command_started = asyncio.Event()
 
     async def blocking_set_fan_mode(mode: str) -> None:
@@ -447,6 +533,8 @@ async def test_background_command_failure_is_logged_and_waits_for_update(
 
     coordinator.set_pm25(16)
     await settle()
+    coordinator.set_pm25(16)
+    await settle()
 
     assert controller.active is True
     assert controller.current_speed == 20
@@ -473,6 +561,8 @@ async def test_timer_expiry_does_not_bypass_command_failure_retry_gate() -> None
     await settle()
     coordinator.command_errors.append(RuntimeError("BLE background failure"))
 
+    coordinator.set_pm25(16)
+    await settle()
     coordinator.set_pm25(16)
     await settle()
     sleep.release(300)
@@ -633,7 +723,7 @@ async def test_activation_with_unknown_pm_powers_on_at_existing_or_sleep_speed()
 
 
 @pytest.mark.asyncio
-async def test_restore_retains_speed_applies_only_upward_correction_and_restarts_timers() -> None:
+async def test_restore_retains_speed_confirms_upward_correction_and_restarts_timers() -> None:
     coordinator = FakeCoordinator(pm25=10, mode="Low")
     sleep = ControlledSleep()
     controller = CustomAutoController(
@@ -642,9 +732,15 @@ async def test_restore_retains_speed_applies_only_upward_correction_and_restarts
 
     await controller.async_activate(restored_speed=40, restoring=True)
 
+    assert coordinator.commands == []
+    assert controller.current_speed == 40
+    assert controller.diagnostics()["pending_upshift_readings"] == 1
+    assert controller.pending_downshifts == (80,)
+    coordinator.set_pm25(10)
+    await settle()
+
     assert coordinator.commands == ["High"]
     assert controller.current_speed == 80
-    assert controller.pending_downshifts == (80,)
     await controller.async_stop()
 
 

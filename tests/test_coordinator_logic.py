@@ -84,7 +84,12 @@ async def test_coordinator_fetches_power_status_pm25_and_filter_life() -> None:
 
     assert data == GoveeData(is_on=False, pm25=12, filter_life=87, fan_mode=None)
     assert coordinator.last_pm25_update_success is True
-    assert POLLING_INTERVAL == timedelta(seconds=15)
+    assert coordinator.pm25_sample_revision == 1
+    assert POLLING_INTERVAL == timedelta(seconds=10)
+
+    await coordinator._async_update_data()
+
+    assert coordinator.pm25_sample_revision == 2
 
 
 @pytest.mark.asyncio
@@ -100,6 +105,7 @@ async def test_coordinator_reuses_previous_pm25_when_latest_is_invalid() -> None
 
     assert data == GoveeData(is_on=False, pm25=42, filter_life=87, fan_mode=None)
     assert coordinator.last_pm25_update_success is False
+    assert coordinator.pm25_sample_revision == 0
 
 
 @pytest.mark.asyncio
@@ -161,6 +167,7 @@ async def test_setting_fan_mode_updates_data_without_full_refresh() -> None:
 
     assert client.commands == [FAN_MODE_COMMANDS["Turbo"]]
     assert client.state_fetches == 0
+    assert coordinator.pm25_sample_revision == 0
     assert coordinator.data == GoveeData(
         is_on=True,
         pm25=12,

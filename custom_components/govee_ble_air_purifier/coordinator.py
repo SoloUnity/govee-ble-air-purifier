@@ -61,6 +61,7 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         self.data: GoveeData | None = None
         self.last_poll_success = False
         self.last_pm25_update_success = False
+        self.pm25_sample_revision = 0
         self._last_fan_mode: str | None = None
         self._state_lock = asyncio.Lock()
         self._background_refresh_task: asyncio.Task[Any] | None = None
@@ -133,6 +134,8 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
                 raise UpdateFailed(str(err)) from err
             self.last_poll_success = True
             self.last_pm25_update_success = client_data.pm25 is not None
+            if self.last_pm25_update_success:
+                self.pm25_sample_revision += 1
             current = self.data or GoveeData()
             data = GoveeData(
                 is_on=client_data.is_on,

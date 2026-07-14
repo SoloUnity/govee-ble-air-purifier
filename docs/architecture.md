@@ -101,7 +101,7 @@ duplicate-entry handling.
 
 Options control runtime policy:
 
-- Polling interval.
+- Polling interval, defaulting to 10 seconds for new entries.
 - Four upward PM2.5 thresholds.
 - Four downward PM2.5 thresholds.
 - Four downward delay durations.
@@ -334,16 +334,19 @@ On success it:
 
 1. Marks the overall poll successful.
 2. Separately records whether PM2.5 was valid.
-3. Publishes current power and filter life.
-4. Publishes a new PM2.5 value when valid, otherwise retains the previous cached
+3. Increments `pm25_sample_revision` when PM2.5 is valid, including when its
+   numeric value is unchanged.
+4. Publishes current power and filter life.
+5. Publishes a new PM2.5 value when valid, otherwise retains the previous cached
    value.
-5. Preserves the last integration-commanded fan mode when polling does not
+6. Preserves the last integration-commanded fan mode when polling does not
    provide one.
 
 Retaining cached PM2.5 allows diagnostics and display code to retain the last
 measurement. Availability still follows the coordinator's update status, and
 Custom Auto consults `last_pm25_update_success` before acting on the cached
-number.
+number. It also uses `pm25_sample_revision` to distinguish a new reading from a
+command-side publication of cached state.
 
 On transport or protocol failure the coordinator raises Home Assistant's
 `UpdateFailed` and clears both success flags.
@@ -453,6 +456,9 @@ The controller tracks:
 - `_timer_tasks`: active delayed downshift timers keyed by target speed.
 - `_mature_downshifts`: targets whose delays have elapsed.
 - `_waiting_for_successful_update`: retry gate after a command failure.
+- `_pending_pm25_samples`: fresh readings captured before callbacks coalesce.
+- `_pending_upshift_readings` and `_pending_upshift_speed`: upward confirmation
+  progress and the latest requested target.
 - `_evaluation_pending` and `_evaluation_task`: coalesced coordinator updates.
 - `_lock`: serialization for activation, evaluation, handoff, and deactivation.
 
@@ -465,18 +471,21 @@ It chooses an initial speed from, in order:
 2. The current known manual mode.
 3. The lowest Custom Auto speed, 20% Sleep.
 
-With a valid current PM2.5 sample, a normal activation immediately selects the
-required speed. Restore activation preserves the restored speed unless air
-quality requires an immediate upward correction. Downshift timers are then
-started from the current sample.
+Activation preserves the selected or restored speed and treats a valid current
+PM2.5 sample as the first upward confirmation when it requires a higher speed.
+A later valid upward sample must confirm the change. Downshift timers are started
+from the current sample immediately.
 
 If activation fails or is canceled, ownership, speed, listeners, and timers are
 rolled back.
 
-### Immediate Upward Changes
+### Confirmed Upward Changes
 
-Upward changes have no delay. `_speed_for_pm()` starts at 20% and selects each
-higher speed whose upward threshold is exceeded.
+`_speed_for_pm()` starts at 20% and selects each higher speed whose upward
+threshold is exceeded. The controller changes upward only after two distinct
+valid readings both require a speed above the current speed. The readings do not
+need to map to the same target; the second reading determines the commanded
+speed.
 
 With defaults:
 
@@ -487,7 +496,12 @@ PM2.5 > 9   -> at least 80%
 PM2.5 > 15  -> 100%
 ```
 
-A new valid sample updates downshift timer eligibility before attempting an
+A valid reading that does not require an increase clears pending upward
+confirmation. Invalid readings and poll failures preserve it. Coordinator
+callbacks caused by commands cannot count because they do not advance the sample
+revision. Rapid valid readings are queued before evaluation callbacks coalesce.
+
+Each new valid sample updates downshift timer eligibility before attempting an
 upward command. Therefore, a failed upward command cannot leave timers that were
 made invalid by the new high sample.
 
@@ -638,12 +652,12 @@ then re-raised so Home Assistant task cancellation semantics remain intact.
 - Redacted config entry data.
 - Current options.
 - Current coordinator state.
-- Custom Auto configuration and runtime timer state.
+- Custom Auto configuration, upward confirmation, and runtime timer state.
 
 MAC and UUID addresses are completely masked. A BLE-advertised name matching a
 profile is reduced to the non-unique profile prefix. Diagnostics expose pending
-and mature downshift targets, which is useful when determining why Custom Auto
-has or has not changed speed.
+upward confirmation plus pending and mature downshift targets, which is useful
+when determining why Custom Auto has or has not changed speed.
 
 ## Testing Boundaries
 
@@ -704,9 +718,11 @@ show the new model uses them.
 Threshold changes affect config flow validation, controller evaluation, user
 text, diagnostics, and tests. Preserve these invariants:
 
-- Upward action is immediate.
+- Upward action requires two distinct valid readings that both require an
+  increase; the second reading determines the target.
 - Downward action requires a mature target and a valid confirming sample.
-- Missing data preserves elapsed progress but cannot trigger a command.
+- Missing data preserves elapsed and upward-confirmation progress but cannot
+  trigger a command.
 - A valid non-qualifying sample clears pending and mature intent.
 - Automatic command failure cannot cause a timer-driven retry loop.
 - User handoff is serialized with automatic evaluation.

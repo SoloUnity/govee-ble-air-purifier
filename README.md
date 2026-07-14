@@ -43,10 +43,11 @@ It also gives you basic control of the purifier and shows remaining filter life.
 
 Setup and the device's integration Options contain four expanded PM2.5 boundary
 groups for five air-quality levels: Excellent, Good, Fair, Bad, and Poor. Each
-group contains an immediate increase threshold, a delayed return threshold, and
-the return delay. Turn on the device's `Custom Auto` switch to activate those
-rules. Turning the switch off keeps the purifier on and hands control to its
-built-in Auto mode.
+group contains an increase threshold, a delayed return threshold, and the return
+delay. An increase requires two valid PM2.5 readings that both call for a higher
+speed; the second reading determines the target. Turn on the device's
+`Custom Auto` switch to activate those rules. Turning the switch off keeps the
+purifier on and hands control to its built-in Auto mode.
 
 While Custom Auto is on, the fan's logical preset remains Auto while Home
 Assistant sends the underlying manual speeds Sleep (20%), Low (40%), Medium

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 import logging
@@ -24,6 +25,7 @@ from .const import (
 )
 
 CUSTOM_AUTO_SPEEDS = (20, 40, 60, 80, 100)
+UPSHIFT_CONFIRMATION_SAMPLES = 2
 SPEED_TO_MODE = {
     20: "Sleep",
     40: "Low",
@@ -164,6 +166,10 @@ class CustomAutoController:
         self._evaluation_task: asyncio.Task[Any] | None = None
         self._evaluation_pending = False
         self._waiting_for_successful_update = False
+        self._last_pm25_sample_revision: int | None = None
+        self._pending_pm25_samples: deque[tuple[int, int]] = deque()
+        self._pending_upshift_readings = 0
+        self._pending_upshift_speed: int | None = None
         self._state_listeners: set[Callable[[], None]] = set()
         self._lock = asyncio.Lock()
 
@@ -202,16 +208,6 @@ class CustomAutoController:
             already_active = self._active
             try:
                 if already_active:
-                    if (
-                        self._coordinator_update_succeeded()
-                        and getattr(self.coordinator.data, "is_on", None) is not False
-                        and (pm25 := getattr(self.coordinator.data, "pm25", None))
-                        is not None
-                        and self._current_speed is not None
-                    ):
-                        required_speed = self._speed_for_pm(pm25)
-                        if required_speed > self._current_speed:
-                            await self._async_set_speed(required_speed)
                     return
 
                 self._active = True
@@ -237,13 +233,11 @@ class CustomAutoController:
                 if pm25 is None:
                     await self._async_set_speed(self._current_speed)
                 else:
-                    required_speed = self._speed_for_pm(pm25)
-                    if not restoring or self._current_speed is None:
-                        await self._async_set_speed(required_speed)
-                    elif required_speed > self._current_speed:
-                        await self._async_set_speed(required_speed)
-                    else:
-                        await self._async_set_speed(self._current_speed)
+                    self._observe_upshift_sample(
+                        self._speed_for_pm(pm25),
+                        self.coordinator.pm25_sample_revision,
+                    )
+                    await self._async_set_speed(self._current_speed)
                     if update_succeeded:
                         self._update_downshift_timers(pm25)
                 self._notify_state_listeners()
@@ -309,6 +303,8 @@ class CustomAutoController:
             "down_delays": list(self.config.down_delays),
             "pending_downshifts": list(self.pending_downshifts),
             "mature_downshifts": sorted(self._mature_downshifts),
+            "pending_upshift_readings": self._pending_upshift_readings,
+            "pending_upshift_speed": self._pending_upshift_speed,
         }
 
     def _handle_coordinator_update(self) -> None:
@@ -321,7 +317,21 @@ class CustomAutoController:
                 self._waiting_for_successful_update = False
             elif getattr(self.coordinator.data, "is_on", None) is not False:
                 return
+        self._queue_current_pm25_sample()
         self._schedule_evaluation()
+
+    def _queue_current_pm25_sample(self) -> None:
+        """Capture each fresh PM2.5 sample before callbacks can be coalesced."""
+
+        if not self._coordinator_update_succeeded():
+            return
+        pm25 = getattr(self.coordinator.data, "pm25", None)
+        revision = self.coordinator.pm25_sample_revision
+        if pm25 is None or revision == self._last_pm25_sample_revision:
+            return
+        if self._pending_pm25_samples and self._pending_pm25_samples[-1][0] == revision:
+            return
+        self._pending_pm25_samples.append((revision, pm25))
 
     def _schedule_evaluation(self) -> None:
         """Schedule evaluation without treating it as a fresh data update."""
@@ -361,14 +371,19 @@ class CustomAutoController:
         if self._waiting_for_successful_update:
             return
 
-        pm25 = getattr(data, "pm25", None)
-        if pm25 is None or self._current_speed is None:
+        if self._current_speed is None:
             return
 
-        required_speed = self._speed_for_pm(pm25)
-        self._update_downshift_timers(pm25)
-        if required_speed > self._current_speed:
-            await self._async_set_speed(required_speed)
+        while self._pending_pm25_samples:
+            revision, pm25 = self._pending_pm25_samples.popleft()
+            required_speed = self._speed_for_pm(pm25)
+            self._update_downshift_timers(pm25)
+            confirmed_upshift = self._observe_upshift_sample(
+                required_speed, revision
+            )
+            if confirmed_upshift is not None:
+                await self._async_set_speed(confirmed_upshift)
+                self._clear_upshift_confirmation()
 
         eligible = [
             speed
@@ -377,6 +392,32 @@ class CustomAutoController:
         ]
         if eligible:
             await self._async_set_speed(min(eligible))
+            self._clear_upshift_confirmation()
+
+    def _observe_upshift_sample(
+        self, required_speed: int, revision: int
+    ) -> int | None:
+        """Return an upshift after two distinct valid samples require an increase."""
+
+        if revision == self._last_pm25_sample_revision:
+            return None
+        self._last_pm25_sample_revision = revision
+
+        if self._current_speed is None or required_speed <= self._current_speed:
+            self._clear_upshift_confirmation()
+            return None
+
+        self._pending_upshift_readings = min(
+            self._pending_upshift_readings + 1, UPSHIFT_CONFIRMATION_SAMPLES
+        )
+        self._pending_upshift_speed = required_speed
+        if self._pending_upshift_readings < UPSHIFT_CONFIRMATION_SAMPLES:
+            return None
+        return required_speed
+
+    def _clear_upshift_confirmation(self) -> None:
+        self._pending_upshift_readings = 0
+        self._pending_upshift_speed = None
 
     def _speed_for_pm(self, pm25: int) -> int:
         speed = CUSTOM_AUTO_SPEEDS[0]
@@ -444,6 +485,9 @@ class CustomAutoController:
         self._active = False
         self._waiting_for_successful_update = False
         self._evaluation_pending = False
+        self._last_pm25_sample_revision = None
+        self._pending_pm25_samples.clear()
+        self._clear_upshift_confirmation()
         if self._remove_listener is not None:
             self._remove_listener()
             self._remove_listener = None

@@ -117,7 +117,7 @@ def test_polling_interval_validation_accepts_configured_bounds() -> None:
     assert validate_polling_interval_seconds(MIN_POLLING_INTERVAL_SECONDS) == 5
     assert validate_polling_interval_seconds("45") == 45
     assert validate_polling_interval_seconds(MAX_POLLING_INTERVAL_SECONDS) == 300
-    assert DEFAULT_POLLING_INTERVAL_SECONDS == 15
+    assert DEFAULT_POLLING_INTERVAL_SECONDS == 10
 
 
 @pytest.mark.parametrize("value", [4, 301, "not-a-number"])
@@ -128,6 +128,7 @@ def test_polling_interval_validation_rejects_invalid_values(value: object) -> No
 
 def test_polling_interval_from_options_defaults_when_missing_or_invalid() -> None:
     assert polling_interval_from_options({}) == DEFAULT_POLLING_INTERVAL_SECONDS
+    assert polling_interval_from_options({CONF_POLLING_INTERVAL: 15}) == 15
     assert polling_interval_from_options({CONF_POLLING_INTERVAL: 120}) == 120
     assert (
         polling_interval_from_options({CONF_POLLING_INTERVAL: "not-a-number"})
