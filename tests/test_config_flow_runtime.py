@@ -259,7 +259,7 @@ async def test_config_flow_schemas_do_not_expose_custom_callable_validators(
 
 
 @pytest.mark.asyncio
-async def test_setup_and_options_use_real_boolean_selector(
+async def test_setup_and_options_do_not_expose_custom_auto_toggle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bluetooth_module = ModuleType("homeassistant.components.bluetooth")
@@ -273,14 +273,8 @@ async def test_setup_and_options_use_real_boolean_selector(
         SimpleNamespace(options={})
     ).async_step_init()
 
-    assert isinstance(
-        _schema_by_key(setup["data_schema"])["use_custom_auto"][1],
-        _BooleanSelector,
-    )
-    assert isinstance(
-        _schema_by_key(options["data_schema"])["use_custom_auto"][1],
-        _BooleanSelector,
-    )
+    assert "use_custom_auto" not in _schema_by_key(setup["data_schema"])
+    assert "use_custom_auto" not in _schema_by_key(options["data_schema"])
 
 
 @pytest.mark.asyncio
@@ -299,7 +293,6 @@ async def test_custom_auto_form_uses_bounded_box_number_selectors(
             "address": "AA:BB:CC:DD:EE:FF",
             "name": "Bedroom",
             "polling_interval": 15,
-            "use_custom_auto": True,
         }
     )
     fields = _schema_by_key(result["data_schema"])
@@ -329,7 +322,6 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
             "address": "AA:BB:CC:DD:EE:FF",
             "name": "Bedroom",
             "polling_interval": 15,
-            "use_custom_auto": True,
         }
     )
     invalid = {
@@ -344,13 +336,12 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
     assert result["type"] == "create_entry"
     assert result["options"] == {
         "polling_interval": 15,
-        "use_custom_auto": True,
         **config_flow.CUSTOM_AUTO_DEFAULTS,
     }
 
 
 @pytest.mark.asyncio
-async def test_options_preserve_rules_when_disabled_and_edit_them_when_enabled(
+async def test_options_always_edit_rules_and_remove_legacy_toggle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bluetooth_module = ModuleType("homeassistant.components.bluetooth")
@@ -361,29 +352,17 @@ async def test_options_preserve_rules_when_disabled_and_edit_them_when_enabled(
         "use_custom_auto": True,
         **config_flow.CUSTOM_AUTO_DEFAULTS,
     }
-    disabled_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
+    options_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
         SimpleNamespace(options=existing)
     )
 
-    disabled = await disabled_flow.async_step_init(
-        {"polling_interval": 60, "use_custom_auto": False}
-    )
-    assert disabled["data"] == {
-        **existing,
-        "polling_interval": 60,
-        "use_custom_auto": False,
-    }
-
-    enabled_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
-        SimpleNamespace(options=disabled["data"])
-    )
-    form = await enabled_flow.async_step_init(
-        {"polling_interval": 60, "use_custom_auto": True}
-    )
+    form = await options_flow.async_step_init({"polling_interval": 60})
     assert form["step_id"] == "custom_auto"
     changed = {
         **config_flow.CUSTOM_AUTO_DEFAULTS,
         "custom_auto_delay_20": 12,
     }
-    saved = await enabled_flow.async_step_custom_auto(changed)
+    saved = await options_flow.async_step_custom_auto(changed)
     assert saved["data"]["custom_auto_delay_20"] == 12
+    assert saved["data"]["polling_interval"] == 60
+    assert "use_custom_auto" not in saved["data"]

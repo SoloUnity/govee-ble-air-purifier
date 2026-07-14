@@ -41,15 +41,16 @@ It also gives you basic control of the purifier and shows remaining filter life.
 
 ## Custom Auto
 
-`Use Custom Auto` is available during setup and under the device's integration
-Options. It is disabled by default, so existing configurations and new setups
-continue to use the purifier's built-in Auto mode unless you enable it.
+Setup and the device's integration Options contain the PM2.5 thresholds and
+downshift delays. Turn on the device's `Custom Auto` switch to activate those
+rules. Turning the switch off keeps the purifier on and hands control to its
+built-in Auto mode.
 
-When enabled, selecting the fan's Auto preset keeps the logical preset on Auto
-while Home Assistant sends the underlying manual speeds Sleep (20%), Low (40%),
-Medium (60%), High (80%), and Turbo (100%) according to PM2.5. Selecting a
-manual percentage or Manual preset, or turning the purifier off, stops Custom
-Auto. Selecting Auto starts it again.
+While Custom Auto is on, the fan's logical preset remains Auto while Home
+Assistant sends the underlying manual speeds Sleep (20%), Low (40%), Medium
+(60%), High (80%), and Turbo (100%) according to PM2.5. Selecting a manual
+percentage or Manual preset, or turning the purifier off, turns Custom Auto off.
+Selecting the fan's Auto preset uses the purifier's built-in Auto mode.
 
 The default rules step up immediately to 40% above 3, 60% above 5, 80% above
 9, and 100% above 15 ug/m3. They step down only while PM2.5 remains strictly

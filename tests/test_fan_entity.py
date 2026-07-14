@@ -82,9 +82,8 @@ class _FakeCoordinator:
 
 
 class _FakeController:
-    def __init__(self, coordinator: _FakeCoordinator, *, enabled: bool = True) -> None:
+    def __init__(self, coordinator: _FakeCoordinator) -> None:
         self.coordinator = coordinator
-        self.enabled = enabled
         self.active = False
         self.current_speed = 80
         self.activations: list[tuple[int | None, bool]] = []
@@ -208,7 +207,7 @@ def _import_fan(
 def test_loaded_platforms_match_cloud_style_control_layout() -> None:
     from custom_components.govee_ble_air_purifier.const import PLATFORMS
 
-    assert PLATFORMS == ["fan", "sensor"]
+    assert PLATFORMS == ["fan", "sensor", "switch"]
 
 
 def test_fan_import_supports_home_assistant_before_turn_feature_flags(
@@ -290,7 +289,7 @@ async def test_custom_auto_reports_auto_with_underlying_percentage_and_manual_di
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
     entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
 
-    await entity.async_set_preset_mode("Auto")
+    await controller.async_activate()
     assert entity.preset_mode == "Auto"
     assert entity.percentage == 80
     assert entity.extra_state_attributes == {
@@ -303,37 +302,38 @@ async def test_custom_auto_reports_auto_with_underlying_percentage_and_manual_di
     assert coordinator.fan_mode_commands[-1] == "Turbo"
     assert entity.preset_mode == "Manual"
 
-    await entity.async_set_preset_mode("Auto")
+    await controller.async_activate()
     await entity.async_set_preset_mode("Manual")
     assert controller.deactivations == 2
     assert entity.preset_mode == "Manual"
 
-    await entity.async_set_preset_mode("Auto")
+    await controller.async_activate()
     await entity.async_turn_off()
     assert controller.deactivations == 3
     assert coordinator.power_commands[-1] is False
 
 
 @pytest.mark.asyncio
-async def test_disabled_custom_auto_keeps_hardware_auto_behavior(
+async def test_auto_preset_deactivates_custom_auto_and_uses_hardware_auto(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
-    controller = _FakeController(coordinator, enabled=False)
+    controller = _FakeController(coordinator)
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
     entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
 
+    await controller.async_activate()
     await entity.async_set_preset_mode("Auto")
 
-    assert controller.activations == []
-    assert coordinator.fan_mode_commands == ["Auto"]
+    assert controller.deactivations == 1
+    assert coordinator.fan_mode_commands[-1] == "Auto"
     assert entity.preset_mode == "Auto"
     assert entity.percentage is None
 
 
 @pytest.mark.asyncio
-async def test_restore_resumes_custom_auto_or_converts_it_to_hardware_auto(
+async def test_restore_resumes_custom_auto(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fan = _import_fan(monkeypatch)
@@ -350,16 +350,6 @@ async def test_restore_resumes_custom_auto_or_converts_it_to_hardware_auto(
     assert controller.activations == [(60, True)]
     assert entity.preset_mode == "Auto"
     assert entity.percentage == 60
-
-    disabled_coordinator = _FakeCoordinator()
-    disabled_controller = _FakeController(disabled_coordinator, enabled=False)
-    disabled_entity = fan.GoveeAirPurifierFan(
-        disabled_coordinator, entry, disabled_controller
-    )
-    disabled_entity._test_last_state = last_state
-    await disabled_entity.async_added_to_hass()
-    assert disabled_controller.activations == []
-    assert disabled_coordinator.fan_mode_commands == ["Auto"]
 
 
 @pytest.mark.asyncio

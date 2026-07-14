@@ -21,7 +21,6 @@ from .const import (
     CONF_CUSTOM_AUTO_UP_40,
     CONF_CUSTOM_AUTO_UP_60,
     CONF_CUSTOM_AUTO_UP_80,
-    CONF_USE_CUSTOM_AUTO,
 )
 
 CUSTOM_AUTO_SPEEDS = (20, 40, 60, 80, 100)
@@ -75,7 +74,6 @@ CUSTOM_AUTO_OPTION_KEYS = UP_THRESHOLD_KEYS + DOWN_THRESHOLD_KEYS + DOWN_DELAY_K
 class CustomAutoConfig:
     """Validated custom-auto configuration."""
 
-    enabled: bool
     up_thresholds: tuple[int, int, int, int]
     down_thresholds: tuple[int, int, int, int]
     down_delays: tuple[int, int, int, int]
@@ -84,23 +82,21 @@ class CustomAutoConfig:
     def from_options(cls, options: Mapping[str, Any]) -> "CustomAutoConfig":
         """Read options, falling back safely for old or malformed entries."""
 
-        enabled = options.get(CONF_USE_CUSTOM_AUTO, False) is True
         try:
             values = parse_custom_auto_values(options)
             validate_custom_auto_values(values)
         except ValueError:
             values = dict(CUSTOM_AUTO_DEFAULTS)
         return cls(
-            enabled=enabled,
             up_thresholds=tuple(values[key] for key in UP_THRESHOLD_KEYS),
             down_thresholds=tuple(values[key] for key in DOWN_THRESHOLD_KEYS),
             down_delays=tuple(values[key] for key in DOWN_DELAY_KEYS),
         )
 
-    def as_options(self) -> dict[str, bool | int]:
+    def as_options(self) -> dict[str, int]:
         """Return the configuration in config-entry option form."""
 
-        values: dict[str, bool | int] = {CONF_USE_CUSTOM_AUTO: self.enabled}
+        values: dict[str, int] = {}
         values.update(dict(zip(UP_THRESHOLD_KEYS, self.up_thresholds, strict=True)))
         values.update(
             dict(zip(DOWN_THRESHOLD_KEYS, self.down_thresholds, strict=True))
@@ -172,12 +168,6 @@ class CustomAutoController:
         self._lock = asyncio.Lock()
 
     @property
-    def enabled(self) -> bool:
-        """Return whether this config entry enables custom auto."""
-
-        return self.config.enabled
-
-    @property
     def active(self) -> bool:
         """Return whether custom auto currently owns fan speed."""
 
@@ -206,8 +196,6 @@ class CustomAutoController:
     ) -> None:
         """Activate custom auto and establish or restore its manual speed."""
 
-        if not self.enabled:
-            raise ValueError("Custom auto is not enabled")
         timer_tasks: tuple[asyncio.Task[Any], ...] = ()
         async with self._lock:
             previous_speed = self._current_speed
@@ -289,7 +277,6 @@ class CustomAutoController:
         """Return non-sensitive configured and runtime controller details."""
 
         return {
-            "enabled": self.enabled,
             "active": self.active,
             "current_speed": self.current_speed,
             "up_thresholds": list(self.config.up_thresholds),

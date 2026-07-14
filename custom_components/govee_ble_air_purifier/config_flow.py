@@ -11,7 +11,6 @@ from homeassistant.components import bluetooth
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import (
-    BooleanSelector,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -33,9 +32,9 @@ from .const import (
     CONF_DISCOVERED_DEVICE,
     CONF_POLLING_INTERVAL,
     CONF_PROFILE,
-    CONF_USE_CUSTOM_AUTO,
     DEFAULT_POLLING_INTERVAL_SECONDS,
     DOMAIN,
+    LEGACY_CONF_USE_CUSTOM_AUTO,
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
@@ -120,12 +119,8 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
             self._pending_options = {
                 CONF_POLLING_INTERVAL: polling_interval,
-                CONF_USE_CUSTOM_AUTO: user_input.get(CONF_USE_CUSTOM_AUTO, False)
-                is True,
             }
-            if self._pending_options[CONF_USE_CUSTOM_AUTO]:
-                return await self.async_step_custom_auto()
-            return self._create_pending_entry()
+            return await self.async_step_custom_auto()
 
         return self.async_show_form(
             step_id="user", data_schema=_user_schema(discovered_options), errors=errors
@@ -199,18 +194,15 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
             polling_interval = validate_polling_interval_seconds(
                 user_input[CONF_POLLING_INTERVAL]
             )
-            use_custom_auto = user_input.get(CONF_USE_CUSTOM_AUTO, False) is True
             self._pending_options = {
-                **dict(self._config_entry.options),
+                **{
+                    key: value
+                    for key, value in self._config_entry.options.items()
+                    if key != LEGACY_CONF_USE_CUSTOM_AUTO
+                },
                 CONF_POLLING_INTERVAL: polling_interval,
-                CONF_USE_CUSTOM_AUTO: use_custom_auto,
             }
-            if use_custom_auto:
-                return await self.async_step_custom_auto()
-            return self.async_create_entry(
-                title="",
-                data=self._pending_options,
-            )
+            return await self.async_step_custom_auto()
 
         return self.async_show_form(
             step_id="init",
@@ -218,9 +210,6 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
                 polling_default=polling_interval_from_options(
                     self._config_entry.options
                 ),
-                custom_auto_default=CustomAutoConfig.from_options(
-                    self._config_entry.options
-                ).enabled,
             ),
         )
 
@@ -248,8 +237,11 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
                 )
             else:
                 if self._pending_options is None:
-                    self._pending_options = dict(self._config_entry.options)
-                    self._pending_options[CONF_USE_CUSTOM_AUTO] = True
+                    self._pending_options = {
+                        key: value
+                        for key, value in self._config_entry.options.items()
+                        if key != LEGACY_CONF_USE_CUSTOM_AUTO
+                    }
                 self._pending_options.update(values)
                 return self.async_create_entry(title="", data=self._pending_options)
 
@@ -295,7 +287,6 @@ def _user_schema(
                 CONF_POLLING_INTERVAL,
                 default=DEFAULT_POLLING_INTERVAL_SECONDS,
             ): _polling_interval_schema_value(),
-            vol.Required(CONF_USE_CUSTOM_AUTO, default=False): BooleanSelector(),
         }
     )
 
@@ -303,7 +294,6 @@ def _user_schema(
 def _options_schema(
     *,
     polling_default: int = DEFAULT_POLLING_INTERVAL_SECONDS,
-    custom_auto_default: bool = False,
 ) -> vol.Schema:
     """Build the first options form."""
 
@@ -313,9 +303,6 @@ def _options_schema(
                 CONF_POLLING_INTERVAL,
                 default=polling_default,
             ): _polling_interval_schema_value(),
-            vol.Required(
-                CONF_USE_CUSTOM_AUTO, default=custom_auto_default
-            ): BooleanSelector(),
         }
     )
 

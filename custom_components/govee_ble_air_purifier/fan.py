@@ -89,9 +89,6 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity, RestoreEntity):
         attributes = last_state.attributes
         if attributes.get(ATTR_CUSTOM_AUTO_ACTIVE) is not True:
             return
-        if not self._controller.enabled:
-            await self.coordinator.async_set_fan_mode(PRESET_AUTO)
-            return
         restored_speed = attributes.get(ATTR_CUSTOM_AUTO_SPEED)
         if restored_speed not in (20, 40, 60, 80, 100):
             restored_speed = None
@@ -193,9 +190,6 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity, RestoreEntity):
 
         try:
             if preset_mode == PRESET_AUTO:
-                if self._controller is not None and self._controller.enabled:
-                    await self._controller.async_activate()
-                    return
                 await self._async_disable_custom_auto()
                 await self.coordinator.async_set_fan_mode(PRESET_AUTO)
                 return

@@ -8,18 +8,16 @@
           "discovered_device": "Recently seen purifier",
           "address": "BLE address for manual setup",
           "name": "Name",
-          "polling_interval": "Polling interval in seconds",
-          "use_custom_auto": "Use Custom Auto"
+          "polling_interval": "Polling interval in seconds"
         },
         "data_description": {
           "address": "Only required when Recently seen purifier is set to Enter address manually.",
-          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life.",
-          "use_custom_auto": "When enabled, selecting the Auto preset uses these Home Assistant PM2.5 rules instead of the purifier's hardware Auto mode."
+          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life."
         }
       },
       "custom_auto": {
         "title": "Custom Auto Rules",
-        "description": "Set immediate upward boundaries and delayed strict-below downward boundaries. Each downward delay starts independently and resets if its PM2.5 condition stops being true.",
+        "description": "Set immediate upward boundaries and delayed strict-below downward boundaries. Use the Custom Auto switch on the device to activate these rules.",
         "data": {
           "custom_auto_up_40": "Step up to 40% above PM2.5",
           "custom_auto_up_60": "Step up to 60% above PM2.5",
@@ -53,19 +51,17 @@
     "step": {
       "init": {
         "title": "Govee BLE Air Purifier Options",
-        "description": "Adjust polling and choose whether Auto uses the purifier's hardware behavior or Home Assistant Custom Auto rules.",
+        "description": "Adjust the Bluetooth polling interval. Custom Auto thresholds and delays are configured on the next screen.",
         "data": {
-          "polling_interval": "Polling interval in seconds",
-          "use_custom_auto": "Use Custom Auto"
+          "polling_interval": "Polling interval in seconds"
         },
         "data_description": {
-          "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices.",
-          "use_custom_auto": "Disabling this preserves your rules and makes Auto use the purifier's built-in mode."
+          "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices."
         }
       },
       "custom_auto": {
         "title": "Custom Auto Rules",
-        "description": "Set immediate upward boundaries and delayed strict-below downward boundaries. Each downward delay starts independently and resets if its PM2.5 condition stops being true.",
+        "description": "Set immediate upward boundaries and delayed strict-below downward boundaries. Use the Custom Auto switch on the device to activate these rules.",
         "data": {
           "custom_auto_up_40": "Step up to 40% above PM2.5",
           "custom_auto_up_60": "Step up to 60% above PM2.5",
@@ -91,8 +87,8 @@
   },
   "entity": {
     "switch": {
-      "power": {
-        "name": "Power"
+      "custom_auto": {
+        "name": "Custom Auto"
       }
     },
     "select": {

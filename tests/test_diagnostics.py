@@ -43,7 +43,6 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
             coordinator=runtime_coordinator,
             controller=SimpleNamespace(
                 diagnostics=lambda: {
-                    "enabled": True,
                     "active": True,
                     "current_speed": 80,
                 }
@@ -66,7 +65,6 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
             "filter_life": 91,
         },
         "custom_auto": {
-            "enabled": True,
             "active": True,
             "current_speed": 80,
         },

@@ -90,9 +90,9 @@ class ControlledSleep:
                 future.set_result(None)
 
 
-def enabled_config(**overrides: int) -> CustomAutoConfig:
+def custom_auto_config(**overrides: int) -> CustomAutoConfig:
     return CustomAutoConfig.from_options(
-        {"use_custom_auto": True, **CUSTOM_AUTO_DEFAULTS, **overrides}
+        {**CUSTOM_AUTO_DEFAULTS, **overrides}
     )
 
 
@@ -105,7 +105,7 @@ async def settle() -> None:
 async def test_immediate_rises_jump_directly_to_highest_required_speed() -> None:
     coordinator = FakeCoordinator(pm25=0)
     del coordinator.last_update_success
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
 
     await controller.async_activate()
     coordinator.set_pm25(10)
@@ -121,7 +121,7 @@ async def test_immediate_rises_jump_directly_to_highest_required_speed() -> None
 @pytest.mark.asyncio
 async def test_activation_from_off_deliberately_powers_on_before_off_detection() -> None:
     coordinator = FakeCoordinator(pm25=10, mode="Sleep", is_on=False)
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
 
     await controller.async_activate()
 
@@ -136,7 +136,7 @@ async def test_activation_ignores_stale_pm_until_update_recovers() -> None:
     coordinator = FakeCoordinator(pm25=16, mode="Low")
     coordinator.last_update_success = False
     coordinator.last_pm25_update_success = False
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
 
     await controller.async_activate()
 
@@ -153,7 +153,7 @@ async def test_activation_ignores_stale_pm_until_update_recovers() -> None:
 @pytest.mark.asyncio
 async def test_rapid_pm_updates_are_serialized_and_use_latest_highest_requirement() -> None:
     coordinator = FakeCoordinator(pm25=0)
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
     await controller.async_activate()
 
     coordinator.set_pm25(10)
@@ -171,7 +171,7 @@ async def test_each_configured_downshift_delay_starts_independently() -> None:
     controller = CustomAutoController(
         None,
         coordinator,
-        enabled_config(
+        custom_auto_config(
             custom_auto_delay_20=1,
             custom_auto_delay_40=2,
             custom_auto_delay_60=3,
@@ -198,7 +198,7 @@ async def test_each_delayed_downshift_chooses_lowest_mature_speed(
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
-        None, coordinator, enabled_config(), sleep=sleep
+        None, coordinator, custom_auto_config(), sleep=sleep
     )
     await controller.async_activate()
 
@@ -216,7 +216,7 @@ async def test_downshift_timer_resets_and_equality_holds_current_speed() -> None
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
-        None, coordinator, enabled_config(), sleep=sleep
+        None, coordinator, custom_auto_config(), sleep=sleep
     )
     await controller.async_activate()
 
@@ -242,7 +242,7 @@ async def test_external_off_deactivates_notifies_and_cancels_pending_timer() -> 
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
-        None, coordinator, enabled_config(), sleep=sleep
+        None, coordinator, custom_auto_config(), sleep=sleep
     )
     active_states: list[bool] = []
     controller.async_add_listener(lambda: active_states.append(controller.active))
@@ -269,7 +269,7 @@ async def test_failed_coordinator_update_resets_timer_until_next_success() -> No
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
-        None, coordinator, enabled_config(), sleep=sleep
+        None, coordinator, custom_auto_config(), sleep=sleep
     )
     await controller.async_activate()
     coordinator.set_pm25(13)
@@ -298,7 +298,7 @@ async def test_invalid_pm_sample_resets_timer_until_next_valid_sample() -> None:
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
-        None, coordinator, enabled_config(), sleep=sleep
+        None, coordinator, custom_auto_config(), sleep=sleep
     )
     await controller.async_activate()
     coordinator.set_pm25(13)
@@ -327,7 +327,7 @@ async def test_reselecting_auto_keeps_speed_and_existing_downshift_timers() -> N
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
-        None, coordinator, enabled_config(), sleep=sleep
+        None, coordinator, custom_auto_config(), sleep=sleep
     )
     await controller.async_activate()
     coordinator.set_pm25(2)
@@ -348,7 +348,7 @@ async def test_reselecting_auto_keeps_speed_and_existing_downshift_timers() -> N
 @pytest.mark.asyncio
 async def test_reselecting_auto_still_applies_immediate_upward_correction() -> None:
     coordinator = FakeCoordinator(pm25=10, mode="High")
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
     await controller.async_activate()
     coordinator.data = GoveeData(
         is_on=True, pm25=16, filter_life=90, fan_mode="High"
@@ -365,7 +365,7 @@ async def test_reselecting_auto_still_applies_immediate_upward_correction() -> N
 async def test_activation_command_failure_rolls_back_all_ownership() -> None:
     coordinator = FakeCoordinator(pm25=16, mode="Sleep")
     coordinator.command_errors.append(RuntimeError("BLE unavailable"))
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
     active_states: list[bool] = []
     controller.async_add_listener(lambda: active_states.append(controller.active))
 
@@ -384,7 +384,7 @@ async def test_background_command_failure_is_logged_and_waits_for_update(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     coordinator = FakeCoordinator(pm25=0, mode="Sleep")
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
     await controller.async_activate()
     coordinator.command_errors.append(RuntimeError("BLE background failure"))
 
@@ -408,7 +408,7 @@ async def test_background_command_failure_is_logged_and_waits_for_update(
 @pytest.mark.asyncio
 async def test_missing_pm_is_ignored_after_activation_and_commands_are_deduplicated() -> None:
     coordinator = FakeCoordinator(pm25=6, mode="Medium")
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
     await controller.async_activate()
 
     coordinator.set_pm25(None)
@@ -425,7 +425,7 @@ async def test_missing_pm_is_ignored_after_activation_and_commands_are_deduplica
 @pytest.mark.asyncio
 async def test_activation_with_unknown_pm_powers_on_at_existing_or_sleep_speed() -> None:
     coordinator = FakeCoordinator(pm25=None, mode="Auto")
-    controller = CustomAutoController(None, coordinator, enabled_config())
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
 
     await controller.async_activate()
 
@@ -438,7 +438,7 @@ async def test_restore_retains_speed_applies_only_upward_correction_and_restarts
     coordinator = FakeCoordinator(pm25=10, mode="Low")
     sleep = ControlledSleep()
     controller = CustomAutoController(
-        None, coordinator, enabled_config(), sleep=sleep
+        None, coordinator, custom_auto_config(), sleep=sleep
     )
 
     await controller.async_activate(restored_speed=40, restoring=True)
@@ -454,7 +454,7 @@ async def test_cleanup_removes_listener_and_cancels_timers() -> None:
     coordinator = FakeCoordinator(pm25=13, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
-        None, coordinator, enabled_config(), sleep=sleep
+        None, coordinator, custom_auto_config(), sleep=sleep
     )
     await controller.async_activate(restored_speed=100, restoring=True)
     await settle()

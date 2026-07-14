@@ -100,7 +100,6 @@ def test_polling_interval_from_options_defaults_when_missing_or_invalid() -> Non
 def test_custom_auto_options_default_for_existing_entries() -> None:
     config = CustomAutoConfig.from_options({})
 
-    assert config.enabled is False
     assert config.up_thresholds == (3, 5, 9, 15)
     assert config.down_thresholds == (3, 5, 9, 14)
     assert config.down_delays == (7, 5, 5, 5)
@@ -112,8 +111,7 @@ def test_custom_auto_options_parse_every_mutable_value() -> None:
     }
     config = CustomAutoConfig.from_options({"use_custom_auto": True, **values})
 
-    assert config.enabled is True
-    assert config.as_options() == {"use_custom_auto": True, **values}
+    assert config.as_options() == values
 
 
 @pytest.mark.parametrize(

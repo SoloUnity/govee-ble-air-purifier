@@ -10,7 +10,8 @@ CONF_DISCOVERED_DEVICE = "discovered_device"
 CONF_NAME = "name"
 CONF_POLLING_INTERVAL = "polling_interval"
 CONF_PROFILE = "profile"
-CONF_USE_CUSTOM_AUTO = "use_custom_auto"
+# Retained only to remove the former settings toggle from existing options.
+LEGACY_CONF_USE_CUSTOM_AUTO = "use_custom_auto"
 CONF_CUSTOM_AUTO_UP_40 = "custom_auto_up_40"
 CONF_CUSTOM_AUTO_UP_60 = "custom_auto_up_60"
 CONF_CUSTOM_AUTO_UP_80 = "custom_auto_up_80"
@@ -28,4 +29,4 @@ DEFAULT_POLLING_INTERVAL_SECONDS = 15
 MIN_POLLING_INTERVAL_SECONDS = 5
 MAX_POLLING_INTERVAL_SECONDS = 300
 
-PLATFORMS = ["fan", "sensor"]
+PLATFORMS = ["fan", "sensor", "switch"]
