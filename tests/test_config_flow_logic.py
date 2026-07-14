@@ -8,6 +8,12 @@ from custom_components.govee_ble_air_purifier.const import (
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
+from custom_components.govee_ble_air_purifier.controller import (
+    CUSTOM_AUTO_DEFAULTS,
+    CustomAutoConfig,
+    parse_custom_auto_values,
+    validate_custom_auto_values,
+)
 from custom_components.govee_ble_air_purifier.setup_helpers import (
     MANUAL_DEVICE_VALUE,
     build_discovered_device_options,
@@ -89,3 +95,65 @@ def test_polling_interval_from_options_defaults_when_missing_or_invalid() -> Non
         polling_interval_from_options({CONF_POLLING_INTERVAL: "not-a-number"})
         == DEFAULT_POLLING_INTERVAL_SECONDS
     )
+
+
+def test_custom_auto_options_default_for_existing_entries() -> None:
+    config = CustomAutoConfig.from_options({})
+
+    assert config.enabled is False
+    assert config.up_thresholds == (3, 5, 9, 15)
+    assert config.down_thresholds == (3, 5, 9, 14)
+    assert config.down_delays == (7, 5, 5, 5)
+
+
+def test_custom_auto_options_parse_every_mutable_value() -> None:
+    values = {
+        key: value + 1 for key, value in CUSTOM_AUTO_DEFAULTS.items()
+    }
+    config = CustomAutoConfig.from_options({"use_custom_auto": True, **values})
+
+    assert config.enabled is True
+    assert config.as_options() == {"use_custom_auto": True, **values}
+
+
+@pytest.mark.parametrize(
+    ("updates", "error"),
+    [
+        (
+            {"custom_auto_up_60": 3},
+            "up_thresholds_not_ascending",
+        ),
+        (
+            {"custom_auto_down_40": 3},
+            "down_thresholds_not_ascending",
+        ),
+        (
+            {"custom_auto_down_80": 16},
+            "down_threshold_above_up",
+        ),
+    ],
+)
+def test_custom_auto_cross_validation_returns_stable_error_keys(
+    updates: dict[str, int], error: str
+) -> None:
+    values = {**CUSTOM_AUTO_DEFAULTS, **updates}
+
+    with pytest.raises(ValueError, match=error):
+        validate_custom_auto_values(values)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("custom_auto_up_40", -1),
+        ("custom_auto_up_100", 1000),
+        ("custom_auto_delay_20", -1),
+        ("custom_auto_delay_80", 1441),
+        ("custom_auto_up_40", 3.5),
+    ],
+)
+def test_custom_auto_value_parsing_rejects_out_of_range_or_non_integer_values(
+    key: str, value: object
+) -> None:
+    with pytest.raises(ValueError):
+        parse_custom_auto_values({**CUSTOM_AUTO_DEFAULTS, key: value})

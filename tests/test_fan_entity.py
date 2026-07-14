@@ -20,9 +20,34 @@ class _FanEntityFeature(IntFlag):
     PRESET_MODE = 8
 
 
+class _LegacyFanEntityFeature(IntFlag):
+    SET_SPEED = 1
+    PRESET_MODE = 8
+
+
 class _CoordinatorEntity:
     def __init__(self, coordinator) -> None:
         self.coordinator = coordinator
+        self._remove_callbacks = []
+        self.state_writes = 0
+
+    async def async_added_to_hass(self) -> None:
+        return None
+
+    def async_on_remove(self, callback) -> None:
+        self._remove_callbacks.append(callback)
+
+    def async_write_ha_state(self) -> None:
+        self.state_writes += 1
+
+
+class _FanEntity:
+    pass
+
+
+class _RestoreEntity:
+    async def async_get_last_state(self):
+        return getattr(self, "_test_last_state", None)
 
 
 class _HomeAssistantError(Exception):
@@ -56,7 +81,52 @@ class _FakeCoordinator:
         self.data = GoveeData(is_on=True, pm25=7, filter_life=93, fan_mode=mode)
 
 
-def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+class _FakeController:
+    def __init__(self, coordinator: _FakeCoordinator, *, enabled: bool = True) -> None:
+        self.coordinator = coordinator
+        self.enabled = enabled
+        self.active = False
+        self.current_speed = 80
+        self.activations: list[tuple[int | None, bool]] = []
+        self.deactivations = 0
+        self.listeners = []
+
+    def async_add_listener(self, listener):
+        self.listeners.append(listener)
+
+        def remove() -> None:
+            self.listeners.remove(listener)
+
+        return remove
+
+    def notify(self) -> None:
+        for listener in list(self.listeners):
+            listener()
+
+    async def async_activate(
+        self, *, restored_speed: int | None = None, restoring: bool = False
+    ) -> None:
+        self.activations.append((restored_speed, restoring))
+        self.active = True
+        self.notify()
+        if restored_speed is not None:
+            self.current_speed = restored_speed
+        await self.coordinator.async_set_fan_mode(
+            {20: "Sleep", 40: "Low", 60: "Medium", 80: "High", 100: "Turbo"}[
+                self.current_speed
+            ]
+        )
+
+    async def async_deactivate(self) -> None:
+        self.deactivations += 1
+        self.active = False
+        self.notify()
+
+
+def _install_homeassistant_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    fan_features: type[IntFlag] = _FanEntityFeature,
+) -> None:
     homeassistant_module = ModuleType("homeassistant")
     components_module = ModuleType("homeassistant.components")
     fan_module = ModuleType("homeassistant.components.fan")
@@ -66,6 +136,7 @@ def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     helpers_module = ModuleType("homeassistant.helpers")
     device_registry_module = ModuleType("homeassistant.helpers.device_registry")
     entity_platform_module = ModuleType("homeassistant.helpers.entity_platform")
+    restore_state_module = ModuleType("homeassistant.helpers.restore_state")
     update_coordinator_module = ModuleType("homeassistant.helpers.update_coordinator")
     util_module = ModuleType("homeassistant.util")
     percentage_module = ModuleType("homeassistant.util.percentage")
@@ -80,13 +151,14 @@ def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         return options[index]
 
-    fan_module.FanEntity = object
-    fan_module.FanEntityFeature = _FanEntityFeature
+    fan_module.FanEntity = _FanEntity
+    fan_module.FanEntityFeature = fan_features
     config_entries_module.ConfigEntry = object
     core_module.HomeAssistant = object
     exceptions_module.HomeAssistantError = _HomeAssistantError
     device_registry_module.DeviceInfo = _DeviceInfo
     entity_platform_module.AddEntitiesCallback = object
+    restore_state_module.RestoreEntity = _RestoreEntity
     update_coordinator_module.CoordinatorEntity = _CoordinatorEntity
     percentage_module.ordered_list_item_to_percentage = ordered_list_item_to_percentage
     percentage_module.percentage_to_ordered_list_item = percentage_to_ordered_list_item
@@ -100,6 +172,7 @@ def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     components_module.fan = fan_module
     helpers_module.device_registry = device_registry_module
     helpers_module.entity_platform = entity_platform_module
+    helpers_module.restore_state = restore_state_module
     helpers_module.update_coordinator = update_coordinator_module
     util_module.percentage = percentage_module
 
@@ -113,6 +186,7 @@ def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
         "homeassistant.helpers": helpers_module,
         "homeassistant.helpers.device_registry": device_registry_module,
         "homeassistant.helpers.entity_platform": entity_platform_module,
+        "homeassistant.helpers.restore_state": restore_state_module,
         "homeassistant.helpers.update_coordinator": update_coordinator_module,
         "homeassistant.util": util_module,
         "homeassistant.util.percentage": percentage_module,
@@ -121,8 +195,11 @@ def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, name, module)
 
 
-def _import_fan(monkeypatch: pytest.MonkeyPatch):
-    _install_homeassistant_modules(monkeypatch)
+def _import_fan(
+    monkeypatch: pytest.MonkeyPatch,
+    fan_features: type[IntFlag] = _FanEntityFeature,
+):
+    _install_homeassistant_modules(monkeypatch, fan_features)
     sys.modules.pop(MODULE_NAME, None)
     sys.modules.pop("custom_components.govee_ble_air_purifier.entity", None)
     return importlib.import_module(MODULE_NAME)
@@ -134,6 +211,16 @@ def test_loaded_platforms_match_cloud_style_control_layout() -> None:
     assert PLATFORMS == ["fan", "sensor"]
 
 
+def test_fan_import_supports_home_assistant_before_turn_feature_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch, _LegacyFanEntityFeature)
+
+    assert fan.GoveeAirPurifierFan._attr_supported_features == (
+        _LegacyFanEntityFeature.SET_SPEED | _LegacyFanEntityFeature.PRESET_MODE
+    )
+
+
 @pytest.mark.asyncio
 async def test_fan_setup_creates_one_air_purifier_fan(
     monkeypatch: pytest.MonkeyPatch,
@@ -143,7 +230,7 @@ async def test_fan_setup_creates_one_air_purifier_fan(
     entry = SimpleNamespace(
         unique_id="aabbccddeeff",
         data={"name": "Bedroom Purifier"},
-        runtime_data=SimpleNamespace(coordinator=coordinator),
+        runtime_data=SimpleNamespace(coordinator=coordinator, controller=None),
     )
     added_entities = []
 
@@ -191,3 +278,105 @@ async def test_fan_entity_maps_power_speed_and_presets(
 
     await entity.async_set_percentage(0)
     assert coordinator.power_commands[-1] is False
+
+
+@pytest.mark.asyncio
+async def test_custom_auto_reports_auto_with_underlying_percentage_and_manual_disables_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+
+    await entity.async_set_preset_mode("Auto")
+    assert entity.preset_mode == "Auto"
+    assert entity.percentage == 80
+    assert entity.extra_state_attributes == {
+        "custom_auto_active": True,
+        "custom_auto_speed": 80,
+    }
+
+    await entity.async_set_percentage(100)
+    assert controller.deactivations == 1
+    assert coordinator.fan_mode_commands[-1] == "Turbo"
+    assert entity.preset_mode == "Manual"
+
+    await entity.async_set_preset_mode("Auto")
+    await entity.async_set_preset_mode("Manual")
+    assert controller.deactivations == 2
+    assert entity.preset_mode == "Manual"
+
+    await entity.async_set_preset_mode("Auto")
+    await entity.async_turn_off()
+    assert controller.deactivations == 3
+    assert coordinator.power_commands[-1] is False
+
+
+@pytest.mark.asyncio
+async def test_disabled_custom_auto_keeps_hardware_auto_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator, enabled=False)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+
+    await entity.async_set_preset_mode("Auto")
+
+    assert controller.activations == []
+    assert coordinator.fan_mode_commands == ["Auto"]
+    assert entity.preset_mode == "Auto"
+    assert entity.percentage is None
+
+
+@pytest.mark.asyncio
+async def test_restore_resumes_custom_auto_or_converts_it_to_hardware_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    last_state = SimpleNamespace(
+        attributes={"custom_auto_active": True, "custom_auto_speed": 60}
+    )
+
+    coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+    entity._test_last_state = last_state
+    await entity.async_added_to_hass()
+    assert controller.activations == [(60, True)]
+    assert entity.preset_mode == "Auto"
+    assert entity.percentage == 60
+
+    disabled_coordinator = _FakeCoordinator()
+    disabled_controller = _FakeController(disabled_coordinator, enabled=False)
+    disabled_entity = fan.GoveeAirPurifierFan(
+        disabled_coordinator, entry, disabled_controller
+    )
+    disabled_entity._test_last_state = last_state
+    await disabled_entity.async_added_to_hass()
+    assert disabled_controller.activations == []
+    assert disabled_coordinator.fan_mode_commands == ["Auto"]
+
+
+@pytest.mark.asyncio
+async def test_fan_writes_controller_state_and_removes_listener_on_entity_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+
+    await entity.async_added_to_hass()
+    controller.active = True
+    controller.notify()
+
+    assert entity.state_writes == 1
+    assert len(controller.listeners) == 1
+    entity._remove_callbacks[0]()
+    assert controller.listeners == []

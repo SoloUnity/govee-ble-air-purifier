@@ -37,8 +37,18 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
     )
     entry = SimpleNamespace(
         data={"address": "aa:bb:cc:dd:ee:ff"},
+        options={"use_custom_auto": True, "custom_auto_up_40": 3},
         entry_id="entry-1",
-        runtime_data=SimpleNamespace(coordinator=runtime_coordinator),
+        runtime_data=SimpleNamespace(
+            coordinator=runtime_coordinator,
+            controller=SimpleNamespace(
+                diagnostics=lambda: {
+                    "enabled": True,
+                    "active": True,
+                    "current_speed": 80,
+                }
+            ),
+        ),
     )
     hass = SimpleNamespace(
         data={diagnostics.DOMAIN: {entry.entry_id: legacy_coordinator}}
@@ -48,10 +58,16 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
 
     assert result == {
         "entry": {"address": "XX:XX:XX:DD:EE:FF"},
+        "options": {"use_custom_auto": True, "custom_auto_up_40": 3},
         "state": {
             "is_on": True,
             "fan_mode": "Auto",
             "pm25": 9,
             "filter_life": 91,
+        },
+        "custom_auto": {
+            "enabled": True,
+            "active": True,
+            "current_speed": 80,
         },
     }

@@ -1,5 +1,6 @@
 import importlib
 import sys
+from enum import Enum
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -23,6 +24,9 @@ class _ConfigFlow:
 
     def _abort_if_unique_id_configured(self, **kwargs: object) -> None:
         return None
+
+    def async_abort(self, **kwargs: object) -> dict[str, object]:
+        return {"type": "abort", **kwargs}
 
 
 class _OptionsFlow:
@@ -94,9 +98,34 @@ class _VoluptuousRange:
         return value
 
 
+class _BooleanSelector:
+    def __call__(self, value: object) -> object:
+        return value
+
+
+class _NumberSelectorMode(Enum):
+    BOX = "box"
+
+
+class _NumberSelectorConfig:
+    def __init__(self, **kwargs: object) -> None:
+        self.__dict__.update(kwargs)
+
+
+class _NumberSelector:
+    def __init__(self, config: _NumberSelectorConfig) -> None:
+        self.config = config
+
+    def __call__(self, value: object) -> object:
+        return value
+
+
 def _assert_schema_values_are_serializable(schema: object) -> None:
     for value in schema.schema.values():
-        if isinstance(value, (_VoluptuousAll, _VoluptuousIn)):
+        if isinstance(
+            value,
+            (_VoluptuousAll, _VoluptuousIn, _BooleanSelector, _NumberSelector),
+        ):
             continue
         assert not (
             callable(value) and not isinstance(value, type)
@@ -111,6 +140,8 @@ def _install_homeassistant_modules(
     config_entries_module = ModuleType("homeassistant.config_entries")
     const_module = ModuleType("homeassistant.const")
     data_entry_flow_module = ModuleType("homeassistant.data_entry_flow")
+    helpers_module = ModuleType("homeassistant.helpers")
+    selector_module = ModuleType("homeassistant.helpers.selector")
     voluptuous_module = ModuleType("voluptuous")
 
     config_entries_module.ConfigFlow = _ConfigFlow
@@ -131,10 +162,16 @@ def _install_homeassistant_modules(
     )
     voluptuous_module.Range = _VoluptuousRange
     voluptuous_module.Schema = _VoluptuousSchema
+    selector_module.BooleanSelector = _BooleanSelector
+    selector_module.NumberSelector = _NumberSelector
+    selector_module.NumberSelectorConfig = _NumberSelectorConfig
+    selector_module.NumberSelectorMode = _NumberSelectorMode
 
     homeassistant_module.config_entries = config_entries_module
     homeassistant_module.components = components_module
+    homeassistant_module.helpers = helpers_module
     components_module.bluetooth = bluetooth_module
+    helpers_module.selector = selector_module
 
     monkeypatch.setitem(sys.modules, "homeassistant", homeassistant_module)
     monkeypatch.setitem(sys.modules, "homeassistant.components", components_module)
@@ -148,6 +185,10 @@ def _install_homeassistant_modules(
     monkeypatch.setitem(
         sys.modules, "homeassistant.data_entry_flow", data_entry_flow_module
     )
+    monkeypatch.setitem(sys.modules, "homeassistant.helpers", helpers_module)
+    monkeypatch.setitem(
+        sys.modules, "homeassistant.helpers.selector", selector_module
+    )
     monkeypatch.setitem(sys.modules, "voluptuous", voluptuous_module)
 
 
@@ -155,6 +196,12 @@ def _import_config_flow(monkeypatch: pytest.MonkeyPatch, bluetooth_module: Modul
     _install_homeassistant_modules(monkeypatch, bluetooth_module)
     sys.modules.pop(MODULE_NAME, None)
     return importlib.import_module(MODULE_NAME)
+
+
+def _schema_by_key(schema: _VoluptuousSchema) -> dict[str, tuple[object, object]]:
+    return {
+        marker.key: (marker, value) for marker, value in schema.schema.items()
+    }
 
 
 @pytest.mark.asyncio
@@ -209,3 +256,134 @@ async def test_config_flow_schemas_do_not_expose_custom_callable_validators(
     )
     options_result = await options_flow.async_step_init()
     _assert_schema_values_are_serializable(options_result["data_schema"])
+
+
+@pytest.mark.asyncio
+async def test_setup_and_options_use_real_boolean_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+    setup = await flow.async_step_user()
+    options = await config_flow.GoveeBleAirPurifierOptionsFlow(
+        SimpleNamespace(options={})
+    ).async_step_init()
+
+    assert isinstance(
+        _schema_by_key(setup["data_schema"])["use_custom_auto"][1],
+        _BooleanSelector,
+    )
+    assert isinstance(
+        _schema_by_key(options["data_schema"])["use_custom_auto"][1],
+        _BooleanSelector,
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_auto_form_uses_bounded_box_number_selectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user(
+        {
+            "discovered_device": "__manual__",
+            "address": "AA:BB:CC:DD:EE:FF",
+            "name": "Bedroom",
+            "polling_interval": 15,
+            "use_custom_auto": True,
+        }
+    )
+    fields = _schema_by_key(result["data_schema"])
+
+    assert result["step_id"] == "custom_auto"
+    assert len(fields) == 12
+    for key, (_, selector) in fields.items():
+        assert isinstance(selector, _NumberSelector)
+        assert selector.config.mode is _NumberSelectorMode.BOX
+        assert selector.config.min == 0
+        assert selector.config.max == (1440 if "delay" in key else 999)
+        assert selector.config.step == 1
+
+
+@pytest.mark.asyncio
+async def test_setup_stores_defaults_and_reports_cross_field_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+    await flow.async_step_user(
+        {
+            "discovered_device": "__manual__",
+            "address": "AA:BB:CC:DD:EE:FF",
+            "name": "Bedroom",
+            "polling_interval": 15,
+            "use_custom_auto": True,
+        }
+    )
+    invalid = {
+        **config_flow.CUSTOM_AUTO_DEFAULTS,
+        "custom_auto_up_60": 3,
+    }
+
+    error_result = await flow.async_step_custom_auto(invalid)
+    assert error_result["errors"] == {"base": "up_thresholds_not_ascending"}
+
+    result = await flow.async_step_custom_auto(config_flow.CUSTOM_AUTO_DEFAULTS)
+    assert result["type"] == "create_entry"
+    assert result["options"] == {
+        "polling_interval": 15,
+        "use_custom_auto": True,
+        **config_flow.CUSTOM_AUTO_DEFAULTS,
+    }
+
+
+@pytest.mark.asyncio
+async def test_options_preserve_rules_when_disabled_and_edit_them_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    existing = {
+        "polling_interval": 30,
+        "use_custom_auto": True,
+        **config_flow.CUSTOM_AUTO_DEFAULTS,
+    }
+    disabled_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
+        SimpleNamespace(options=existing)
+    )
+
+    disabled = await disabled_flow.async_step_init(
+        {"polling_interval": 60, "use_custom_auto": False}
+    )
+    assert disabled["data"] == {
+        **existing,
+        "polling_interval": 60,
+        "use_custom_auto": False,
+    }
+
+    enabled_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
+        SimpleNamespace(options=disabled["data"])
+    )
+    form = await enabled_flow.async_step_init(
+        {"polling_interval": 60, "use_custom_auto": True}
+    )
+    assert form["step_id"] == "custom_auto"
+    changed = {
+        **config_flow.CUSTOM_AUTO_DEFAULTS,
+        "custom_auto_delay_20": 12,
+    }
+    saved = await enabled_flow.async_step_custom_auto(changed)
+    assert saved["data"]["custom_auto_delay_20"] == 12

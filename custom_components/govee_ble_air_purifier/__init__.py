@@ -7,6 +7,7 @@ from typing import Any
 
 from .client import GoveeBleClient
 from .const import CONF_ADDRESS, CONF_PROFILE, PLATFORMS
+from .controller import CustomAutoConfig, CustomAutoController
 from .coordinator import GoveeCoordinator, GoveeRuntimeData
 from .profiles import get_profile
 from .setup_helpers import polling_interval_from_options
@@ -28,7 +29,15 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
     )
     await coordinator.async_config_entry_first_refresh()
 
-    entry.runtime_data = GoveeRuntimeData(coordinator=coordinator, profile=profile)
+    controller = CustomAutoController(
+        hass,
+        coordinator,
+        CustomAutoConfig.from_options(entry.options),
+        config_entry=entry,
+    )
+    entry.runtime_data = GoveeRuntimeData(
+        coordinator=coordinator, profile=profile, controller=controller
+    )
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -38,6 +47,9 @@ async def async_unload_entry(hass: Any, entry: Any) -> bool:
     """Unload a config entry."""
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        await entry.runtime_data.controller.async_stop()
+        await entry.runtime_data.coordinator.async_shutdown()
     return unload_ok
 
 

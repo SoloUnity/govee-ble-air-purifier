@@ -8,34 +8,85 @@
           "discovered_device": "Recently seen purifier",
           "address": "BLE address for manual setup",
           "name": "Name",
-          "polling_interval": "Polling interval in seconds"
+          "polling_interval": "Polling interval in seconds",
+          "use_custom_auto": "Use Custom Auto"
         },
         "data_description": {
           "address": "Only required when Recently seen purifier is set to Enter address manually.",
-          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life."
+          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life.",
+          "use_custom_auto": "When enabled, selecting the Auto preset uses these Home Assistant PM2.5 rules instead of the purifier's hardware Auto mode."
+        }
+      },
+      "custom_auto": {
+        "title": "Custom Auto Rules",
+        "description": "Set immediate upward boundaries and delayed strict-below downward boundaries. Each downward delay starts independently and resets if its PM2.5 condition stops being true.",
+        "data": {
+          "custom_auto_up_40": "Step up to 40% above PM2.5",
+          "custom_auto_up_60": "Step up to 60% above PM2.5",
+          "custom_auto_up_80": "Step up to 80% above PM2.5",
+          "custom_auto_up_100": "Step up to 100% above PM2.5",
+          "custom_auto_down_80": "Step down to 80% below PM2.5",
+          "custom_auto_delay_80": "Delay before stepping down to 80%",
+          "custom_auto_down_60": "Step down to 60% below PM2.5",
+          "custom_auto_delay_60": "Delay before stepping down to 60%",
+          "custom_auto_down_40": "Step down to 40% below PM2.5",
+          "custom_auto_delay_40": "Delay before stepping down to 40%",
+          "custom_auto_down_20": "Step down to 20% below PM2.5",
+          "custom_auto_delay_20": "Delay before stepping down to 20%"
         }
       }
     },
     "error": {
-      "address_required": "Enter a BLE address or choose a recently seen purifier."
+      "address_required": "Enter a BLE address or choose a recently seen purifier.",
+      "invalid_custom_auto_value": "Enter whole numbers within the displayed ranges.",
+      "up_thresholds_not_ascending": "Upward PM2.5 thresholds must increase strictly from 40% through 100%.",
+      "down_thresholds_not_ascending": "Downward PM2.5 thresholds must increase strictly from the 20% boundary through the 80% boundary.",
+      "down_threshold_above_up": "Each downward threshold must be less than or equal to its corresponding upward threshold."
     },
     "abort": {
       "already_configured": "This air purifier is already configured.",
-      "not_supported": "This BLE device is not a supported Govee H7124 air purifier."
+      "not_supported": "This BLE device is not a supported Govee H7124 air purifier.",
+      "unknown": "Setup state was lost. Start setup again."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Govee BLE Air Purifier Options",
-        "description": "Adjust how often Home Assistant actively connects to the purifier over BLE.",
+        "description": "Adjust polling and choose whether Auto uses the purifier's hardware behavior or Home Assistant Custom Auto rules.",
         "data": {
-          "polling_interval": "Polling interval in seconds"
+          "polling_interval": "Polling interval in seconds",
+          "use_custom_auto": "Use Custom Auto"
         },
         "data_description": {
-          "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices."
+          "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices.",
+          "use_custom_auto": "Disabling this preserves your rules and makes Auto use the purifier's built-in mode."
+        }
+      },
+      "custom_auto": {
+        "title": "Custom Auto Rules",
+        "description": "Set immediate upward boundaries and delayed strict-below downward boundaries. Each downward delay starts independently and resets if its PM2.5 condition stops being true.",
+        "data": {
+          "custom_auto_up_40": "Step up to 40% above PM2.5",
+          "custom_auto_up_60": "Step up to 60% above PM2.5",
+          "custom_auto_up_80": "Step up to 80% above PM2.5",
+          "custom_auto_up_100": "Step up to 100% above PM2.5",
+          "custom_auto_down_80": "Step down to 80% below PM2.5",
+          "custom_auto_delay_80": "Delay before stepping down to 80%",
+          "custom_auto_down_60": "Step down to 60% below PM2.5",
+          "custom_auto_delay_60": "Delay before stepping down to 60%",
+          "custom_auto_down_40": "Step down to 40% below PM2.5",
+          "custom_auto_delay_40": "Delay before stepping down to 40%",
+          "custom_auto_down_20": "Step down to 20% below PM2.5",
+          "custom_auto_delay_20": "Delay before stepping down to 20%"
         }
       }
+    },
+    "error": {
+      "invalid_custom_auto_value": "Enter whole numbers within the displayed ranges.",
+      "up_thresholds_not_ascending": "Upward PM2.5 thresholds must increase strictly from 40% through 100%.",
+      "down_thresholds_not_ascending": "Downward PM2.5 thresholds must increase strictly from the 20% boundary through the 80% boundary.",
+      "down_threshold_above_up": "Each downward threshold must be less than or equal to its corresponding upward threshold."
     }
   },
   "entity": {

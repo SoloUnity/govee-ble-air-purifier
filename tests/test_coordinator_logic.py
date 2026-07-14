@@ -69,6 +69,7 @@ async def test_coordinator_fetches_power_status_pm25_and_filter_life() -> None:
     data = await coordinator._async_update_data()
 
     assert data == GoveeData(is_on=False, pm25=12, filter_life=87, fan_mode=None)
+    assert coordinator.last_pm25_update_success is True
     assert POLLING_INTERVAL == timedelta(seconds=15)
 
 
@@ -84,6 +85,7 @@ async def test_coordinator_reuses_previous_pm25_when_latest_is_invalid() -> None
     data = await coordinator._async_update_data()
 
     assert data == GoveeData(is_on=False, pm25=42, filter_life=87, fan_mode=None)
+    assert coordinator.last_pm25_update_success is False
 
 
 @pytest.mark.asyncio
@@ -255,3 +257,19 @@ async def test_fan_mode_command_cancels_pending_background_refresh() -> None:
         assert client.commands == [FAN_MODE_COMMANDS["Turbo"]]
     finally:
         await _cleanup_tasks(hass.tasks)
+
+
+@pytest.mark.asyncio
+async def test_coordinator_shutdown_cancels_pending_background_refresh() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    coordinator = GoveeCoordinator(None, FakeClient(), update_method_only=True)
+    _enable_background_refresh_tasks(coordinator, hass)
+    coordinator._schedule_background_refresh()
+    pending_refresh = hass.tasks[-1]
+
+    await coordinator.async_shutdown()
+
+    assert pending_refresh.cancelled()
+    assert coordinator._background_refresh_task is None

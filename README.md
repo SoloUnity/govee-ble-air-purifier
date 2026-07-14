@@ -15,6 +15,7 @@ It also gives you basic control of the purifier and shows remaining filter life.
 - Filter life percentage
 - Air purifier power control
 - Fan speed and mode control
+- Optional integration-managed Custom Auto fan control
 
 ## Installation
 
@@ -37,6 +38,25 @@ It also gives you basic control of the purifier and shows remaining filter life.
 2. Choose Add Integration.
 3. Search for Govee BLE Air Purifier.
 4. Choose your purifier if it appears, or enter its Bluetooth address manually.
+
+## Custom Auto
+
+`Use Custom Auto` is available during setup and under the device's integration
+Options. It is disabled by default, so existing configurations and new setups
+continue to use the purifier's built-in Auto mode unless you enable it.
+
+When enabled, selecting the fan's Auto preset keeps the logical preset on Auto
+while Home Assistant sends the underlying manual speeds Sleep (20%), Low (40%),
+Medium (60%), High (80%), and Turbo (100%) according to PM2.5. Selecting a
+manual percentage or Manual preset, or turning the purifier off, stops Custom
+Auto. Selecting Auto starts it again.
+
+The default rules step up immediately to 40% above 3, 60% above 5, 80% above
+9, and 100% above 15 ug/m3. They step down only while PM2.5 remains strictly
+below the configured boundary: to 80% below 14 after 5 minutes, 60% below 9
+after 5 minutes, 40% below 5 after 5 minutes, and 20% below 3 after 7 minutes.
+Each downward threshold and delay can be changed independently in Options.
+Crossing back to or above a downward boundary resets that boundary's timer.
 
 ## Notes
 

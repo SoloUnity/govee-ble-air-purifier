@@ -21,6 +21,7 @@ async def async_get_config_entry_diagnostics(
 
     runtime_data = getattr(entry, "runtime_data", None)
     coordinator = getattr(runtime_data, "coordinator", None)
+    controller = getattr(runtime_data, "controller", None)
     if coordinator is None:
         coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     state = None
@@ -31,7 +32,12 @@ async def async_get_config_entry_diagnostics(
             "pm25": coordinator.data.pm25,
             "filter_life": coordinator.data.filter_life,
         }
-    return {"entry": data, "state": state}
+    return {
+        "entry": data,
+        "options": dict(getattr(entry, "options", {})),
+        "state": state,
+        "custom_auto": controller.diagnostics() if controller is not None else None,
+    }
 
 
 def _redact_address(address: str) -> str:

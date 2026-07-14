@@ -33,12 +33,13 @@ class GoveeData:
     fan_mode: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class GoveeRuntimeData:
     """Runtime objects attached to a Home Assistant config entry."""
 
     coordinator: "GoveeCoordinator"
     profile: ModelProfile
+    controller: Any
 
 
 class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
@@ -58,6 +59,8 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         self.profile = profile
         self.polling_interval = polling_interval
         self.data: GoveeData | None = None
+        self.last_poll_success = False
+        self.last_pm25_update_success = False
         self._last_fan_mode: str | None = None
         self._background_refresh_task: asyncio.Task[Any] | None = None
         self._standalone = update_method_only or DataUpdateCoordinator is object
@@ -99,13 +102,23 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
             task = asyncio.create_task(refresh_later())
         self._background_refresh_task = task
 
-    def _cancel_background_refresh(self) -> None:
+    def _cancel_background_refresh(self) -> asyncio.Task[Any] | None:
         """Cancel a scheduled refresh so commands can use BLE first."""
 
         task = self._background_refresh_task
         if task is not None and not task.done():
             task.cancel()
         self._background_refresh_task = None
+        return task
+
+    async def async_shutdown(self) -> None:
+        """Cancel delayed command refreshes and stop coordinator polling."""
+
+        task = self._cancel_background_refresh()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        if not self._standalone and DataUpdateCoordinator is not object:
+            await super().async_shutdown()  # type: ignore[misc]
 
     async def _async_update_data(self) -> GoveeData:
         """Fetch current state from the BLE client."""
@@ -113,7 +126,11 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         try:
             client_data = await self.client.async_get_state()
         except Exception as err:  # pragma: no cover - depends on HA runtime
+            self.last_poll_success = False
+            self.last_pm25_update_success = False
             raise UpdateFailed(str(err)) from err
+        self.last_poll_success = True
+        self.last_pm25_update_success = client_data.pm25 is not None
         current = self.data or GoveeData()
         data = GoveeData(
             is_on=client_data.is_on,
