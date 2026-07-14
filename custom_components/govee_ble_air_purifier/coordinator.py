@@ -62,6 +62,7 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         self.last_poll_success = False
         self.last_pm25_update_success = False
         self._last_fan_mode: str | None = None
+        self._state_lock = asyncio.Lock()
         self._background_refresh_task: asyncio.Task[Any] | None = None
         self._standalone = update_method_only or DataUpdateCoordinator is object
         if not self._standalone:
@@ -123,23 +124,26 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
     async def _async_update_data(self) -> GoveeData:
         """Fetch current state from the BLE client."""
 
-        try:
-            client_data = await self.client.async_get_state()
-        except Exception as err:  # pragma: no cover - depends on HA runtime
-            self.last_poll_success = False
-            self.last_pm25_update_success = False
-            raise UpdateFailed(str(err)) from err
-        self.last_poll_success = True
-        self.last_pm25_update_success = client_data.pm25 is not None
-        current = self.data or GoveeData()
-        data = GoveeData(
-            is_on=client_data.is_on,
-            pm25=client_data.pm25 if client_data.pm25 is not None else current.pm25,
-            filter_life=client_data.filter_life,
-            fan_mode=self._last_fan_mode or client_data.fan_mode,
-        )
-        self.data = data
-        return data
+        async with self._state_lock:
+            try:
+                client_data = await self.client.async_get_state()
+            except Exception as err:  # pragma: no cover - depends on HA runtime
+                self.last_poll_success = False
+                self.last_pm25_update_success = False
+                raise UpdateFailed(str(err)) from err
+            self.last_poll_success = True
+            self.last_pm25_update_success = client_data.pm25 is not None
+            current = self.data or GoveeData()
+            data = GoveeData(
+                is_on=client_data.is_on,
+                pm25=(
+                    client_data.pm25 if client_data.pm25 is not None else current.pm25
+                ),
+                filter_life=client_data.filter_life,
+                fan_mode=self._last_fan_mode or client_data.fan_mode,
+            )
+            self.data = data
+            return data
 
     async def async_request_refresh(self) -> None:
         """Refresh data in standalone tests or delegate to HA in production."""
@@ -153,19 +157,20 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         """Set power and refresh shared state."""
 
         self._cancel_background_refresh()
-        result = await self.client.async_set_power(is_on)
-        confirmed_is_on = is_on if result is None else result
-        if not confirmed_is_on:
-            self._last_fan_mode = None
-        current = self.data or GoveeData()
-        self._publish_data(
-            GoveeData(
-                is_on=confirmed_is_on,
-                pm25=current.pm25,
-                filter_life=current.filter_life,
-                fan_mode=current.fan_mode if confirmed_is_on else None,
+        async with self._state_lock:
+            result = await self.client.async_set_power(is_on)
+            confirmed_is_on = is_on if result is None else result
+            if not confirmed_is_on:
+                self._last_fan_mode = None
+            current = self.data or GoveeData()
+            self._publish_data(
+                GoveeData(
+                    is_on=confirmed_is_on,
+                    pm25=current.pm25,
+                    filter_life=current.filter_life,
+                    fan_mode=current.fan_mode if confirmed_is_on else None,
+                )
             )
-        )
         self._schedule_background_refresh()
 
     async def async_set_fan_mode(self, mode: str) -> None:
@@ -176,36 +181,37 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         self._cancel_background_refresh()
         if self.data is None:
             await self.async_request_refresh()
-        if self.data is not None and self.data.is_on is False:
-            if hasattr(self.client, "async_set_power_and_fan_mode"):
-                result = await self.client.async_set_power_and_fan_mode(mode)
-                confirmed_is_on = (
-                    result.is_on
-                    if isinstance(result, GoveeData) and result.is_on is not None
-                    else True
-                )
-                confirmed_mode = (
-                    result.fan_mode
-                    if isinstance(result, GoveeData) and result.fan_mode is not None
-                    else mode
-                )
+        async with self._state_lock:
+            if self.data is not None and self.data.is_on is False:
+                if hasattr(self.client, "async_set_power_and_fan_mode"):
+                    result = await self.client.async_set_power_and_fan_mode(mode)
+                    confirmed_is_on = (
+                        result.is_on
+                        if isinstance(result, GoveeData) and result.is_on is not None
+                        else True
+                    )
+                    confirmed_mode = (
+                        result.fan_mode
+                        if isinstance(result, GoveeData) and result.fan_mode is not None
+                        else mode
+                    )
+                else:
+                    power_result = await self.client.async_set_power(True)
+                    mode_result = await self.client.async_set_fan_mode(mode)
+                    confirmed_is_on = True if power_result is None else power_result
+                    confirmed_mode = mode if mode_result is None else mode_result
             else:
-                power_result = await self.client.async_set_power(True)
                 mode_result = await self.client.async_set_fan_mode(mode)
-                confirmed_is_on = True if power_result is None else power_result
+                confirmed_is_on = True if self.data is None else self.data.is_on
                 confirmed_mode = mode if mode_result is None else mode_result
-        else:
-            mode_result = await self.client.async_set_fan_mode(mode)
-            confirmed_is_on = True if self.data is None else self.data.is_on
-            confirmed_mode = mode if mode_result is None else mode_result
-        self._last_fan_mode = confirmed_mode
-        current = self.data or GoveeData()
-        self._publish_data(
-            GoveeData(
-                is_on=confirmed_is_on,
-                pm25=current.pm25,
-                filter_life=current.filter_life,
-                fan_mode=confirmed_mode,
+            self._last_fan_mode = confirmed_mode
+            current = self.data or GoveeData()
+            self._publish_data(
+                GoveeData(
+                    is_on=confirmed_is_on,
+                    pm25=current.pm25,
+                    filter_life=current.filter_life,
+                    fan_mode=confirmed_mode,
+                )
             )
-        )
         self._schedule_background_refresh()

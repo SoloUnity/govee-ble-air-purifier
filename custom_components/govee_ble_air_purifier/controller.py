@@ -247,7 +247,7 @@ class CustomAutoController:
                     if update_succeeded:
                         self._update_downshift_timers(pm25)
                 self._notify_state_listeners()
-            except Exception:
+            except BaseException:
                 self._current_speed = previous_speed
                 timer_tasks = self._deactivate_locked()
                 raise
@@ -260,6 +260,31 @@ class CustomAutoController:
 
         async with self._lock:
             timer_tasks = self._deactivate_locked()
+        if timer_tasks:
+            await asyncio.gather(*timer_tasks, return_exceptions=True)
+
+    async def async_handoff(self, command: Callable[[], Awaitable[None]]) -> None:
+        """Run a user command and release ownership only after it succeeds."""
+
+        timer_tasks: tuple[asyncio.Task[Any], ...] = ()
+        async with self._lock:
+            was_active = self._active
+            previous_speed = self._current_speed
+            try:
+                await command()
+            except BaseException:
+                if was_active and previous_speed in CUSTOM_AUTO_SPEEDS:
+                    try:
+                        await self.coordinator.async_set_fan_mode(
+                            SPEED_TO_MODE[previous_speed]
+                        )
+                    except Exception:
+                        LOGGER.exception(
+                            "Failed to reassert Custom Auto speed after handoff failure"
+                        )
+                raise
+            if was_active:
+                timer_tasks = self._deactivate_locked()
         if timer_tasks:
             await asyncio.gather(*timer_tasks, return_exceptions=True)
 
@@ -296,6 +321,11 @@ class CustomAutoController:
                 self._waiting_for_successful_update = False
             elif getattr(self.coordinator.data, "is_on", None) is not False:
                 return
+        self._schedule_evaluation()
+
+    def _schedule_evaluation(self) -> None:
+        """Schedule evaluation without treating it as a fresh data update."""
+
         self._evaluation_pending = True
         if self._evaluation_task is None or self._evaluation_task.done():
             self._evaluation_task = self._create_task(self._async_run_evaluations())
@@ -316,12 +346,6 @@ class CustomAutoController:
             async with self._lock:
                 if self._active:
                     self._waiting_for_successful_update = True
-                    timer_tasks = self._cancel_downshift_timers()
-                    self._mature_downshifts.clear()
-                else:
-                    timer_tasks = ()
-            if timer_tasks:
-                await asyncio.gather(*timer_tasks, return_exceptions=True)
         finally:
             self._evaluation_task = None
 
@@ -333,10 +357,6 @@ class CustomAutoController:
                 await asyncio.gather(*timer_tasks, return_exceptions=True)
             return
         if not self._coordinator_update_succeeded():
-            timer_tasks = self._cancel_downshift_timers()
-            self._mature_downshifts.clear()
-            if timer_tasks:
-                await asyncio.gather(*timer_tasks, return_exceptions=True)
             return
         if self._waiting_for_successful_update:
             return
@@ -346,10 +366,10 @@ class CustomAutoController:
             return
 
         required_speed = self._speed_for_pm(pm25)
+        self._update_downshift_timers(pm25)
         if required_speed > self._current_speed:
             await self._async_set_speed(required_speed)
 
-        self._update_downshift_timers(pm25)
         eligible = [
             speed
             for speed in self._mature_downshifts
@@ -377,7 +397,7 @@ class CustomAutoController:
         self._current_speed = speed
         try:
             await self.coordinator.async_set_fan_mode(SPEED_TO_MODE[speed])
-        except Exception:
+        except BaseException:
             self._current_speed = previous_speed
             raise
 
@@ -388,7 +408,7 @@ class CustomAutoController:
             self.config.down_delays,
             strict=True,
         ):
-            if pm25 < threshold:
+            if pm25 <= threshold:
                 if speed not in self._timer_tasks and speed not in self._mature_downshifts:
                     self._timer_tasks[speed] = self._create_task(
                         self._async_downshift_timer(speed, delay)
@@ -408,12 +428,14 @@ class CustomAutoController:
             self._timer_tasks.pop(speed, None)
             if (
                 self._active
-                and not self._waiting_for_successful_update
-                and self._coordinator_update_succeeded()
                 and getattr(self.coordinator.data, "is_on", None) is not False
             ):
                 self._mature_downshifts.add(speed)
-                self._handle_coordinator_update()
+                if (
+                    self._coordinator_update_succeeded()
+                    and not self._waiting_for_successful_update
+                ):
+                    self._schedule_evaluation()
 
     def _deactivate_locked(self) -> tuple[asyncio.Task[Any], ...]:
         """Release controller ownership while the evaluation lock is held."""

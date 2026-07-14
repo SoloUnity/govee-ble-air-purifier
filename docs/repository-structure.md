@@ -5,6 +5,9 @@ controlling Govee H7124-style air purifiers over Bluetooth Low Energy (BLE).
 The integration communicates locally with the purifier and does not require a
 cloud service.
 
+For a detailed explanation of runtime calls, shared state, locking, Custom Auto,
+and failure handling, see [`architecture.md`](architecture.md).
+
 ## Top-Level Layout
 
 ```text
@@ -76,13 +79,13 @@ separate from Home Assistant entity behavior.
 - `entity.py` provides common device information and unique-ID behavior.
 - `fan.py` exposes power, manual fan speeds, and automatic/manual preset modes.
 - `sensor.py` exposes PM2.5 and remaining filter-life measurements.
-- `switch.py` and `select.py` contain older power and mode entity implementations
-  but are not currently loaded. Their functionality is represented by the fan
-  entity.
+- `switch.py` exposes the active Custom Auto control. `select.py` contains an
+  older mode entity implementation that is not currently loaded; mode selection
+  is represented by the fan entity.
 - `diagnostics.py` returns redacted configuration and current state for Home
   Assistant diagnostics.
 
-The active platforms are `fan` and `sensor`, as declared in `const.py`.
+The active platforms are `fan`, `sensor`, and `switch`, as declared in `const.py`.
 
 ## Runtime Data Flow
 
@@ -164,8 +167,9 @@ python -m pytest -q
 - `hacs.json` describes the repository to the Home Assistant Community Store.
 - `pyproject.toml` defines Python requirements, pytest settings, and Ruff
   settings.
-- `.github/workflows/validate.yml` runs HACS and Home Assistant integration
-  validation for pushes and pull requests.
+- `.github/workflows/validate.yml` runs Ruff, behavioral tests, real Home
+  Assistant runtime smoke tests, HACS validation, and hassfest for pushes and
+  pull requests.
 - `brand/icon.png` contains the integration icon used by HACS.
 
 ## Common Extension Points

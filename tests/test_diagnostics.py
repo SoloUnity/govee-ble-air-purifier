@@ -35,7 +35,7 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
         data=GoveeData(is_on=False, fan_mode="Sleep", pm25=99, filter_life=1)
     )
     entry = SimpleNamespace(
-        data={"address": "aa:bb:cc:dd:ee:ff"},
+        data={"address": "aa:bb:cc:dd:ee:ff", "name": "GVH7124ABCD"},
         options={"use_custom_auto": True, "custom_auto_up_40": 3},
         entry_id="entry-1",
         runtime_data=SimpleNamespace(
@@ -55,7 +55,7 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
     result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
 
     assert result == {
-        "entry": {"address": "XX:XX:XX:DD:EE:FF"},
+        "entry": {"address": "XX:XX:XX:XX:XX:XX", "name": "GVH7124"},
         "options": {"use_custom_auto": True, "custom_auto_up_40": 3},
         "state": {
             "is_on": True,
@@ -68,3 +68,11 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
             "current_speed": 80,
         },
     }
+
+
+def test_diagnostics_redacts_all_uuid_address_components() -> None:
+    from custom_components.govee_ble_air_purifier.diagnostics import _redact_address
+
+    assert _redact_address("a1b2c3d4-e5f6-47a8-9012-123456789abc") == (
+        "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+    )

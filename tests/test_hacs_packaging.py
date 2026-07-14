@@ -18,7 +18,7 @@ def test_hacs_repository_metadata_exists_and_uses_component_layout() -> None:
     hacs = _read_json(ROOT / "hacs.json")
 
     assert hacs["name"] == "Govee BLE Air Purifier"
-    assert "homeassistant" in hacs
+    assert hacs["homeassistant"] == "2024.4.0"
     assert "hacs" in hacs
     assert "content_in_root" not in hacs
     assert (ROOT / "custom_components" / DOMAIN / "manifest.json").is_file()
@@ -37,7 +37,7 @@ def test_integration_manifest_has_hacs_required_metadata() -> None:
     assert manifest["iot_class"] == "local_polling"
     assert manifest["integration_type"] == "device"
     assert manifest["dependencies"] == ["bluetooth_adapters"]
-    assert "bleak-retry-connector" in manifest["requirements"][0]
+    assert "requirements" not in manifest
     assert "bluetooth" not in manifest
 
 
@@ -89,3 +89,15 @@ def test_hacs_packaging_metadata_does_not_use_placeholders() -> None:
         text = path.read_text(encoding="utf-8")
         assert PLACEHOLDER_REPOSITORY not in text
         assert PLACEHOLDER_CODEOWNER not in text
+
+
+def test_english_translation_matches_strings_and_uses_inclusive_returns() -> None:
+    strings = _read_json(ROOT / "custom_components" / DOMAIN / "strings.json")
+    translation = _read_json(
+        ROOT / "custom_components" / DOMAIN / "translations" / "en.json"
+    )
+
+    assert translation == strings
+    serialized = json.dumps(strings)
+    assert "at or below" in serialized
+    assert "return below" not in serialized.lower()

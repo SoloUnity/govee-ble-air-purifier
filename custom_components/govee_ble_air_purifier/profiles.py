@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import re
+from uuid import UUID
 
 from .models import GoveeAirPurifierState
 from .protocol import (
@@ -99,3 +100,22 @@ def normalize_ble_address(address: str) -> str:
     """Normalize a BLE address for stable config-entry unique IDs."""
 
     return re.sub(r"[^0-9a-f]", "", address.lower())
+
+
+def canonicalize_ble_address(address: str) -> str:
+    """Validate and canonicalize a platform BLE address."""
+
+    value = address.strip()
+    if re.fullmatch(
+        r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}|"
+        r"(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}",
+        value,
+    ):
+        return value.replace("-", ":").upper()
+    if re.fullmatch(
+        r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+        r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}",
+        value,
+    ):
+        return str(UUID(value)).upper()
+    raise ValueError("Invalid BLE address")

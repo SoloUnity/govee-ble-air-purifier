@@ -11,7 +11,11 @@ from .const import (
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
-from .profiles import match_profile, normalize_ble_address
+from .profiles import (
+    canonicalize_ble_address,
+    match_profile,
+    normalize_ble_address,
+)
 
 MANUAL_DEVICE_VALUE = "__manual__"
 
@@ -37,6 +41,10 @@ def build_discovered_device_options(
         if profile is None:
             continue
         address = getattr(service_info, "address", "")
+        try:
+            canonicalize_ble_address(address)
+        except ValueError:
+            continue
         normalized = normalize_ble_address(address)
         current = by_address.get(normalized)
         if current is None or _rssi_sort_value(service_info) > _rssi_sort_value(

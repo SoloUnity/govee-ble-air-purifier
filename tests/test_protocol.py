@@ -70,11 +70,23 @@ def test_decode_power_state_from_aa01_response() -> None:
     ) is True
 
 
+def test_power_query_echo_is_not_a_state_response() -> None:
+    assert H7124_PROFILE.is_power_state_response(STATE_QUERY_COMMAND) is False
+    with pytest.raises(ProtocolError, match="Not an aa01 power state response"):
+        decode_power_state(STATE_QUERY_COMMAND)
+
+
 def test_decode_status_uses_big_endian_pm25_and_filter_percent() -> None:
     state = decode_status(
         bytes.fromhex("aa 19 81 03 82 01 00 64 00 00 00 00 00 00 00 00 00 00 00 d6")
     )
     assert state == GoveeAirPurifierState(pm25=898, filter_life=100)
+
+
+def test_status_query_echo_is_not_a_status_response() -> None:
+    assert H7124_PROFILE.is_status_response(STATUS_QUERY_COMMAND) is False
+    with pytest.raises(ProtocolError, match="Not an aa19 status response"):
+        decode_status(STATUS_QUERY_COMMAND)
 
 
 def test_decode_status_keeps_999_as_valid_pm25() -> None:

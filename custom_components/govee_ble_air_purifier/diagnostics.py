@@ -7,7 +7,8 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_ADDRESS, DOMAIN
+from .const import CONF_ADDRESS, CONF_NAME, DOMAIN
+from .profiles import match_profile
 
 
 async def async_get_config_entry_diagnostics(
@@ -18,6 +19,8 @@ async def async_get_config_entry_diagnostics(
     data = dict(entry.data)
     if CONF_ADDRESS in data:
         data[CONF_ADDRESS] = _redact_address(data[CONF_ADDRESS])
+    if CONF_NAME in data and (profile := match_profile(data[CONF_NAME])):
+        data[CONF_NAME] = profile.local_name_prefixes[0]
 
     runtime_data = getattr(entry, "runtime_data", None)
     coordinator = getattr(runtime_data, "coordinator", None)
@@ -46,5 +49,7 @@ def _redact_address(address: str) -> str:
     normalized = address.upper().replace("-", ":")
     parts = normalized.split(":")
     if len(parts) == 6:
-        return "XX:XX:XX:" + ":".join(parts[3:])
+        return "XX:XX:XX:XX:XX:XX"
+    if len(address.split("-")) == 5:
+        return "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
     return "REDACTED"

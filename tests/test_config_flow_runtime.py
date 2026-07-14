@@ -315,6 +315,9 @@ async def test_custom_auto_form_uses_bounded_box_number_selectors(
 ) -> None:
     bluetooth_module = ModuleType("homeassistant.components.bluetooth")
     bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    bluetooth_module.async_last_service_info = lambda *args, **kwargs: SimpleNamespace(
+        name="GVH7124BEDROOM", address="AA:BB:CC:DD:EE:FF"
+    )
     config_flow = _import_config_flow(monkeypatch, bluetooth_module)
     flow = config_flow.GoveeBleAirPurifierConfigFlow()
     flow.hass = object()
@@ -355,6 +358,9 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
 ) -> None:
     bluetooth_module = ModuleType("homeassistant.components.bluetooth")
     bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    bluetooth_module.async_last_service_info = lambda *args, **kwargs: SimpleNamespace(
+        name="GVH7124BEDROOM", address="AA:BB:CC:DD:EE:FF"
+    )
     config_flow = _import_config_flow(monkeypatch, bluetooth_module)
     flow = config_flow.GoveeBleAirPurifierConfigFlow()
     flow.hass = object()
@@ -383,6 +389,103 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
         "polling_interval": 15,
         **config_flow.CUSTOM_AUTO_DEFAULTS,
     }
+
+
+@pytest.mark.asyncio
+async def test_manual_setup_rejects_malformed_address_before_unique_id_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user(
+        {
+            "discovered_device": "__manual__",
+            "address": "AA:BB:CC:DD:EE:FFG",
+            "polling_interval": 15,
+        }
+    )
+
+    assert result["errors"] == {"address": "invalid_address"}
+    assert not hasattr(flow, "_unique_id")
+
+
+@pytest.mark.asyncio
+async def test_manual_setup_requires_cached_profile_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    bluetooth_module.async_last_service_info = lambda *args, **kwargs: None
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user(
+        {
+            "discovered_device": "__manual__",
+            "address": "AA:BB:CC:DD:EE:FF",
+            "polling_interval": 15,
+        }
+    )
+
+    assert result["errors"] == {"address": "device_not_found"}
+    assert not hasattr(flow, "_unique_id")
+
+
+@pytest.mark.asyncio
+async def test_manual_setup_rejects_cached_unsupported_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    bluetooth_module.async_last_service_info = lambda *args, **kwargs: SimpleNamespace(
+        name="Other device", address="AA:BB:CC:DD:EE:FF"
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user(
+        {
+            "discovered_device": "__manual__",
+            "address": "AA:BB:CC:DD:EE:FF",
+            "polling_interval": 15,
+        }
+    )
+
+    assert result["errors"] == {"address": "unsupported_device"}
+
+
+@pytest.mark.asyncio
+async def test_manual_setup_accepts_historical_h7124_with_uuid_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    address = "A1B2C3D4-E5F6-47A8-9012-123456789ABC"
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    bluetooth_module.async_last_service_info = lambda *args, **kwargs: SimpleNamespace(
+        name="GVH7124ABCD", address=address
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user(
+        {
+            "discovered_device": "__manual__",
+            "address": address,
+            "name": "Bedroom",
+            "polling_interval": 15,
+        }
+    )
+
+    assert result["step_id"] == "custom_auto"
+    assert flow._unique_id == "a1b2c3d4e5f647a89012123456789abc"
+    assert flow._pending_entry["data"]["address"] == address
 
 
 @pytest.mark.asyncio

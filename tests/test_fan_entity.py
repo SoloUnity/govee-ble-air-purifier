@@ -66,9 +66,13 @@ class _FakeCoordinator:
         self.data = GoveeData(is_on=True, pm25=7, filter_life=93, fan_mode="Low")
         self.power_commands: list[bool] = []
         self.fan_mode_commands: list[str] = []
+        self.fail_modes: set[str] = set()
+        self.fail_power = False
 
     async def async_set_power(self, is_on: bool) -> None:
         self.power_commands.append(is_on)
+        if self.fail_power:
+            raise RuntimeError("failed to set power")
         self.data = GoveeData(
             is_on=is_on,
             pm25=self.data.pm25 if self.data else None,
@@ -78,6 +82,8 @@ class _FakeCoordinator:
 
     async def async_set_fan_mode(self, mode: str) -> None:
         self.fan_mode_commands.append(mode)
+        if mode in self.fail_modes:
+            raise RuntimeError(f"failed to set {mode}")
         self.data = GoveeData(is_on=True, pm25=7, filter_life=93, fan_mode=mode)
 
 
@@ -88,6 +94,7 @@ class _FakeController:
         self.current_speed = 80
         self.activations: list[tuple[int | None, bool]] = []
         self.deactivations = 0
+        self.handoffs = 0
         self.listeners = []
 
     def async_add_listener(self, listener):
@@ -119,6 +126,13 @@ class _FakeController:
     async def async_deactivate(self) -> None:
         self.deactivations += 1
         self.active = False
+        self.notify()
+
+    async def async_handoff(self, command) -> None:
+        self.handoffs += 1
+        await command()
+        self.active = False
+        self.deactivations += 1
         self.notify()
 
 
@@ -292,24 +306,20 @@ async def test_custom_auto_reports_auto_with_underlying_percentage_and_manual_di
     await controller.async_activate()
     assert entity.preset_mode == "Auto"
     assert entity.percentage == 80
-    assert entity.extra_state_attributes == {
-        "custom_auto_active": True,
-        "custom_auto_speed": 80,
-    }
 
     await entity.async_set_percentage(100)
-    assert controller.deactivations == 1
+    assert controller.handoffs == 1
     assert coordinator.fan_mode_commands[-1] == "Turbo"
     assert entity.preset_mode == "Manual"
 
     await controller.async_activate()
     await entity.async_set_preset_mode("Manual")
-    assert controller.deactivations == 2
+    assert controller.handoffs == 2
     assert entity.preset_mode == "Manual"
 
     await controller.async_activate()
     await entity.async_turn_off()
-    assert controller.deactivations == 3
+    assert controller.handoffs == 3
     assert coordinator.power_commands[-1] is False
 
 
@@ -326,14 +336,29 @@ async def test_auto_preset_deactivates_custom_auto_and_uses_hardware_auto(
     await controller.async_activate()
     await entity.async_set_preset_mode("Auto")
 
-    assert controller.deactivations == 1
+    assert controller.handoffs == 1
     assert coordinator.fan_mode_commands[-1] == "Auto"
     assert entity.preset_mode == "Auto"
     assert entity.percentage is None
 
 
 @pytest.mark.asyncio
-async def test_restore_resumes_custom_auto(
+async def test_manual_speed_is_preserved_across_hardware_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = fan.GoveeAirPurifierFan(coordinator, entry)
+
+    await entity.async_set_preset_mode("Auto")
+    await entity.async_set_preset_mode("Manual")
+
+    assert coordinator.fan_mode_commands == ["Auto", "Low"]
+
+
+@pytest.mark.asyncio
+async def test_fan_is_not_a_custom_auto_restoration_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fan = _import_fan(monkeypatch)
@@ -347,9 +372,48 @@ async def test_restore_resumes_custom_auto(
     entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
     entity._test_last_state = last_state
     await entity.async_added_to_hass()
-    assert controller.activations == [(60, True)]
-    assert entity.preset_mode == "Auto"
-    assert entity.percentage == 60
+
+    assert controller.activations == []
+
+
+@pytest.mark.asyncio
+async def test_failed_hardware_mode_handoff_reactivates_custom_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+    await controller.async_activate(restored_speed=40)
+    coordinator.fail_modes.add("Auto")
+
+    with pytest.raises(_HomeAssistantError, match="Failed to set purifier preset"):
+        await entity.async_set_preset_mode("Auto")
+
+    assert controller.active is True
+    assert controller.handoffs == 1
+    assert controller.activations == [(40, False)]
+    assert coordinator.fan_mode_commands[-1] == "Auto"
+
+
+@pytest.mark.asyncio
+async def test_failed_power_off_handoff_keeps_custom_auto_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+    await controller.async_activate(restored_speed=40)
+    coordinator.fail_power = True
+
+    with pytest.raises(_HomeAssistantError, match="Failed to turn purifier off"):
+        await entity.async_turn_off()
+
+    assert controller.active is True
+    assert controller.handoffs == 1
 
 
 @pytest.mark.asyncio

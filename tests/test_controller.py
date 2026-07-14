@@ -212,7 +212,7 @@ async def test_each_delayed_downshift_chooses_lowest_mature_speed(
 
 
 @pytest.mark.asyncio
-async def test_downshift_timer_resets_and_equality_holds_current_speed() -> None:
+async def test_downshift_threshold_is_inclusive() -> None:
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
@@ -222,18 +222,31 @@ async def test_downshift_timer_resets_and_equality_holds_current_speed() -> None
 
     coordinator.set_pm25(13)
     await settle()
-    first_waiter = sleep.waiters[-1][1]
     coordinator.set_pm25(14)
     await settle()
 
-    assert first_waiter.cancelled()
     assert coordinator.commands == []
-
-    coordinator.set_pm25(13)
-    await settle()
     sleep.release(300)
     await settle()
     assert coordinator.commands == ["High"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_default_return_threshold_three_permits_sleep_after_delay() -> None:
+    coordinator = FakeCoordinator(pm25=16, mode="Turbo")
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+
+    coordinator.set_pm25(3)
+    await settle()
+    sleep.release(420)
+    await settle()
+
+    assert coordinator.commands == ["Sleep"]
     await controller.async_stop()
 
 
@@ -265,7 +278,7 @@ async def test_external_off_deactivates_notifies_and_cancels_pending_timer() -> 
 
 
 @pytest.mark.asyncio
-async def test_failed_coordinator_update_resets_timer_until_next_success() -> None:
+async def test_failed_coordinator_update_preserves_and_matures_timer() -> None:
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
@@ -282,19 +295,17 @@ async def test_failed_coordinator_update_resets_timer_until_next_success() -> No
 
     assert failed_timer.done()
     assert controller.pending_downshifts == ()
+    assert controller.diagnostics()["mature_downshifts"] == [80]
     assert coordinator.commands == []
 
     coordinator.set_update_success(True)
-    await settle()
-    assert controller.pending_downshifts == (80,)
-    sleep.release(300)
     await settle()
     assert coordinator.commands == ["High"]
     await controller.async_stop()
 
 
 @pytest.mark.asyncio
-async def test_invalid_pm_sample_resets_timer_until_next_valid_sample() -> None:
+async def test_invalid_pm_sample_preserves_and_matures_timer() -> None:
     coordinator = FakeCoordinator(pm25=16, mode="Turbo")
     sleep = ControlledSleep()
     controller = CustomAutoController(
@@ -311,14 +322,35 @@ async def test_invalid_pm_sample_resets_timer_until_next_valid_sample() -> None:
 
     assert stale_timer.done()
     assert controller.pending_downshifts == ()
+    assert controller.diagnostics()["mature_downshifts"] == [80]
     assert coordinator.commands == []
 
     coordinator.set_pm25(13)
     await settle()
-    sleep.release(300)
-    await settle()
 
     assert coordinator.commands == ["High"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_mature_timer_is_cleared_if_recovery_sample_no_longer_qualifies() -> None:
+    coordinator = FakeCoordinator(pm25=16, mode="Turbo")
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(13)
+    await settle()
+
+    coordinator.set_pm25(None)
+    sleep.release(300)
+    await settle()
+    coordinator.set_pm25(15)
+    await settle()
+
+    assert coordinator.commands == []
+    assert controller.diagnostics()["mature_downshifts"] == []
     await controller.async_stop()
 
 
@@ -380,6 +412,31 @@ async def test_activation_command_failure_rolls_back_all_ownership() -> None:
 
 
 @pytest.mark.asyncio
+async def test_activation_cancellation_rolls_back_all_ownership() -> None:
+    coordinator = FakeCoordinator(pm25=16, mode="Sleep")
+    command_started = asyncio.Event()
+
+    async def blocking_set_fan_mode(mode: str) -> None:
+        coordinator.command_attempts.append(mode)
+        command_started.set()
+        await asyncio.Event().wait()
+
+    coordinator.async_set_fan_mode = blocking_set_fan_mode  # type: ignore[method-assign]
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+    activation_task = asyncio.create_task(controller.async_activate())
+    await command_started.wait()
+
+    activation_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await activation_task
+
+    assert controller.active is False
+    assert controller.current_speed is None
+    assert controller.pending_downshifts == ()
+    assert coordinator.listeners == []
+
+
+@pytest.mark.asyncio
 async def test_background_command_failure_is_logged_and_waits_for_update(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -402,6 +459,148 @@ async def test_background_command_failure_is_logged_and_waits_for_update(
     await settle()
     assert coordinator.command_attempts == ["Turbo", "Turbo"]
     assert coordinator.commands == ["Turbo"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_timer_expiry_does_not_bypass_command_failure_retry_gate() -> None:
+    coordinator = FakeCoordinator(pm25=0, mode="Sleep")
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    await settle()
+    coordinator.command_errors.append(RuntimeError("BLE background failure"))
+
+    coordinator.set_pm25(16)
+    await settle()
+    sleep.release(300)
+    await settle()
+
+    assert coordinator.command_attempts == ["Turbo"]
+    assert controller.pending_downshifts == ()
+    assert controller.diagnostics()["mature_downshifts"] == []
+
+    coordinator.set_update_success(True)
+    await settle()
+
+    assert coordinator.command_attempts == ["Turbo", "Turbo"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_mature_downshift_retries_after_successful_update_only() -> None:
+    coordinator = FakeCoordinator(pm25=16, mode="Turbo")
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(3)
+    await settle()
+    coordinator.command_errors.append(RuntimeError("BLE downshift failure"))
+
+    sleep.release(420)
+    await settle()
+
+    assert coordinator.command_attempts == ["Sleep"]
+    assert controller.diagnostics()["mature_downshifts"] == [20]
+    await settle()
+    assert coordinator.command_attempts == ["Sleep"]
+
+    coordinator.set_update_success(True)
+    await settle()
+
+    assert coordinator.command_attempts == ["Sleep", "Sleep"]
+    assert coordinator.commands == ["Sleep"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_handoff_preserves_controller_and_downshift_state() -> None:
+    coordinator = FakeCoordinator(pm25=16, mode="Turbo")
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(3)
+    await settle()
+    sleep.release(300)
+    await settle()
+    pending_timer = next(
+        future for delay, future in sleep.waiters if delay == 420
+    )
+    assert controller.current_speed == 40
+    assert controller.diagnostics()["mature_downshifts"] == [40, 60, 80]
+
+    async def failed_command() -> None:
+        raise RuntimeError("handoff failed")
+
+    with pytest.raises(RuntimeError, match="handoff failed"):
+        await controller.async_handoff(failed_command)
+
+    assert controller.active is True
+    assert controller.current_speed == 40
+    assert controller.pending_downshifts == (20,)
+    assert controller.diagnostics()["mature_downshifts"] == [40, 60, 80]
+    assert pending_timer.cancelled() is False
+    assert coordinator.commands == ["Low", "Low"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_handoff_serializes_concurrent_reactivation() -> None:
+    coordinator = FakeCoordinator(pm25=10, mode="High")
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+    await controller.async_activate()
+    command_started = asyncio.Event()
+    release_command = asyncio.Event()
+
+    async def hardware_auto_command() -> None:
+        command_started.set()
+        await release_command.wait()
+        await coordinator.async_set_fan_mode("Auto")
+
+    handoff_task = asyncio.create_task(controller.async_handoff(hardware_auto_command))
+    await command_started.wait()
+    activation_task = asyncio.create_task(controller.async_activate())
+    await settle()
+    assert activation_task.done() is False
+
+    release_command.set()
+    await asyncio.gather(handoff_task, activation_task)
+
+    assert controller.active is True
+    assert coordinator.data.fan_mode == "High"
+    assert coordinator.commands == ["Auto", "High"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_handoff_cancellation_reasserts_custom_auto_speed() -> None:
+    coordinator = FakeCoordinator(pm25=10, mode="High")
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+    await controller.async_activate()
+    hardware_command_applied = asyncio.Event()
+
+    async def hardware_auto_command() -> None:
+        await coordinator.async_set_fan_mode("Auto")
+        hardware_command_applied.set()
+        await asyncio.Event().wait()
+
+    handoff_task = asyncio.create_task(controller.async_handoff(hardware_auto_command))
+    await hardware_command_applied.wait()
+    handoff_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await handoff_task
+
+    assert controller.active is True
+    assert controller.current_speed == 80
+    assert coordinator.data.fan_mode == "High"
+    assert coordinator.commands == ["Auto", "High"]
     await controller.async_stop()
 
 

@@ -156,7 +156,7 @@ def test_sensor_metadata_matches_cloud_style_entities(
 
 
 @pytest.mark.asyncio
-async def test_pm25_sensor_remains_available_with_cached_value_after_update_failure(
+async def test_pm25_sensor_is_unavailable_with_cached_value_after_update_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sensor = _import_sensor(monkeypatch)
@@ -176,7 +176,7 @@ async def test_pm25_sensor_remains_available_with_cached_value_after_update_fail
     pm25, filter_life = added_entities
 
     assert pm25.native_value == 8
-    assert pm25.available is True
+    assert pm25.available is False
     assert filter_life.available is False
 
 

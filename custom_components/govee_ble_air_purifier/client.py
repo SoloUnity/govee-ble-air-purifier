@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-import contextlib
 import logging
 from typing import Any
 
@@ -21,6 +20,13 @@ DEFAULT_TIMEOUT = 10.0
 POLL_TIMEOUT = 5.0
 COMMAND_CONFIRMATION_TIMEOUT = 2.0
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _async_wait_until(awaitable: Any, deadline: float) -> Any:
+    """Await one stage without extending the transaction deadline."""
+
+    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+    return await asyncio.wait_for(awaitable, remaining)
 
 
 class GoveeBleClientError(Exception):
@@ -110,19 +116,32 @@ class GoveeBleClient:
         )
 
     async def _async_write_without_response(self, command: bytes) -> None:
-        async with self._lock:
-            await self._async_write_commands_without_response((command,))
+        await self._async_write_commands_without_response((command,))
 
     async def _async_write_commands_without_response(
         self, commands: tuple[bytes, ...]
     ) -> None:
+        deadline = asyncio.get_running_loop().time() + DEFAULT_TIMEOUT
+
         async def operation(client: Any) -> None:
             for command in commands:
-                await client.write_gatt_char(
-                    self._profile.write_char_uuid, command, response=False
+                await _async_wait_until(
+                    client.write_gatt_char(
+                        self._profile.write_char_uuid, command, response=False
+                    ),
+                    deadline,
                 )
 
-        await self._async_with_connection(operation)
+        try:
+            await _async_wait_until(self._lock.acquire(), deadline)
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            raise GoveeBleClientError(
+                "Timed out waiting for purifier response"
+            ) from err
+        try:
+            await self._async_with_connection(operation, deadline=deadline)
+        finally:
+            self._lock.release()
 
     async def _async_write_and_wait(
         self,
@@ -142,7 +161,14 @@ class GoveeBleClient:
         *,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> tuple[bytes, ...]:
-        async with self._lock:
+        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            await _async_wait_until(self._lock.acquire(), deadline)
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            raise GoveeBleClientError(
+                "Timed out waiting for purifier response"
+            ) from err
+        try:
             frames: list[bytes] = []
             loop = asyncio.get_running_loop()
             future: asyncio.Future[bytes] | None = None
@@ -166,17 +192,23 @@ class GoveeBleClient:
 
             async def operation(client: Any) -> tuple[bytes, ...]:
                 nonlocal future
-                await client.start_notify(
-                    self._profile.notify_char_uuid, notification_handler
-                )
                 primary_error: BaseException | None = None
                 try:
+                    await _async_wait_until(
+                        client.start_notify(
+                            self._profile.notify_char_uuid, notification_handler
+                        ),
+                        deadline,
+                    )
                     for command, _matcher in requests:
                         future = loop.create_future()
-                        await client.write_gatt_char(
-                            self._profile.write_char_uuid, command, response=False
+                        await _async_wait_until(
+                            client.write_gatt_char(
+                                self._profile.write_char_uuid, command, response=False
+                            ),
+                            deadline,
                         )
-                        frames.append(await asyncio.wait_for(future, timeout))
+                        frames.append(await _async_wait_until(future, deadline))
                     return tuple(frames)
                 except (TimeoutError, asyncio.TimeoutError) as err:
                     primary_error = GoveeBleClientError(
@@ -187,18 +219,33 @@ class GoveeBleClient:
                     primary_error = err
                     raise
                 finally:
-                    cleanup_context = (
-                        contextlib.suppress(Exception)
-                        if primary_error
-                        else contextlib.nullcontext()
-                    )
-                    with cleanup_context:
-                        await client.stop_notify(self._profile.notify_char_uuid)
+                    if future is not None and not future.done():
+                        future.cancel()
+                    try:
+                        await _async_wait_until(
+                            client.stop_notify(self._profile.notify_char_uuid), deadline
+                        )
+                    except Exception:
+                        _LOGGER.debug(
+                            "Suppressing BLE notification cleanup failure%s",
+                            " to preserve primary error" if primary_error else "",
+                            exc_info=True,
+                        )
 
-            return await self._async_with_connection(operation)
+            return await self._async_with_connection(operation, deadline=deadline)
+        finally:
+            self._lock.release()
 
-    async def _async_with_connection(self, operation: Callable[[Any], Any]) -> Any:
+    async def _async_with_connection(
+        self,
+        operation: Callable[[Any], Any],
+        *,
+        deadline: float | None = None,
+    ) -> Any:
         """Connect with HA Bluetooth helpers and run a BLE operation."""
+
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + DEFAULT_TIMEOUT
 
         try:
             from bleak_retry_connector import (
@@ -210,20 +257,26 @@ class GoveeBleClient:
         except ModuleNotFoundError as err:  # pragma: no cover - runtime dependency
             raise GoveeBleClientError("Home Assistant BLE dependencies are unavailable") from err
 
-        ble_device = bluetooth.async_ble_device_from_address(
-            self._hass, self._address, connectable=True
-        )
-        if ble_device is None:
-            raise GoveeBleClientError(f"BLE device {self._address} is not available")
-
-        await close_stale_connections(ble_device)
-        client = await establish_connection(
-            client_class=BleakClientWithServiceCache,
-            device=ble_device,
-            name=ble_device.name or self._address,
-        )
+        client: Any = None
         primary_error: BaseException | None = None
         try:
+            ble_device = bluetooth.async_ble_device_from_address(
+                self._hass, self._address, connectable=True
+            )
+            if ble_device is None:
+                raise GoveeBleClientError(
+                    f"BLE device {self._address} is not available"
+                )
+
+            await _async_wait_until(close_stale_connections(ble_device), deadline)
+            client = await _async_wait_until(
+                establish_connection(
+                    client_class=BleakClientWithServiceCache,
+                    device=ble_device,
+                    name=ble_device.name or self._address,
+                ),
+                deadline,
+            )
             return await operation(client)
         except TimeoutError as err:
             primary_error = GoveeBleClientError(
@@ -240,7 +293,8 @@ class GoveeBleClient:
             raise
         finally:
             try:
-                await client.disconnect()
+                if client is not None:
+                    await _async_wait_until(client.disconnect(), deadline)
             except Exception:
                 if primary_error is None:
                     _LOGGER.debug(

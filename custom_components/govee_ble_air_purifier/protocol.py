@@ -64,13 +64,23 @@ MODE_PUSH_LABELS: dict[int, str] = {
 def is_power_state_response(frame: bytes) -> bool:
     """Return True if frame looks like an aa01 state response."""
 
-    return len(frame) == FRAME_LENGTH and frame[0] == 0xAA and frame[1] == 0x01
+    return (
+        len(frame) == FRAME_LENGTH
+        and frame[0] == 0xAA
+        and frame[1] == 0x01
+        and frame[4] == 0x81
+    )
 
 
 def is_status_response(frame: bytes) -> bool:
     """Return True if frame looks like an aa19 status response."""
 
-    return len(frame) == FRAME_LENGTH and frame[0] == 0xAA and frame[1] == 0x19
+    return (
+        len(frame) == FRAME_LENGTH
+        and frame[0] == 0xAA
+        and frame[1] == 0x19
+        and frame[2] == 0x81
+    )
 
 
 def is_mode_push(frame: bytes) -> bool:

@@ -8,8 +8,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.15.21",
 ]
 
 [tool.pytest.ini_options]

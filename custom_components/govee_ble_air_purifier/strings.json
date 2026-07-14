@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Govee BLE Air Purifier",
-        "description": "Choose a recently seen GVH7124 purifier, or enter a BLE address manually. This integration does not create automatic discovery prompts.",
+        "description": "Choose a recently seen GVH7124 purifier, or enter its BLE address manually. Manual setup requires Home Assistant to have seen a matching GVH7124 advertisement, but the purifier does not need to be currently available.",
         "data": {
           "discovered_device": "Recently seen purifier",
           "address": "BLE address for manual setup",
@@ -20,17 +20,17 @@
         "description": "Configure the four boundaries between Excellent, Good, Fair, Bad, and Poor. Increases happen immediately; returns to cleaner levels happen only after the configured delay. Activate these rules with the device's Custom Auto switch.",
         "data": {
           "custom_auto_up_40": "Excellent to Good: increase above",
-          "custom_auto_down_20": "Good to Excellent: return below",
-          "custom_auto_delay_20": "Good to Excellent: time below",
+          "custom_auto_down_20": "Good to Excellent: return at or below",
+          "custom_auto_delay_20": "Good to Excellent: time at or below",
           "custom_auto_up_60": "Good to Fair: increase above",
-          "custom_auto_down_40": "Fair to Good: return below",
-          "custom_auto_delay_40": "Fair to Good: time below",
+          "custom_auto_down_40": "Fair to Good: return at or below",
+          "custom_auto_delay_40": "Fair to Good: time at or below",
           "custom_auto_up_80": "Fair to Bad: increase above",
-          "custom_auto_down_60": "Bad to Fair: return below",
-          "custom_auto_delay_60": "Bad to Fair: time below",
+          "custom_auto_down_60": "Bad to Fair: return at or below",
+          "custom_auto_delay_60": "Bad to Fair: time at or below",
           "custom_auto_up_100": "Bad to Poor: increase above",
-          "custom_auto_down_80": "Poor to Bad: return below",
-          "custom_auto_delay_80": "Poor to Bad: time below"
+          "custom_auto_down_80": "Poor to Bad: return at or below",
+          "custom_auto_delay_80": "Poor to Bad: time at or below"
         },
         "sections": {
           "excellent_good": {
@@ -38,8 +38,8 @@
             "description": "Controls the boundary between Excellent air at 20% and Good air at 40%.",
             "data": {
               "custom_auto_up_40": "Increase to Good above",
-              "custom_auto_down_20": "Return to Excellent below",
-              "custom_auto_delay_20": "Time below before returning"
+              "custom_auto_down_20": "Return to Excellent at or below",
+              "custom_auto_delay_20": "Time at or below before returning"
             }
           },
           "good_fair": {
@@ -47,8 +47,8 @@
             "description": "Controls the boundary between Good air at 40% and Fair air at 60%.",
             "data": {
               "custom_auto_up_60": "Increase to Fair above",
-              "custom_auto_down_40": "Return to Good below",
-              "custom_auto_delay_40": "Time below before returning"
+              "custom_auto_down_40": "Return to Good at or below",
+              "custom_auto_delay_40": "Time at or below before returning"
             }
           },
           "fair_bad": {
@@ -56,8 +56,8 @@
             "description": "Controls the boundary between Fair air at 60% and Bad air at 80%.",
             "data": {
               "custom_auto_up_80": "Increase to Bad above",
-              "custom_auto_down_60": "Return to Fair below",
-              "custom_auto_delay_60": "Time below before returning"
+              "custom_auto_down_60": "Return to Fair at or below",
+              "custom_auto_delay_60": "Time at or below before returning"
             }
           },
           "bad_poor": {
@@ -65,8 +65,8 @@
             "description": "Controls the boundary between Bad air at 80% and Poor air at 100%.",
             "data": {
               "custom_auto_up_100": "Increase to Poor above",
-              "custom_auto_down_80": "Return to Bad below",
-              "custom_auto_delay_80": "Time below before returning"
+              "custom_auto_down_80": "Return to Bad at or below",
+              "custom_auto_delay_80": "Time at or below before returning"
             }
           }
         }
@@ -74,6 +74,9 @@
     },
     "error": {
       "address_required": "Enter a BLE address or choose a recently seen purifier.",
+      "device_not_found": "Home Assistant has not seen this BLE address advertise as a Govee H7124. Move the purifier closer, wake it, and try again.",
+      "invalid_address": "Enter a complete Bluetooth MAC address or platform UUID.",
+      "unsupported_device": "The selected BLE device is not a supported Govee H7124 air purifier.",
       "invalid_custom_auto_value": "Enter whole numbers within the displayed ranges.",
       "up_thresholds_not_ascending": "Increase thresholds must rise from Excellent through Poor.",
       "down_thresholds_not_ascending": "Return thresholds must rise from Excellent through Bad.",
@@ -93,17 +96,17 @@
         "data": {
           "polling_interval": "Polling interval in seconds",
           "custom_auto_up_40": "Excellent to Good: increase above",
-          "custom_auto_down_20": "Good to Excellent: return below",
-          "custom_auto_delay_20": "Good to Excellent: time below",
+          "custom_auto_down_20": "Good to Excellent: return at or below",
+          "custom_auto_delay_20": "Good to Excellent: time at or below",
           "custom_auto_up_60": "Good to Fair: increase above",
-          "custom_auto_down_40": "Fair to Good: return below",
-          "custom_auto_delay_40": "Fair to Good: time below",
+          "custom_auto_down_40": "Fair to Good: return at or below",
+          "custom_auto_delay_40": "Fair to Good: time at or below",
           "custom_auto_up_80": "Fair to Bad: increase above",
-          "custom_auto_down_60": "Bad to Fair: return below",
-          "custom_auto_delay_60": "Bad to Fair: time below",
+          "custom_auto_down_60": "Bad to Fair: return at or below",
+          "custom_auto_delay_60": "Bad to Fair: time at or below",
           "custom_auto_up_100": "Bad to Poor: increase above",
-          "custom_auto_down_80": "Poor to Bad: return below",
-          "custom_auto_delay_80": "Poor to Bad: time below"
+          "custom_auto_down_80": "Poor to Bad: return at or below",
+          "custom_auto_delay_80": "Poor to Bad: time at or below"
         },
         "data_description": {
           "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices."
@@ -114,8 +117,8 @@
             "description": "Controls the boundary between Excellent air at 20% and Good air at 40%.",
             "data": {
               "custom_auto_up_40": "Increase to Good above",
-              "custom_auto_down_20": "Return to Excellent below",
-              "custom_auto_delay_20": "Time below before returning"
+              "custom_auto_down_20": "Return to Excellent at or below",
+              "custom_auto_delay_20": "Time at or below before returning"
             }
           },
           "good_fair": {
@@ -123,8 +126,8 @@
             "description": "Controls the boundary between Good air at 40% and Fair air at 60%.",
             "data": {
               "custom_auto_up_60": "Increase to Fair above",
-              "custom_auto_down_40": "Return to Good below",
-              "custom_auto_delay_40": "Time below before returning"
+              "custom_auto_down_40": "Return to Good at or below",
+              "custom_auto_delay_40": "Time at or below before returning"
             }
           },
           "fair_bad": {
@@ -132,8 +135,8 @@
             "description": "Controls the boundary between Fair air at 60% and Bad air at 80%.",
             "data": {
               "custom_auto_up_80": "Increase to Bad above",
-              "custom_auto_down_60": "Return to Fair below",
-              "custom_auto_delay_60": "Time below before returning"
+              "custom_auto_down_60": "Return to Fair at or below",
+              "custom_auto_delay_60": "Time at or below before returning"
             }
           },
           "bad_poor": {
@@ -141,8 +144,8 @@
             "description": "Controls the boundary between Bad air at 80% and Poor air at 100%.",
             "data": {
               "custom_auto_up_100": "Increase to Poor above",
-              "custom_auto_down_80": "Return to Bad below",
-              "custom_auto_delay_80": "Time below before returning"
+              "custom_auto_down_80": "Return to Bad at or below",
+              "custom_auto_delay_80": "Time at or below before returning"
             }
           }
         }

@@ -51,7 +51,13 @@ from .controller import (
     parse_custom_auto_values,
     validate_custom_auto_values,
 )
-from .profiles import H7124_PROFILE, get_profile, normalize_ble_address
+from .profiles import (
+    H7124_PROFILE,
+    canonicalize_ble_address,
+    get_profile,
+    match_profile,
+    normalize_ble_address,
+)
 from .setup_helpers import (
     MANUAL_DEVICE_VALUE,
     DiscoveredDeviceOption,
@@ -121,23 +127,52 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_DISCOVERED_DEVICE, MANUAL_DEVICE_VALUE
             )
             if selected_device == MANUAL_DEVICE_VALUE:
-                address = user_input.get(CONF_ADDRESS, "").strip()
-                if not address:
+                entered_address = user_input.get(CONF_ADDRESS, "").strip()
+                if not entered_address:
                     errors[CONF_ADDRESS] = "address_required"
                     return self.async_show_form(
                         step_id="user",
                         data_schema=_user_schema(discovered_options),
                         errors=errors,
                     )
-                profile = H7124_PROFILE
+                try:
+                    address = canonicalize_ble_address(entered_address)
+                except ValueError:
+                    errors[CONF_ADDRESS] = "invalid_address"
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=_user_schema(discovered_options),
+                        errors=errors,
+                    )
+                service_info = _cached_service_info(self.hass, address)
+                if service_info is None:
+                    errors[CONF_ADDRESS] = "device_not_found"
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=_user_schema(discovered_options),
+                        errors=errors,
+                    )
+                profile = match_profile(getattr(service_info, "name", None))
+                if profile is None:
+                    errors[CONF_ADDRESS] = "unsupported_device"
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=_user_schema(discovered_options),
+                        errors=errors,
+                    )
                 name = user_input.get(CONF_NAME) or profile.display_name
             else:
                 option = discovered_by_value.get(selected_device)
-                address = selected_device
-                profile = get_profile(option.profile_key if option else None)
-                name = user_input.get(CONF_NAME) or (
-                    option.name if option else profile.display_name
-                )
+                if option is None:
+                    errors[CONF_DISCOVERED_DEVICE] = "unsupported_device"
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=_user_schema(discovered_options),
+                        errors=errors,
+                    )
+                address = canonicalize_ble_address(option.value)
+                profile = get_profile(option.profile_key)
+                name = user_input.get(CONF_NAME) or option.name
 
             polling_interval = validate_polling_interval_seconds(
                 user_input.get(
@@ -290,6 +325,25 @@ def _discovered_device_options(hass: Any) -> tuple[DiscoveredDeviceOption, ...]:
     return build_discovered_device_options(
         tuple(bluetooth.async_discovered_service_info(hass, connectable=True))
     )
+
+
+def _cached_service_info(hass: Any, address: str) -> Any | None:
+    """Return cached advertisement evidence for an address, including history."""
+
+    normalized = normalize_ble_address(address)
+    for service_info in bluetooth.async_discovered_service_info(
+        hass, connectable=True
+    ):
+        candidate_address = getattr(service_info, "address", "")
+        try:
+            canonicalize_ble_address(candidate_address)
+        except ValueError:
+            continue
+        if normalize_ble_address(candidate_address) == normalized:
+            return service_info
+    if async_last_service_info := getattr(bluetooth, "async_last_service_info", None):
+        return async_last_service_info(hass, address, connectable=True)
+    return None
 
 
 def _user_schema(

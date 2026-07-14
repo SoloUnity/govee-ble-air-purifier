@@ -50,6 +50,20 @@ class FakeHass:
         return task
 
 
+class RacingClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.power = True
+        self.power_off_started = asyncio.Event()
+        self.release_power_off = asyncio.Event()
+
+    async def async_set_power(self, is_on: bool) -> bool:
+        if not is_on:
+            self.power_off_started.set()
+            await self.release_power_off.wait()
+        return await super().async_set_power(is_on)
+
+
 async def _cleanup_tasks(tasks: list[asyncio.Task]) -> None:
     for task in tasks:
         task.cancel()
@@ -170,6 +184,30 @@ async def test_setting_fan_mode_turns_device_on_when_off_and_remembers_mode() ->
         pm25=12,
         filter_life=87,
         fan_mode="Turbo",
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_power_off_and_fan_mode_use_atomic_coordinator_state() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = RacingClient()
+    coordinator = GoveeCoordinator(None, client, update_method_only=True)
+    coordinator.data = GoveeData(is_on=True, pm25=12, filter_life=87, fan_mode="Low")
+
+    power_task = asyncio.create_task(coordinator.async_set_power(False))
+    await client.power_off_started.wait()
+    mode_task = asyncio.create_task(coordinator.async_set_fan_mode("Turbo"))
+    await asyncio.sleep(0)
+    client.release_power_off.set()
+    await asyncio.gather(power_task, mode_task)
+
+    assert client.commands == [
+        b"power_off",
+        b"power_on_and_" + FAN_MODE_COMMANDS["Turbo"],
+    ]
+    assert coordinator.data == GoveeData(
+        is_on=True, pm25=12, filter_life=87, fan_mode="Turbo"
     )
 
 

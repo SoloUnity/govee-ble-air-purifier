@@ -20,6 +20,7 @@ from custom_components.govee_ble_air_purifier.setup_helpers import (
     polling_interval_from_options,
     validate_polling_interval_seconds,
 )
+from custom_components.govee_ble_air_purifier.profiles import canonicalize_ble_address
 
 
 def _service_info(
@@ -72,6 +73,43 @@ def test_discovered_device_options_deduplicate_by_address_using_strongest_signal
 
 def test_manual_device_option_is_a_stable_sentinel() -> None:
     assert MANUAL_DEVICE_VALUE == "__manual__"
+
+
+@pytest.mark.parametrize(
+    ("address", "canonical"),
+    [
+        ("aa:bb:cc:dd:ee:ff", "AA:BB:CC:DD:EE:FF"),
+        ("aa-bb-cc-dd-ee-ff", "AA:BB:CC:DD:EE:FF"),
+        (
+            "A1B2C3D4-E5F6-47A8-9012-123456789ABC",
+            "A1B2C3D4-E5F6-47A8-9012-123456789ABC",
+        ),
+    ],
+)
+def test_ble_address_validation_accepts_platform_formats(
+    address: str, canonical: str
+) -> None:
+    assert canonicalize_ble_address(address) == canonical
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "AA:BB:CC:DD:EE:FFG",
+        "AA:BB:CC:DD:EE",
+        "AABBCCDDEEFF",
+        "not-an-address",
+    ],
+)
+def test_ble_address_validation_rejects_malformed_values(address: str) -> None:
+    with pytest.raises(ValueError):
+        canonicalize_ble_address(address)
+
+
+def test_discovered_device_options_ignore_malformed_addresses() -> None:
+    assert build_discovered_device_options(
+        [_service_info("GVH7124BAD", "AA:BB:CC:DD:EE:FFG")]
+    ) == ()
 
 
 def test_polling_interval_validation_accepts_configured_bounds() -> None:
