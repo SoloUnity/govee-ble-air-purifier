@@ -16,30 +16,68 @@
         }
       },
       "custom_auto": {
-        "title": "Custom Auto Rules",
-        "description": "Set immediate upward boundaries and delayed strict-below downward boundaries. Use the Custom Auto switch on the device to activate these rules.",
+        "title": "Five Air Quality Steps",
+        "description": "Configure the four boundaries between Excellent, Good, Fair, Bad, and Poor. Increases happen immediately; returns to cleaner levels happen only after the configured delay. Activate these rules with the device's Custom Auto switch.",
         "data": {
-          "custom_auto_up_40": "Step up to 40% above PM2.5",
-          "custom_auto_up_60": "Step up to 60% above PM2.5",
-          "custom_auto_up_80": "Step up to 80% above PM2.5",
-          "custom_auto_up_100": "Step up to 100% above PM2.5",
-          "custom_auto_down_80": "Step down to 80% below PM2.5",
-          "custom_auto_delay_80": "Delay before stepping down to 80%",
-          "custom_auto_down_60": "Step down to 60% below PM2.5",
-          "custom_auto_delay_60": "Delay before stepping down to 60%",
-          "custom_auto_down_40": "Step down to 40% below PM2.5",
-          "custom_auto_delay_40": "Delay before stepping down to 40%",
-          "custom_auto_down_20": "Step down to 20% below PM2.5",
-          "custom_auto_delay_20": "Delay before stepping down to 20%"
+          "custom_auto_up_40": "Excellent to Good: increase above",
+          "custom_auto_down_20": "Good to Excellent: return below",
+          "custom_auto_delay_20": "Good to Excellent: time below",
+          "custom_auto_up_60": "Good to Fair: increase above",
+          "custom_auto_down_40": "Fair to Good: return below",
+          "custom_auto_delay_40": "Fair to Good: time below",
+          "custom_auto_up_80": "Fair to Bad: increase above",
+          "custom_auto_down_60": "Bad to Fair: return below",
+          "custom_auto_delay_60": "Bad to Fair: time below",
+          "custom_auto_up_100": "Bad to Poor: increase above",
+          "custom_auto_down_80": "Poor to Bad: return below",
+          "custom_auto_delay_80": "Poor to Bad: time below"
+        },
+        "sections": {
+          "excellent_good": {
+            "name": "Excellent to Good (20% / 40%)",
+            "description": "Controls the boundary between Excellent air at 20% and Good air at 40%.",
+            "data": {
+              "custom_auto_up_40": "Increase to Good above",
+              "custom_auto_down_20": "Return to Excellent below",
+              "custom_auto_delay_20": "Time below before returning"
+            }
+          },
+          "good_fair": {
+            "name": "Good to Fair (40% / 60%)",
+            "description": "Controls the boundary between Good air at 40% and Fair air at 60%.",
+            "data": {
+              "custom_auto_up_60": "Increase to Fair above",
+              "custom_auto_down_40": "Return to Good below",
+              "custom_auto_delay_40": "Time below before returning"
+            }
+          },
+          "fair_bad": {
+            "name": "Fair to Bad (60% / 80%)",
+            "description": "Controls the boundary between Fair air at 60% and Bad air at 80%.",
+            "data": {
+              "custom_auto_up_80": "Increase to Bad above",
+              "custom_auto_down_60": "Return to Fair below",
+              "custom_auto_delay_60": "Time below before returning"
+            }
+          },
+          "bad_poor": {
+            "name": "Bad to Poor (80% / 100%)",
+            "description": "Controls the boundary between Bad air at 80% and Poor air at 100%.",
+            "data": {
+              "custom_auto_up_100": "Increase to Poor above",
+              "custom_auto_down_80": "Return to Bad below",
+              "custom_auto_delay_80": "Time below before returning"
+            }
+          }
         }
       }
     },
     "error": {
       "address_required": "Enter a BLE address or choose a recently seen purifier.",
       "invalid_custom_auto_value": "Enter whole numbers within the displayed ranges.",
-      "up_thresholds_not_ascending": "Upward PM2.5 thresholds must increase strictly from 40% through 100%.",
-      "down_thresholds_not_ascending": "Downward PM2.5 thresholds must increase strictly from the 20% boundary through the 80% boundary.",
-      "down_threshold_above_up": "Each downward threshold must be less than or equal to its corresponding upward threshold."
+      "up_thresholds_not_ascending": "Increase thresholds must rise from Excellent through Poor.",
+      "down_thresholds_not_ascending": "Return thresholds must rise from Excellent through Bad.",
+      "down_threshold_above_up": "A return threshold cannot exceed the increase threshold for the same air-quality boundary."
     },
     "abort": {
       "already_configured": "This air purifier is already configured.",
@@ -50,39 +88,71 @@
   "options": {
     "step": {
       "init": {
-        "title": "Govee BLE Air Purifier Options",
-        "description": "Adjust the Bluetooth polling interval. Custom Auto thresholds and delays are configured on the next screen.",
+        "title": "Five Air Quality Steps",
+        "description": "Configure polling and the four boundaries between Excellent, Good, Fair, Bad, and Poor. Increases happen immediately; returns to cleaner levels happen only after the configured delay.",
         "data": {
-          "polling_interval": "Polling interval in seconds"
+          "polling_interval": "Polling interval in seconds",
+          "custom_auto_up_40": "Excellent to Good: increase above",
+          "custom_auto_down_20": "Good to Excellent: return below",
+          "custom_auto_delay_20": "Good to Excellent: time below",
+          "custom_auto_up_60": "Good to Fair: increase above",
+          "custom_auto_down_40": "Fair to Good: return below",
+          "custom_auto_delay_40": "Fair to Good: time below",
+          "custom_auto_up_80": "Fair to Bad: increase above",
+          "custom_auto_down_60": "Bad to Fair: return below",
+          "custom_auto_delay_60": "Bad to Fair: time below",
+          "custom_auto_up_100": "Bad to Poor: increase above",
+          "custom_auto_down_80": "Poor to Bad: return below",
+          "custom_auto_delay_80": "Poor to Bad: time below"
         },
         "data_description": {
           "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices."
-        }
-      },
-      "custom_auto": {
-        "title": "Custom Auto Rules",
-        "description": "Set immediate upward boundaries and delayed strict-below downward boundaries. Use the Custom Auto switch on the device to activate these rules.",
-        "data": {
-          "custom_auto_up_40": "Step up to 40% above PM2.5",
-          "custom_auto_up_60": "Step up to 60% above PM2.5",
-          "custom_auto_up_80": "Step up to 80% above PM2.5",
-          "custom_auto_up_100": "Step up to 100% above PM2.5",
-          "custom_auto_down_80": "Step down to 80% below PM2.5",
-          "custom_auto_delay_80": "Delay before stepping down to 80%",
-          "custom_auto_down_60": "Step down to 60% below PM2.5",
-          "custom_auto_delay_60": "Delay before stepping down to 60%",
-          "custom_auto_down_40": "Step down to 40% below PM2.5",
-          "custom_auto_delay_40": "Delay before stepping down to 40%",
-          "custom_auto_down_20": "Step down to 20% below PM2.5",
-          "custom_auto_delay_20": "Delay before stepping down to 20%"
+        },
+        "sections": {
+          "excellent_good": {
+            "name": "Excellent to Good (20% / 40%)",
+            "description": "Controls the boundary between Excellent air at 20% and Good air at 40%.",
+            "data": {
+              "custom_auto_up_40": "Increase to Good above",
+              "custom_auto_down_20": "Return to Excellent below",
+              "custom_auto_delay_20": "Time below before returning"
+            }
+          },
+          "good_fair": {
+            "name": "Good to Fair (40% / 60%)",
+            "description": "Controls the boundary between Good air at 40% and Fair air at 60%.",
+            "data": {
+              "custom_auto_up_60": "Increase to Fair above",
+              "custom_auto_down_40": "Return to Good below",
+              "custom_auto_delay_40": "Time below before returning"
+            }
+          },
+          "fair_bad": {
+            "name": "Fair to Bad (60% / 80%)",
+            "description": "Controls the boundary between Fair air at 60% and Bad air at 80%.",
+            "data": {
+              "custom_auto_up_80": "Increase to Bad above",
+              "custom_auto_down_60": "Return to Fair below",
+              "custom_auto_delay_60": "Time below before returning"
+            }
+          },
+          "bad_poor": {
+            "name": "Bad to Poor (80% / 100%)",
+            "description": "Controls the boundary between Bad air at 80% and Poor air at 100%.",
+            "data": {
+              "custom_auto_up_100": "Increase to Poor above",
+              "custom_auto_down_80": "Return to Bad below",
+              "custom_auto_delay_80": "Time below before returning"
+            }
+          }
         }
       }
     },
     "error": {
       "invalid_custom_auto_value": "Enter whole numbers within the displayed ranges.",
-      "up_thresholds_not_ascending": "Upward PM2.5 thresholds must increase strictly from 40% through 100%.",
-      "down_thresholds_not_ascending": "Downward PM2.5 thresholds must increase strictly from the 20% boundary through the 80% boundary.",
-      "down_threshold_above_up": "Each downward threshold must be less than or equal to its corresponding upward threshold."
+      "up_thresholds_not_ascending": "Increase thresholds must rise from Excellent through Poor.",
+      "down_thresholds_not_ascending": "Return thresholds must rise from Excellent through Bad.",
+      "down_threshold_above_up": "A return threshold cannot exceed the increase threshold for the same air-quality boundary."
     }
   },
   "entity": {

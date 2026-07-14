@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
@@ -15,6 +16,11 @@ from homeassistant.helpers.selector import (
     NumberSelectorConfig,
     NumberSelectorMode,
 )
+
+try:
+    from homeassistant.data_entry_flow import section as data_entry_section
+except ImportError:  # Home Assistant before 2024.8
+    data_entry_section = None
 
 from .const import (
     CONF_CUSTOM_AUTO_DELAY_20,
@@ -52,6 +58,38 @@ from .setup_helpers import (
     build_discovered_device_options,
     polling_interval_from_options,
     validate_polling_interval_seconds,
+)
+
+SECTION_EXCELLENT_GOOD = "excellent_good"
+SECTION_GOOD_FAIR = "good_fair"
+SECTION_FAIR_BAD = "fair_bad"
+SECTION_BAD_POOR = "bad_poor"
+
+CUSTOM_AUTO_SECTIONS = (
+    (
+        SECTION_EXCELLENT_GOOD,
+        CONF_CUSTOM_AUTO_UP_40,
+        CONF_CUSTOM_AUTO_DOWN_20,
+        CONF_CUSTOM_AUTO_DELAY_20,
+    ),
+    (
+        SECTION_GOOD_FAIR,
+        CONF_CUSTOM_AUTO_UP_60,
+        CONF_CUSTOM_AUTO_DOWN_40,
+        CONF_CUSTOM_AUTO_DELAY_40,
+    ),
+    (
+        SECTION_FAIR_BAD,
+        CONF_CUSTOM_AUTO_UP_80,
+        CONF_CUSTOM_AUTO_DOWN_60,
+        CONF_CUSTOM_AUTO_DELAY_60,
+    ),
+    (
+        SECTION_BAD_POOR,
+        CONF_CUSTOM_AUTO_UP_100,
+        CONF_CUSTOM_AUTO_DOWN_80,
+        CONF_CUSTOM_AUTO_DELAY_80,
+    ),
 )
 
 
@@ -132,10 +170,12 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure integration-managed automatic speed rules."""
 
         errors: dict[str, str] = {}
+        defaults: Mapping[str, Any] = CUSTOM_AUTO_DEFAULTS
+        submitted_values: dict[str, int] | None = None
         if user_input is not None:
             try:
-                values = parse_custom_auto_values(user_input)
-                validate_custom_auto_values(values)
+                submitted_values = _parse_custom_auto_form(user_input)
+                validate_custom_auto_values(submitted_values)
             except ValueError as err:
                 error = str(err)
                 errors["base"] = (
@@ -148,15 +188,17 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     }
                     else "invalid_custom_auto_value"
                 )
+                if submitted_values is not None:
+                    defaults = submitted_values
             else:
                 if self._pending_options is None:
                     return self.async_abort(reason="unknown")
-                self._pending_options.update(values)
+                self._pending_options.update(submitted_values)
                 return self._create_pending_entry()
 
         return self.async_show_form(
             step_id="custom_auto",
-            data_schema=_custom_auto_schema(user_input or CUSTOM_AUTO_DEFAULTS),
+            data_schema=_custom_auto_schema(defaults),
             errors=errors,
         )
 
@@ -183,46 +225,25 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._config_entry = config_entry
-        self._pending_options: dict[str, Any] | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage options."""
 
+        errors: dict[str, str] = {}
+        defaults = CustomAutoConfig.from_options(
+            self._config_entry.options
+        ).as_options()
+        polling_default = polling_interval_from_options(self._config_entry.options)
+        submitted_values: dict[str, int] | None = None
         if user_input is not None:
-            polling_interval = validate_polling_interval_seconds(
+            polling_default = validate_polling_interval_seconds(
                 user_input[CONF_POLLING_INTERVAL]
             )
-            self._pending_options = {
-                **{
-                    key: value
-                    for key, value in self._config_entry.options.items()
-                    if key != LEGACY_CONF_USE_CUSTOM_AUTO
-                },
-                CONF_POLLING_INTERVAL: polling_interval,
-            }
-            return await self.async_step_custom_auto()
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=_options_schema(
-                polling_default=polling_interval_from_options(
-                    self._config_entry.options
-                ),
-            ),
-        )
-
-    async def async_step_custom_auto(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Configure integration-managed automatic speed rules."""
-
-        errors: dict[str, str] = {}
-        if user_input is not None:
             try:
-                values = parse_custom_auto_values(user_input)
-                validate_custom_auto_values(values)
+                submitted_values = _parse_custom_auto_form(user_input)
+                validate_custom_auto_values(submitted_values)
             except ValueError as err:
                 error = str(err)
                 errors["base"] = (
@@ -236,19 +257,23 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
                     else "invalid_custom_auto_value"
                 )
             else:
-                if self._pending_options is None:
-                    self._pending_options = {
-                        key: value
-                        for key, value in self._config_entry.options.items()
-                        if key != LEGACY_CONF_USE_CUSTOM_AUTO
-                    }
-                self._pending_options.update(values)
-                return self.async_create_entry(title="", data=self._pending_options)
+                options = {
+                    key: value
+                    for key, value in self._config_entry.options.items()
+                    if key != LEGACY_CONF_USE_CUSTOM_AUTO
+                }
+                options[CONF_POLLING_INTERVAL] = polling_default
+                options.update(submitted_values)
+                return self.async_create_entry(title="", data=options)
+            if submitted_values is not None:
+                defaults = submitted_values
 
-        defaults = CustomAutoConfig.from_options(self._config_entry.options).as_options()
         return self.async_show_form(
-            step_id="custom_auto",
-            data_schema=_custom_auto_schema(user_input or defaults),
+            step_id="init",
+            data_schema=_options_schema(
+                polling_default=polling_default,
+                custom_auto_defaults=defaults,
+            ),
             errors=errors,
         )
 
@@ -294,8 +319,9 @@ def _user_schema(
 def _options_schema(
     *,
     polling_default: int = DEFAULT_POLLING_INTERVAL_SECONDS,
+    custom_auto_defaults: Mapping[str, Any],
 ) -> vol.Schema:
-    """Build the first options form."""
+    """Build the complete options form."""
 
     return vol.Schema(
         {
@@ -303,12 +329,19 @@ def _options_schema(
                 CONF_POLLING_INTERVAL,
                 default=polling_default,
             ): _polling_interval_schema_value(),
+            **_custom_auto_sections(custom_auto_defaults),
         }
     )
 
 
 def _custom_auto_schema(defaults: Any) -> vol.Schema:
     """Build the custom-auto threshold and delay form."""
+
+    return vol.Schema(_custom_auto_sections(defaults))
+
+
+def _custom_auto_sections(defaults: Mapping[str, Any]) -> dict[Any, Any]:
+    """Build expanded boundary sections for the five air-quality levels."""
 
     values = {
         key: defaults.get(key, CUSTOM_AUTO_DEFAULTS[key])
@@ -332,30 +365,42 @@ def _custom_auto_schema(defaults: Any) -> vol.Schema:
             unit_of_measurement="min",
         )
     )
-    return vol.Schema(
-        {
-            vol.Required(key, default=values[key]): pm_selector
-            for key in (
-                CONF_CUSTOM_AUTO_UP_40,
-                CONF_CUSTOM_AUTO_UP_60,
-                CONF_CUSTOM_AUTO_UP_80,
-                CONF_CUSTOM_AUTO_UP_100,
-                CONF_CUSTOM_AUTO_DOWN_80,
-                CONF_CUSTOM_AUTO_DOWN_60,
-                CONF_CUSTOM_AUTO_DOWN_40,
-                CONF_CUSTOM_AUTO_DOWN_20,
-            )
-        }
-        | {
-            vol.Required(key, default=values[key]): delay_selector
-            for key in (
-                CONF_CUSTOM_AUTO_DELAY_80,
-                CONF_CUSTOM_AUTO_DELAY_60,
-                CONF_CUSTOM_AUTO_DELAY_40,
-                CONF_CUSTOM_AUTO_DELAY_20,
-            )
-        }
-    )
+    if data_entry_section is None:
+        fields: dict[Any, Any] = {}
+        for _, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS:
+            fields[vol.Required(up_key, default=values[up_key])] = pm_selector
+            fields[vol.Required(down_key, default=values[down_key])] = pm_selector
+            fields[vol.Required(delay_key, default=values[delay_key])] = delay_selector
+        return fields
+    return {
+        vol.Required(section_key): data_entry_section(
+            vol.Schema(
+                {
+                    vol.Required(up_key, default=values[up_key]): pm_selector,
+                    vol.Required(down_key, default=values[down_key]): pm_selector,
+                    vol.Required(delay_key, default=values[delay_key]): delay_selector,
+                }
+            ),
+            {"collapsed": False},
+        )
+        for section_key, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS
+    }
+
+
+def _parse_custom_auto_form(values: Mapping[str, Any]) -> dict[str, int]:
+    """Flatten sectioned form input into the existing config-entry option keys."""
+
+    flattened: dict[str, Any] = {}
+    has_sections = False
+    for section_key, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS:
+        section_values = values.get(section_key)
+        if not isinstance(section_values, Mapping):
+            continue
+        has_sections = True
+        for key in (up_key, down_key, delay_key):
+            if key in section_values:
+                flattened[key] = section_values[key]
+    return parse_custom_auto_values(flattened if has_sections else values)
 
 
 def _select_options(
