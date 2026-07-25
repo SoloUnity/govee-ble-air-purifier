@@ -1,38 +1,37 @@
 import importlib
-from types import ModuleType, SimpleNamespace
+import sys
+from types import SimpleNamespace
 
 import pytest
 
-from custom_components.govee_ble_air_purifier.coordinator import GoveeData
+from custom_components.govee_ble_air_purifier.models import PurifierState
+from tests.helpers.ha_stubs import install_modules
+
+
+def _import_diagnostics(monkeypatch: pytest.MonkeyPatch):
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.config_entries": {"ConfigEntry": object},
+            "homeassistant.core": {"HomeAssistant": object},
+        },
+    )
+    sys.modules.pop("custom_components.govee_ble_air_purifier.diagnostics", None)
+    return importlib.import_module(
+        "custom_components.govee_ble_air_purifier.diagnostics"
+    )
 
 
 @pytest.mark.asyncio
 async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_entries_module = ModuleType("homeassistant.config_entries")
-    config_entries_module.ConfigEntry = object
-    core_module = ModuleType("homeassistant.core")
-    core_module.HomeAssistant = object
-    homeassistant_module = ModuleType("homeassistant")
-    homeassistant_module.config_entries = config_entries_module
-    homeassistant_module.core = core_module
-    monkeypatch.setitem(__import__("sys").modules, "homeassistant", homeassistant_module)
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "homeassistant.config_entries",
-        config_entries_module,
-    )
-    monkeypatch.setitem(__import__("sys").modules, "homeassistant.core", core_module)
-
-    diagnostics = importlib.reload(
-        importlib.import_module("custom_components.govee_ble_air_purifier.diagnostics")
-    )
+    diagnostics = _import_diagnostics(monkeypatch)
     runtime_coordinator = SimpleNamespace(
-        data=GoveeData(is_on=True, fan_mode="Auto", pm25=9, filter_life=91)
+        data=PurifierState(is_on=True, fan_mode="Auto", pm25=9, filter_life=91)
     )
     legacy_coordinator = SimpleNamespace(
-        data=GoveeData(is_on=False, fan_mode="Sleep", pm25=99, filter_life=1)
+        data=PurifierState(is_on=False, fan_mode="Sleep", pm25=99, filter_life=1)
     )
     entry = SimpleNamespace(
         data={"address": "aa:bb:cc:dd:ee:ff", "name": "GVH7124ABCD"},
@@ -55,7 +54,7 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
     result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
 
     assert result == {
-        "entry": {"address": "XX:XX:XX:XX:XX:XX", "name": "GVH7124"},
+        "entry": {"address": "XX:XX:XX:XX:XX:XX", "name": "REDACTED"},
         "options": {"use_custom_auto": True, "custom_auto_up_40": 3},
         "state": {
             "is_on": True,
@@ -70,9 +69,35 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
     }
 
 
-def test_diagnostics_redacts_all_uuid_address_components() -> None:
-    from custom_components.govee_ble_air_purifier.diagnostics import _redact_address
+def test_diagnostics_redacts_all_uuid_address_components(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostics = _import_diagnostics(monkeypatch)
 
-    assert _redact_address("a1b2c3d4-e5f6-47a8-9012-123456789abc") == (
+    assert diagnostics._redact_address("a1b2c3d4-e5f6-47a8-9012-123456789abc") == (
         "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
     )
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_redacts_arbitrary_user_provided_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostics = _import_diagnostics(monkeypatch)
+    entry = SimpleNamespace(
+        data={"address": "AA:BB:CC:DD:EE:FF", "name": "Gordon's Bedroom"},
+        options={},
+        entry_id="entry-1",
+        runtime_data=None,
+    )
+
+    result = await diagnostics.async_get_config_entry_diagnostics(
+        SimpleNamespace(data={}), entry
+    )
+
+    assert result == {
+        "entry": {"address": "XX:XX:XX:XX:XX:XX", "name": "REDACTED"},
+        "options": {},
+        "state": None,
+        "custom_auto": None,
+    }

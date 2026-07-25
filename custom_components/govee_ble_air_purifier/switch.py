@@ -15,12 +15,12 @@ from homeassistant.helpers import restore_state
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
+from .custom_auto.policy import CUSTOM_AUTO_SPEEDS
 from .entity import GoveeAirPurifierEntity
 
 PRESET_AUTO = "Auto"
 ATTR_CUSTOM_AUTO_ACTIVE = "custom_auto_active"
 ATTR_CUSTOM_AUTO_SPEED = "custom_auto_speed"
-CUSTOM_AUTO_SPEEDS = (20, 40, 60, 80, 100)
 
 
 async def async_setup_entry(

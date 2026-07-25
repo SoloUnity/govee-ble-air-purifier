@@ -8,7 +8,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_ADDRESS, CONF_NAME, DOMAIN
-from .profiles import match_profile
 
 
 async def async_get_config_entry_diagnostics(
@@ -19,8 +18,8 @@ async def async_get_config_entry_diagnostics(
     data = dict(entry.data)
     if CONF_ADDRESS in data:
         data[CONF_ADDRESS] = _redact_address(data[CONF_ADDRESS])
-    if CONF_NAME in data and (profile := match_profile(data[CONF_NAME])):
-        data[CONF_NAME] = profile.local_name_prefixes[0]
+    if CONF_NAME in data:
+        data[CONF_NAME] = "REDACTED"
 
     runtime_data = getattr(entry, "runtime_data", None)
     coordinator = getattr(runtime_data, "coordinator", None)

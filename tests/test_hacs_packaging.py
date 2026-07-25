@@ -18,7 +18,8 @@ def test_hacs_repository_metadata_exists_and_uses_component_layout() -> None:
     hacs = _read_json(ROOT / "hacs.json")
 
     assert hacs["name"] == "Govee BLE Air Purifier"
-    assert hacs["homeassistant"] == "2024.4.0"
+    assert hacs["homeassistant"] == "2024.8.0"
+    assert hacs["hacs"] == "1.34.0"
     assert "hacs" in hacs
     assert "content_in_root" not in hacs
     assert (ROOT / "custom_components" / DOMAIN / "manifest.json").is_file()
@@ -89,6 +90,12 @@ def test_hacs_packaging_metadata_does_not_use_placeholders() -> None:
         text = path.read_text(encoding="utf-8")
         assert PLACEHOLDER_REPOSITORY not in text
         assert PLACEHOLDER_CODEOWNER not in text
+
+
+def test_readme_documents_minimum_home_assistant_version() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "Requires Home Assistant 2024.8.0 or newer." in readme
 
 
 def test_english_translation_matches_strings_and_uses_inclusive_returns() -> None:

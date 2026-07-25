@@ -16,15 +16,15 @@ from homeassistant.const import CONCENTRATION_MICROGRAMS_PER_CUBIC_METER, PERCEN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .coordinator import GoveeData
 from .entity import GoveeAirPurifierEntity
+from .models import PurifierState
 
 
 @dataclass(kw_only=True)
 class SensorDescription(SensorEntityDescription):
     """Description for a purifier sensor."""
 
-    value_fn: Callable[[GoveeData], int | None]
+    value_fn: Callable[[PurifierState], int | None]
 
 
 SENSORS = (

@@ -19,6 +19,8 @@ It also gives you basic control of the purifier and shows remaining filter life.
 
 ## Installation
 
+Requires Home Assistant 2024.8.0 or newer.
+
 ### Via HACS
 
 1. Make sure HACS is installed.
@@ -62,7 +64,8 @@ minutes; Fair to Bad increases to 80% above 9 and returns to 60% at or below 9
 after 5 minutes; Bad to Poor increases to 100% above 15 and returns to 80% at
 or below 14 after 5
 minutes. Every threshold and return delay is independently configurable.
-Crossing back to or above a return boundary resets that boundary's timer.
+Equality at a return boundary still qualifies for a downshift because the rule
+uses `<=`; only a valid reading above that boundary resets its timer.
 
 ## Notes
 

@@ -3,19 +3,21 @@ from collections.abc import Callable
 
 import pytest
 
-from custom_components.govee_ble_air_purifier.controller import (
+from custom_components.govee_ble_air_purifier.custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
     CustomAutoConfig,
+)
+from custom_components.govee_ble_air_purifier.custom_auto.controller import (
     CustomAutoController,
 )
-from custom_components.govee_ble_air_purifier.coordinator import GoveeData
+from custom_components.govee_ble_air_purifier.models import PurifierState
 
 
 class FakeCoordinator:
     def __init__(
         self, *, pm25: int | None, mode: str = "Sleep", is_on: bool = True
     ) -> None:
-        self.data = GoveeData(
+        self.data = PurifierState(
             is_on=is_on, pm25=pm25, filter_life=90, fan_mode=mode
         )
         self.last_update_success = True
@@ -39,7 +41,7 @@ class FakeCoordinator:
         if self.command_errors:
             raise self.command_errors.pop(0)
         self.commands.append(mode)
-        self.data = GoveeData(
+        self.data = PurifierState(
             is_on=True,
             pm25=self.data.pm25,
             filter_life=self.data.filter_life,
@@ -48,7 +50,7 @@ class FakeCoordinator:
         self._notify()
 
     def set_is_on(self, is_on: bool) -> None:
-        self.data = GoveeData(
+        self.data = PurifierState(
             is_on=is_on,
             pm25=self.data.pm25,
             filter_life=self.data.filter_life,
@@ -67,7 +69,7 @@ class FakeCoordinator:
         self.last_pm25_update_success = pm25 is not None
         if pm25 is not None:
             self.pm25_sample_revision += 1
-        self.data = GoveeData(
+        self.data = PurifierState(
             is_on=self.data.is_on,
             pm25=pm25,
             filter_life=self.data.filter_life,
@@ -742,6 +744,35 @@ async def test_restore_retains_speed_confirms_upward_correction_and_restarts_tim
     assert coordinator.commands == ["High"]
     assert controller.current_speed == 80
     await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_invalid_restored_speed_falls_back_to_coordinator_mode() -> None:
+    coordinator = FakeCoordinator(pm25=None, mode="Medium")
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+
+    await controller.async_activate(restored_speed=50, restoring=True)
+
+    assert controller.current_speed == 60
+    assert coordinator.commands == []
+    await controller.async_stop()
+
+
+def test_diagnostics_shape_is_complete() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+
+    assert controller.diagnostics() == {
+        "active": False,
+        "current_speed": None,
+        "up_thresholds": [3, 5, 9, 15],
+        "down_thresholds": [3, 5, 9, 14],
+        "down_delays": [7, 5, 5, 5],
+        "pending_downshifts": [],
+        "mature_downshifts": [],
+        "pending_upshift_readings": 0,
+        "pending_upshift_speed": None,
+    }
 
 
 @pytest.mark.asyncio

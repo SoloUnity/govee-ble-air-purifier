@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import re
 from uuid import UUID
 
-from .models import GoveeAirPurifierState
+from .models import DecodedStatus
 from .protocol import (
     FAN_MODE_COMMANDS,
     POWER_OFF_COMMAND,
@@ -40,7 +40,7 @@ class ModelProfile:
     is_power_state_response: Callable[[bytes], bool]
     is_status_response: Callable[[bytes], bool]
     decode_power_state: Callable[[bytes], bool]
-    decode_status: Callable[[bytes], GoveeAirPurifierState]
+    decode_status: Callable[[bytes], DecodedStatus]
 
     def matches_local_name(self, name: str | None) -> bool:
         """Return true if a BLE local name belongs to this model profile."""

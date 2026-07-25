@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from .client import GoveeBleClient
+from .bluetooth.client import GoveeBleClient
 from .const import CONF_ADDRESS, CONF_PROFILE, PLATFORMS
-from .controller import CustomAutoConfig, CustomAutoController
 from .coordinator import GoveeCoordinator, GoveeRuntimeData
+from .custom_auto.config import CustomAutoConfig
+from .custom_auto.controller import CustomAutoController
 from .profiles import get_profile
 from .setup_helpers import polling_interval_from_options
 

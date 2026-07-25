@@ -10,17 +10,12 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components import bluetooth
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.data_entry_flow import FlowResult, section as data_entry_section
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
 )
-
-try:
-    from homeassistant.data_entry_flow import section as data_entry_section
-except ImportError:  # Home Assistant before 2024.8
-    data_entry_section = None
 
 from .const import (
     CONF_CUSTOM_AUTO_DELAY_20,
@@ -44,7 +39,7 @@ from .const import (
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
-from .controller import (
+from .custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
     CUSTOM_AUTO_OPTION_KEYS,
     CustomAutoConfig,
@@ -419,13 +414,6 @@ def _custom_auto_sections(defaults: Mapping[str, Any]) -> dict[Any, Any]:
             unit_of_measurement="min",
         )
     )
-    if data_entry_section is None:
-        fields: dict[Any, Any] = {}
-        for _, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS:
-            fields[vol.Required(up_key, default=values[up_key])] = pm_selector
-            fields[vol.Required(down_key, default=values[down_key])] = pm_selector
-            fields[vol.Required(delay_key, default=values[delay_key])] = delay_selector
-        return fields
     return {
         vol.Required(section_key): data_entry_section(
             vol.Schema(

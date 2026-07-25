@@ -5,6 +5,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from custom_components.govee_ble_air_purifier.custom_auto.config import (
+    CUSTOM_AUTO_DEFAULTS,
+)
+from tests.helpers.ha_stubs import install_modules
+
 
 MODULE_NAME = "custom_components.govee_ble_air_purifier.config_flow"
 
@@ -144,77 +149,50 @@ def _assert_schema_values_are_serializable(schema: object) -> None:
 def _install_homeassistant_modules(
     monkeypatch: pytest.MonkeyPatch,
     bluetooth_module: ModuleType,
-    *,
-    sections: bool = True,
 ) -> None:
-    homeassistant_module = ModuleType("homeassistant")
-    components_module = ModuleType("homeassistant.components")
-    config_entries_module = ModuleType("homeassistant.config_entries")
-    const_module = ModuleType("homeassistant.const")
-    data_entry_flow_module = ModuleType("homeassistant.data_entry_flow")
-    helpers_module = ModuleType("homeassistant.helpers")
-    selector_module = ModuleType("homeassistant.helpers.selector")
-    voluptuous_module = ModuleType("voluptuous")
-
-    config_entries_module.ConfigFlow = _ConfigFlow
-    config_entries_module.OptionsFlow = _OptionsFlow
-    config_entries_module.ConfigEntry = object
-    const_module.CONF_ADDRESS = "address"
-    const_module.CONF_NAME = "name"
-    data_entry_flow_module.FlowResult = dict
-    if sections:
-        data_entry_flow_module.section = lambda schema, options: _Section(
-            schema, options
-        )
-    voluptuous_module.All = _VoluptuousAll
-    voluptuous_module.Coerce = _VoluptuousCoerce
-    voluptuous_module.Invalid = _VoluptuousInvalid
-    voluptuous_module.In = _VoluptuousIn
-    voluptuous_module.Optional = lambda key, default=None: _VoluptuousMarker(
-        key, default
+    modules = install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components": {},
+            "homeassistant.config_entries": {
+                "ConfigFlow": _ConfigFlow,
+                "OptionsFlow": _OptionsFlow,
+                "ConfigEntry": object,
+            },
+            "homeassistant.const": {"CONF_ADDRESS": "address", "CONF_NAME": "name"},
+            "homeassistant.data_entry_flow": {
+                "FlowResult": dict,
+                "section": lambda schema, options: _Section(schema, options),
+            },
+            "homeassistant.helpers.selector": {
+                "BooleanSelector": _BooleanSelector,
+                "NumberSelector": _NumberSelector,
+                "NumberSelectorConfig": _NumberSelectorConfig,
+                "NumberSelectorMode": _NumberSelectorMode,
+            },
+            "voluptuous": {
+                "All": _VoluptuousAll,
+                "Coerce": _VoluptuousCoerce,
+                "Invalid": _VoluptuousInvalid,
+                "In": _VoluptuousIn,
+                "Optional": lambda key, default=None: _VoluptuousMarker(key, default),
+                "Required": lambda key, default=None: _VoluptuousMarker(key, default),
+                "Range": _VoluptuousRange,
+                "Schema": _VoluptuousSchema,
+            },
+        },
     )
-    voluptuous_module.Required = lambda key, default=None: _VoluptuousMarker(
-        key, default
-    )
-    voluptuous_module.Range = _VoluptuousRange
-    voluptuous_module.Schema = _VoluptuousSchema
-    selector_module.BooleanSelector = _BooleanSelector
-    selector_module.NumberSelector = _NumberSelector
-    selector_module.NumberSelectorConfig = _NumberSelectorConfig
-    selector_module.NumberSelectorMode = _NumberSelectorMode
-
-    homeassistant_module.config_entries = config_entries_module
-    homeassistant_module.components = components_module
-    homeassistant_module.helpers = helpers_module
-    components_module.bluetooth = bluetooth_module
-    helpers_module.selector = selector_module
-
-    monkeypatch.setitem(sys.modules, "homeassistant", homeassistant_module)
-    monkeypatch.setitem(sys.modules, "homeassistant.components", components_module)
     monkeypatch.setitem(
         sys.modules, "homeassistant.components.bluetooth", bluetooth_module
     )
-    monkeypatch.setitem(
-        sys.modules, "homeassistant.config_entries", config_entries_module
-    )
-    monkeypatch.setitem(sys.modules, "homeassistant.const", const_module)
-    monkeypatch.setitem(
-        sys.modules, "homeassistant.data_entry_flow", data_entry_flow_module
-    )
-    monkeypatch.setitem(sys.modules, "homeassistant.helpers", helpers_module)
-    monkeypatch.setitem(
-        sys.modules, "homeassistant.helpers.selector", selector_module
-    )
-    monkeypatch.setitem(sys.modules, "voluptuous", voluptuous_module)
+    modules["homeassistant.components"].bluetooth = bluetooth_module
 
 
 def _import_config_flow(
     monkeypatch: pytest.MonkeyPatch,
     bluetooth_module: ModuleType,
-    *,
-    sections: bool = True,
 ):
-    _install_homeassistant_modules(monkeypatch, bluetooth_module, sections=sections)
+    _install_homeassistant_modules(monkeypatch, bluetooth_module)
     sys.modules.pop(MODULE_NAME, None)
     return importlib.import_module(MODULE_NAME)
 
@@ -234,6 +212,13 @@ def _sectioned_values(config_flow, values: dict[str, int]) -> dict[str, object]:
         }
         for section_key, up_key, down_key, delay_key in config_flow.CUSTOM_AUTO_SECTIONS
     }
+
+
+def test_config_flow_version_is_stable(monkeypatch: pytest.MonkeyPatch) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+
+    assert config_flow.GoveeBleAirPurifierConfigFlow.VERSION == 1
 
 
 @pytest.mark.asyncio
@@ -373,7 +358,7 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
         }
     )
     invalid_flat = {
-        **config_flow.CUSTOM_AUTO_DEFAULTS,
+        **CUSTOM_AUTO_DEFAULTS,
         "custom_auto_up_60": 3,
     }
     invalid = _sectioned_values(config_flow, invalid_flat)
@@ -382,12 +367,12 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
     assert error_result["errors"] == {"base": "up_thresholds_not_ascending"}
 
     result = await flow.async_step_custom_auto(
-        _sectioned_values(config_flow, config_flow.CUSTOM_AUTO_DEFAULTS)
+        _sectioned_values(config_flow, CUSTOM_AUTO_DEFAULTS)
     )
     assert result["type"] == "create_entry"
     assert result["options"] == {
         "polling_interval": 15,
-        **config_flow.CUSTOM_AUTO_DEFAULTS,
+        **CUSTOM_AUTO_DEFAULTS,
     }
 
 
@@ -498,14 +483,14 @@ async def test_options_always_edit_rules_and_remove_legacy_toggle(
     existing = {
         "polling_interval": 30,
         "use_custom_auto": True,
-        **config_flow.CUSTOM_AUTO_DEFAULTS,
+        **CUSTOM_AUTO_DEFAULTS,
     }
     options_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
         SimpleNamespace(options=existing)
     )
 
     changed = {
-        **config_flow.CUSTOM_AUTO_DEFAULTS,
+        **CUSTOM_AUTO_DEFAULTS,
         "custom_auto_delay_20": 12,
     }
     saved = await options_flow.async_step_init(
@@ -550,7 +535,7 @@ async def test_options_show_all_custom_auto_sections_on_initial_page(
                 for key, (marker, _) in _schema_by_key(section_value.schema).items()
             }
         )
-    assert displayed_defaults == config_flow.CUSTOM_AUTO_DEFAULTS
+    assert displayed_defaults == CUSTOM_AUTO_DEFAULTS
 
 
 @pytest.mark.asyncio
@@ -564,7 +549,7 @@ async def test_options_report_boundary_errors_without_leaving_initial_page(
         SimpleNamespace(options={})
     )
     invalid = {
-        **config_flow.CUSTOM_AUTO_DEFAULTS,
+        **CUSTOM_AUTO_DEFAULTS,
         "custom_auto_up_60": 3,
     }
 
@@ -577,26 +562,3 @@ async def test_options_report_boundary_errors_without_leaving_initial_page(
 
     assert result["step_id"] == "init"
     assert result["errors"] == {"base": "up_thresholds_not_ascending"}
-
-
-@pytest.mark.asyncio
-async def test_options_show_flat_expanded_fields_before_section_support(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
-    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
-    config_flow = _import_config_flow(
-        monkeypatch, bluetooth_module, sections=False
-    )
-    options_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
-        SimpleNamespace(options={})
-    )
-
-    form = await options_flow.async_step_init()
-    fields = _schema_by_key(form["data_schema"])
-
-    assert form["step_id"] == "init"
-    assert list(fields)[0] == "polling_interval"
-    assert len(fields) == 13
-    assert "custom_auto_up_40" in fields
-    assert "custom_auto_delay_80" in fields

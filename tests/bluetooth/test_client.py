@@ -1,14 +1,13 @@
 import asyncio
-from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 
-from custom_components.govee_ble_air_purifier.client import (
+from custom_components.govee_ble_air_purifier.bluetooth.client import (
     GoveeBleClient,
     GoveeBleClientError,
 )
-from custom_components.govee_ble_air_purifier.coordinator import GoveeData
+from custom_components.govee_ble_air_purifier.models import PurifierState
 from custom_components.govee_ble_air_purifier.protocol import build_frame
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
 
@@ -134,7 +133,7 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
     fake = FakeBleakClient()
     client = _TestableGoveeBleClient(fake)
 
-    assert await client.async_get_state() == GoveeData(
+    assert await client.async_get_state() == PurifierState(
         is_on=True,
         pm25=42,
         filter_life=85,
@@ -153,7 +152,7 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
 async def test_get_state_uses_shorter_poll_timeout() -> None:
     client = _RecordingTimeoutClient()
 
-    assert await client.async_get_state() == GoveeData(
+    assert await client.async_get_state() == PurifierState(
         is_on=True,
         pm25=42,
         filter_life=85,
@@ -253,142 +252,11 @@ async def test_stalled_stop_notify_is_bounded_without_failing_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_production_connection_wrapper_does_not_mask_cleanup_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake = FakeBleakClient(stall_stop_notify=True)
-
-    async def close_stale_connections(_device: Any) -> None:
-        return None
-
-    async def establish_connection(**_kwargs: Any) -> FakeBleakClient:
-        return fake
-
-    bleak_module = ModuleType("bleak_retry_connector")
-    bleak_module.BleakClientWithServiceCache = object
-    bleak_module.close_stale_connections = close_stale_connections
-    bleak_module.establish_connection = establish_connection
-    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
-    bluetooth_module.async_ble_device_from_address = lambda *args, **kwargs: SimpleNamespace(
-        name="Purifier"
-    )
-    components_module = ModuleType("homeassistant.components")
-    components_module.bluetooth = bluetooth_module
-    homeassistant_module = ModuleType("homeassistant")
-    homeassistant_module.components = components_module
-    monkeypatch.setitem(__import__("sys").modules, "bleak_retry_connector", bleak_module)
-    monkeypatch.setitem(__import__("sys").modules, "homeassistant", homeassistant_module)
-    monkeypatch.setitem(__import__("sys").modules, "homeassistant.components", components_module)
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "homeassistant.components.bluetooth",
-        bluetooth_module,
-    )
-    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
-
-    assert await client._async_write_and_wait(
-        H7124_PROFILE.power_on_command,
-        H7124_PROFILE.is_power_state_response,
-        timeout=0.01,
-    )
-
-
-@pytest.mark.asyncio
-async def test_disconnect_cleanup_error_does_not_mask_primary_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake = FakeBleakClient(fail_disconnect=True)
-
-    async def close_stale_connections(_device: Any) -> None:
-        return None
-
-    async def establish_connection(**_kwargs: Any) -> FakeBleakClient:
-        return fake
-
-    bleak_module = ModuleType("bleak_retry_connector")
-    bleak_module.BleakClientWithServiceCache = object
-    bleak_module.close_stale_connections = close_stale_connections
-    bleak_module.establish_connection = establish_connection
-    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
-    bluetooth_module.async_ble_device_from_address = lambda *args, **kwargs: SimpleNamespace(
-        name="Purifier"
-    )
-    components_module = ModuleType("homeassistant.components")
-    components_module.bluetooth = bluetooth_module
-    homeassistant_module = ModuleType("homeassistant")
-    homeassistant_module.components = components_module
-    monkeypatch.setitem(__import__("sys").modules, "bleak_retry_connector", bleak_module)
-    monkeypatch.setitem(__import__("sys").modules, "homeassistant", homeassistant_module)
-    monkeypatch.setitem(__import__("sys").modules, "homeassistant.components", components_module)
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "homeassistant.components.bluetooth",
-        bluetooth_module,
-    )
-
-    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
-
-    with pytest.raises(RuntimeError, match="primary failed"):
-        await client._async_with_connection(
-            lambda _client: (_ for _ in ()).throw(RuntimeError("primary failed"))
-        )
-    assert fake.disconnected is True
-
-
-@pytest.mark.asyncio
-async def test_stalled_disconnect_is_bounded_and_preserves_primary_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import custom_components.govee_ble_air_purifier.client as client_module
-
-    fake = FakeBleakClient(stall_disconnect=True)
-
-    async def close_stale_connections(_device: Any) -> None:
-        return None
-
-    async def establish_connection(**_kwargs: Any) -> FakeBleakClient:
-        return fake
-
-    bleak_module = ModuleType("bleak_retry_connector")
-    bleak_module.BleakClientWithServiceCache = object
-    bleak_module.close_stale_connections = close_stale_connections
-    bleak_module.establish_connection = establish_connection
-    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
-    bluetooth_module.async_ble_device_from_address = lambda *args, **kwargs: SimpleNamespace(
-        name="Purifier"
-    )
-    components_module = ModuleType("homeassistant.components")
-    components_module.bluetooth = bluetooth_module
-    homeassistant_module = ModuleType("homeassistant")
-    homeassistant_module.components = components_module
-    monkeypatch.setitem(__import__("sys").modules, "bleak_retry_connector", bleak_module)
-    monkeypatch.setitem(__import__("sys").modules, "homeassistant", homeassistant_module)
-    monkeypatch.setitem(__import__("sys").modules, "homeassistant.components", components_module)
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "homeassistant.components.bluetooth",
-        bluetooth_module,
-    )
-    monkeypatch.setattr(client_module, "DEFAULT_TIMEOUT", 0.01)
-    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
-
-    with pytest.raises(RuntimeError, match="primary failed"):
-        await asyncio.wait_for(
-            client._async_with_connection(
-                lambda _client: (_ for _ in ()).throw(RuntimeError("primary failed"))
-            ),
-            0.1,
-        )
-
-    assert fake.disconnect_started is True
-
-
-@pytest.mark.asyncio
 async def test_extra_notification_after_batch_completion_is_ignored() -> None:
     fake = FakeBleakClient(send_extra_on_stop_notify=True)
     client = _TestableGoveeBleClient(fake)
 
-    assert await client.async_get_state() == GoveeData(
+    assert await client.async_get_state() == PurifierState(
         is_on=True,
         pm25=42,
         filter_life=85,
@@ -441,3 +309,65 @@ async def test_fan_mode_command_waits_for_exact_echo_confirmation() -> None:
     assert fake.writes == [
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.fan_mode_commands["Low"], False),
     ]
+
+
+@pytest.mark.asyncio
+async def test_connection_delegate_passes_one_absolute_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    hass = object()
+    client = GoveeBleClient(hass, "AA:BB:CC:DD:EE:FF")
+
+    def operation(_client: Any) -> None:
+        return None
+
+    calls: list[tuple[Any, str, Any, float]] = []
+
+    async def async_with_connection(
+        passed_hass: Any,
+        address: str,
+        passed_operation: Any,
+        *,
+        deadline: float,
+    ) -> str:
+        calls.append((passed_hass, address, passed_operation, deadline))
+        return "result"
+
+    monkeypatch.setattr(transport, "async_with_connection", async_with_connection)
+    deadline = asyncio.get_running_loop().time() + 4.0
+
+    assert await client._async_with_connection(operation, deadline=deadline) == "result"
+    assert calls == [(hass, "AA:BB:CC:DD:EE:FF", operation, deadline)]
+
+
+@pytest.mark.asyncio
+async def test_connection_delegate_creates_default_deadline_when_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    deadlines: list[float] = []
+
+    async def async_with_connection(
+        _hass: Any,
+        _address: str,
+        _operation: Any,
+        *,
+        deadline: float,
+    ) -> None:
+        deadlines.append(deadline)
+
+    monkeypatch.setattr(transport, "async_with_connection", async_with_connection)
+    monkeypatch.setattr(client_module, "DEFAULT_TIMEOUT", 7.0)
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+
+    await client._async_with_connection(lambda _client: None)
+
+    after = loop.time()
+    assert len(deadlines) == 1
+    assert before + 7.0 <= deadlines[0] <= after + 7.0

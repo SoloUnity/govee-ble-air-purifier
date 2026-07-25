@@ -1,182 +1,179 @@
 # Repository Structure
 
-This repository contains a Home Assistant custom integration for monitoring and
-controlling Govee H7124-style air purifiers over Bluetooth Low Energy (BLE).
-The integration communicates locally with the purifier and does not require a
-cloud service.
+This repository contains a locally polling Home Assistant custom integration for
+Govee H7124-style BLE air purifiers. Home Assistant loads the code under
+`custom_components/`; the repository is not a standalone service.
 
-For a detailed explanation of runtime calls, shared state, locking, Custom Auto,
-and failure handling, see [`architecture.md`](architecture.md).
+For runtime interactions and lock ownership, see
+[`architecture.md`](architecture.md).
 
 ## Top-Level Layout
 
 ```text
 govee-ble-air-purifier/
-|-- custom_components/govee_ble_air_purifier/  # Home Assistant integration
-|-- tests/                                      # Unit test suite
-|-- docs/                                       # Project documentation
-|-- .github/workflows/                          # Repository validation in CI
+|-- custom_components/govee_ble_air_purifier/  # Integration package
+|-- tests/                                      # Fast and runtime smoke tests
+|-- docs/                                       # Maintainer documentation
+|-- .github/workflows/validate.yml              # CI validation lanes
 |-- README.md                                   # Installation and user guide
-|-- hacs.json                                   # HACS repository metadata
-`-- pyproject.toml                              # Python and test configuration
+|-- hacs.json                                   # HACS metadata
+`-- pyproject.toml                              # Python, pytest, and Ruff config
 ```
 
-The application code lives under `custom_components/`, following Home
-Assistant's custom integration layout. The repository itself is not a
-standalone service or application; Home Assistant loads and runs the component.
+## Home Assistant Entrypoints
 
-## Integration Modules
+The integration package's root Home Assistant entrypoints are:
 
-The integration is divided into layers, with BLE protocol details at the bottom
-and Home Assistant entities at the top.
+- `__init__.py`: config-entry setup, runtime composition, option reload, and
+  unload.
+- `config_flow.py`: setup and options flows.
+- `fan.py`: power, manual speeds, and Manual or hardware Auto presets.
+- `sensor.py`: PM2.5 and filter-life sensors.
+- `switch.py`: restored logical ownership for integration-managed Custom Auto.
+- `diagnostics.py`: redacted config, coordinator, and controller diagnostics.
 
-### Integration Lifecycle
+`entity.py` supplies common coordinator subscription, device information, and
+unique IDs. `const.py` declares only `fan`, `sensor`, and `switch` as active
+platforms. The former `select` platform has been removed; fan mode belongs to
+the fan entity.
 
-- `__init__.py` creates the BLE client and data coordinator when Home Assistant
-  loads a config entry. It also loads and unloads the supported entity
-  platforms.
-- `const.py` defines the integration domain, configuration keys, polling limits,
-  and the active platforms.
-- `manifest.json` declares the integration to Home Assistant, including its
-  runtime requirements and local-polling behavior.
+`manifest.json`, `strings.json`, and `translations/en.json` provide Home
+Assistant metadata and user-facing text. `setup_helpers.py` contains address,
+cached-advertisement, device-option, and polling-interval helpers shared by
+configuration flows.
 
-### Setup and Configuration
-
-- `config_flow.py` implements initial device setup and the options flow.
-- `setup_helpers.py` contains device-discovery formatting, address handling, and
-  polling-interval validation that can be tested independently of Home
-  Assistant.
-- `strings.json` and `translations/en.json` provide text shown in the Home
-  Assistant interface.
-
-Setup is initiated manually from Home Assistant. The flow can present compatible
-devices already visible to Home Assistant's Bluetooth stack, or accept a BLE
-address directly.
-
-### BLE Protocol and Device Support
-
-- `models.py` defines the decoded purifier state returned by the protocol layer.
-- `protocol.py` builds and validates BLE frames, defines commands, and decodes
-  power, air-quality, filter-life, and fan-mode responses.
-- `profiles.py` groups model-specific UUIDs, commands, and decoder functions into
-  device profiles. The H7124 profile is currently the supported profile and is
-  the main extension point for adding other models.
-
-These modules contain most of the device-specific knowledge and are kept
-separate from Home Assistant entity behavior.
-
-### Communication and State
-
-- `client.py` manages BLE connections, writes commands, subscribes to
-  notifications, and waits for matching responses. BLE operations are
-  serialized to avoid overlapping access to a device.
-- `coordinator.py` periodically polls the client and owns the shared state used
-  by all entities. Commands publish confirmed state promptly and schedule a
-  follow-up refresh to reconcile the integration with the physical device.
-
-### Home Assistant Entities
-
-- `entity.py` provides common device information and unique-ID behavior.
-- `fan.py` exposes power, manual fan speeds, and automatic/manual preset modes.
-- `sensor.py` exposes PM2.5 and remaining filter-life measurements.
-- `switch.py` exposes the active Custom Auto control. `select.py` contains an
-  older mode entity implementation that is not currently loaded; mode selection
-  is represented by the fan entity.
-- `diagnostics.py` returns redacted configuration and current state for Home
-  Assistant diagnostics.
-
-The active platforms are `fan`, `sensor`, and `switch`, as declared in `const.py`.
-
-## Runtime Data Flow
-
-```text
-Home Assistant config entry
-          |
-          v
-     __init__.py
-          |
-          |-- creates GoveeBleClient
-          `-- creates GoveeCoordinator
-                         |
-                         v
-                  BLE request/response
-                         |
-                         v
-                    Purifier state
-                         |
-                         v
-              Fan and sensor entities
-```
-
-On startup, the integration resolves the configured device profile, creates a
-BLE client, creates a coordinator, and performs an initial refresh. The
-coordinator then polls at the configured interval and publishes state changes to
-the entities.
-
-Control commands travel in the opposite direction: an entity asks the
-coordinator to change power or fan mode, the coordinator delegates to the BLE
-client, and the client waits for confirmation from the purifier before the new
-state is published.
-
-## Internal Dependency Direction
-
-The primary dependency direction is:
+## Protocol And Bluetooth
 
 ```text
 models.py
-    |
-    v
 protocol.py
-    |
-    v
 profiles.py
-    |
-    v
-client.py
-    |
-    v
-coordinator.py
-    |
-    v
-entity.py
-    |
-    v
-fan.py / sensor.py
+bluetooth/
+|-- __init__.py
+|-- framing.py
+|-- client.py
+`-- transport.py
 ```
 
-`config_flow.py` uses `profiles.py` and `setup_helpers.py` to create config
-entries. `__init__.py` ties the client, coordinator, and entity platforms
-together at runtime.
+- `models.py` defines `DecodedStatus`, the output of one decoded H7124 status
+  frame, and `PurifierState`, the application-facing snapshot shared above the
+  protocol layer.
+- Root `protocol.py` contains H7124-specific commands, response and confirmation
+  matchers, and decoders.
+- `profiles.py` binds H7124 advertisement prefixes, UUIDs, commands, matchers,
+  decoders, and capabilities into `ModelProfile`.
+- `bluetooth/framing.py` provides generic 20-byte frame construction, checksum
+  validation, and `ProtocolError`.
+- `bluetooth/client.py` owns the per-purifier transaction lock, writes,
+  notification subscription and cleanup, response futures, matching, and shared
+  deadlines.
+- `bluetooth/transport.py` owns Home Assistant BLE-device lookup, stale
+  connection cleanup, connection establishment, and disconnect.
+
+## State And Custom Auto
+
+```text
+coordinator.py
+custom_auto/
+|-- __init__.py
+|-- config.py
+|-- policy.py
+`-- controller.py
+```
+
+- `coordinator.py` defines `GoveeRuntimeData` and `GoveeCoordinator`. The
+  coordinator polls, serializes state-changing work, merges `PurifierState`,
+  publishes confirmed commands immediately, and schedules reconciliation
+  refreshes.
+- `custom_auto/config.py` owns defaults, option parsing and validation, and the
+  immutable `CustomAutoConfig`.
+- `custom_auto/policy.py` owns pure speed constants, mode mappings, and upward
+  PM2.5 speed selection.
+- `custom_auto/controller.py` owns activation, restored speed, fresh-sample
+  tracking, upshift confirmation, downshift timers, retries, coordinator calls,
+  and transactional ownership handoff.
+
+Coordinator publication fans out to entities and, while active, the Custom Auto
+controller. The controller can call back through the coordinator to request a
+confirmed mode command; it does not call Bluetooth code directly.
+
+## Dependency Shape
+
+Dependencies branch around shared models, profile behavior, and runtime
+composition rather than forming one chain. Each arrow below means "depends on"
+or, where noted, "calls through the public runtime interface":
+
+```text
+protocol.py -------------------> bluetooth/framing.py
+       `-----------------------> models.py
+
+profiles.py -------------------> protocol.py + models.py
+
+bluetooth/client.py -----------> profiles.py + protocol.py
+       |-----------------------> bluetooth/framing.py + models.py
+       `-----------------------> bluetooth/transport.py
+
+coordinator.py ----------------> profiles.py + models.py
+custom_auto/controller.py -----> custom_auto/config.py + custom_auto/policy.py
+       `-- runtime calls ------> coordinator.py
+
+fan.py / sensor.py / switch.py -> entity.py + shared runtime objects
+config_flow.py ----------------> profiles.py + setup_helpers.py
+       `-----------------------> custom_auto/config.py
+
+__init__.py composes client + coordinator + profile + Custom Auto + platforms
+diagnostics.py reads config entry + coordinator + controller
+```
+
+The diagram shows important runtime dependencies, not every import. Generic
+framing is below H7124 protocol code; transport is below the transaction client;
+and pure Custom Auto config and policy are below its mutable controller.
 
 ## Tests
 
-The `tests/` directory contains unit tests for the protocol, BLE client,
-coordinator, setup flow, entities, diagnostics, and packaging metadata. Tests
-replace Home Assistant and BLE runtime objects with focused stubs, allowing most
-behavior to be checked without running Home Assistant or connecting to a real
-purifier.
-
-The usual local test command is:
-
-```bash
-python -m pytest -q
+```text
+tests/
+|-- bluetooth/
+|   |-- test_framing.py
+|   |-- test_client.py
+|   `-- test_transport.py
+|-- custom_auto/
+|   |-- test_config.py
+|   |-- test_policy.py
+|   `-- test_controller.py
+|-- helpers/
+|   `-- ha_stubs.py
+|-- conftest.py
+|-- test_protocol.py
+|-- test_coordinator_logic.py
+|-- test_fan_entity.py
+|-- test_sensor_entities.py
+|-- test_switch_entity.py
+|-- test_config_flow_logic.py
+|-- test_config_flow_runtime.py
+|-- test_init_lifecycle.py
+|-- test_diagnostics.py
+|-- test_persistence_contracts.py
+|-- test_hacs_packaging.py
+`-- test_runtime_smoke.py
 ```
 
-## Packaging and Validation
+The fast lane excludes `test_runtime_smoke.py` and uses focused substitutes;
+`tests/conftest.py` supplies a minimal coordinator stub when Home Assistant is
+not installed. The separate smoke lane installs real Home Assistant versions
+and runs only `test_runtime_smoke.py` to check imports, API inheritance and
+signatures, entity construction, config flow, and lifecycle composition.
 
-- `hacs.json` describes the repository to the Home Assistant Community Store.
-- `pyproject.toml` defines Python requirements, pytest settings, and Ruff
-  settings.
-- `.github/workflows/validate.yml` runs Ruff, behavioral tests, real Home
-  Assistant runtime smoke tests, HACS validation, and hassfest for pushes and
-  pull requests.
-- `brand/icon.png` contains the integration icon used by HACS.
+```bash
+python -m pytest --ignore=tests/test_runtime_smoke.py
+python -m pytest tests/test_runtime_smoke.py  # requires Home Assistant
+```
 
-## Common Extension Points
+## Packaging And Validation
 
-- Add support for another purifier family by defining its protocol behavior and
-  registering another profile in `profiles.py`.
-- Add another Home Assistant entity by creating a platform module and adding the
-  platform name to `PLATFORMS` in `const.py`.
-- Add another measured value by extending the decoded state, coordinator data,
-  and sensor descriptions together.
+- `.github/workflows/validate.yml` runs Ruff, the fast behavioral lane, the
+  real-Home-Assistant smoke matrix, HACS validation, and hassfest.
+- `hacs.json` describes the HACS repository.
+- `pyproject.toml` defines Python compatibility, development dependencies,
+  pytest markers, and Ruff settings.
+- `brand/icon.png` is the repository icon.

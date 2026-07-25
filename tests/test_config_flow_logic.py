@@ -8,7 +8,7 @@ from custom_components.govee_ble_air_purifier.const import (
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
-from custom_components.govee_ble_air_purifier.controller import (
+from custom_components.govee_ble_air_purifier.custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
     CustomAutoConfig,
     parse_custom_auto_values,

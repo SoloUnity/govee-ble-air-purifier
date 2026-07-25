@@ -2,42 +2,15 @@
 
 from __future__ import annotations
 
-from .models import GoveeAirPurifierState
+from .bluetooth.framing import (
+    FRAME_LENGTH,
+    ProtocolError,
+    build_frame,
+    validate_frame,
+)
+from .models import DecodedStatus
 
-FRAME_LENGTH = 20
 MAX_PM25_UG_M3 = 999
-
-
-class ProtocolError(ValueError):
-    """Raised when a BLE frame is malformed or unexpected."""
-
-
-def _xor_checksum(data: bytes) -> int:
-    checksum = 0
-    for byte in data:
-        checksum ^= byte
-    return checksum
-
-
-def build_frame(prefix: bytes) -> bytes:
-    """Build a 20-byte frame from bytes 0..n and append the XOR checksum."""
-
-    if len(prefix) > FRAME_LENGTH - 1:
-        raise ProtocolError("Frame payload must fit in the first 19 bytes")
-    body = prefix.ljust(FRAME_LENGTH - 1, b"\x00")
-    return body + bytes([_xor_checksum(body)])
-
-
-def validate_frame(frame: bytes) -> None:
-    """Validate frame length and XOR checksum."""
-
-    if len(frame) != FRAME_LENGTH:
-        raise ProtocolError(f"Expected {FRAME_LENGTH} bytes, got {len(frame)}")
-    expected = _xor_checksum(frame[:-1])
-    if frame[-1] != expected:
-        raise ProtocolError(
-            f"Invalid checksum 0x{frame[-1]:02x}; expected 0x{expected:02x}"
-        )
 
 
 POWER_OFF_COMMAND = build_frame(bytes.fromhex("33 01 00"))
@@ -144,14 +117,14 @@ def decode_power_state(frame: bytes) -> bool:
     return frame[2] == 0x01
 
 
-def decode_status(frame: bytes) -> GoveeAirPurifierState:
+def decode_status(frame: bytes) -> DecodedStatus:
     """Decode PM2.5 and filter-life values from an aa19 response."""
 
     validate_frame(frame)
     if not is_status_response(frame):
         raise ProtocolError("Not an aa19 status response")
     raw_pm25 = (frame[3] << 8) | frame[4]
-    return GoveeAirPurifierState(
+    return DecodedStatus(
         pm25=raw_pm25 if raw_pm25 <= MAX_PM25_UG_M3 else None,
         filter_life=frame[7],
     )

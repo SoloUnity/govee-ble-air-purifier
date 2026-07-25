@@ -1,6 +1,6 @@
 import pytest
 
-from custom_components.govee_ble_air_purifier.models import GoveeAirPurifierState
+from custom_components.govee_ble_air_purifier.models import DecodedStatus
 from custom_components.govee_ble_air_purifier.profiles import (
     H7124_PROFILE,
     fan_mode_labels,
@@ -25,13 +25,6 @@ from custom_components.govee_ble_air_purifier.protocol import (
     normalize_ble_name,
     validate_frame,
 )
-
-
-def test_build_frame_pads_to_20_bytes_and_adds_xor_checksum() -> None:
-    assert build_frame(bytes.fromhex("33 01 01")) == bytes.fromhex(
-        "33 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33"
-    )
-
 
 @pytest.mark.parametrize(
     ("constant", "expected"),
@@ -80,7 +73,7 @@ def test_decode_status_uses_big_endian_pm25_and_filter_percent() -> None:
     state = decode_status(
         bytes.fromhex("aa 19 81 03 82 01 00 64 00 00 00 00 00 00 00 00 00 00 00 d6")
     )
-    assert state == GoveeAirPurifierState(pm25=898, filter_life=100)
+    assert state == DecodedStatus(pm25=898, filter_life=100)
 
 
 def test_status_query_echo_is_not_a_status_response() -> None:
@@ -92,7 +85,7 @@ def test_status_query_echo_is_not_a_status_response() -> None:
 def test_decode_status_keeps_999_as_valid_pm25() -> None:
     state = decode_status(build_frame(bytes.fromhex("aa 19 81 03 e7 01 00 64")))
 
-    assert state == GoveeAirPurifierState(pm25=999, filter_life=100)
+    assert state == DecodedStatus(pm25=999, filter_life=100)
 
 
 @pytest.mark.parametrize("raw_pm25", [0x03E8, 0xFFFF])
@@ -103,7 +96,7 @@ def test_decode_status_treats_over_range_pm25_as_unknown(raw_pm25: int) -> None:
         + bytes.fromhex("01 00 64")
     )
 
-    assert decode_status(frame) == GoveeAirPurifierState(pm25=None, filter_life=100)
+    assert decode_status(frame) == DecodedStatus(pm25=None, filter_life=100)
 
 
 def test_power_confirmation_matches_requested_aa01_state() -> None:
@@ -157,17 +150,6 @@ def test_fan_mode_confirmation_accepts_exact_echo_for_all_modes() -> None:
     for mode, command in FAN_MODE_COMMANDS.items():
         assert is_fan_mode_confirmation(command, mode, command)
 
-
-def test_validate_frame_rejects_bad_length_and_checksum() -> None:
-    with pytest.raises(ProtocolError):
-        validate_frame(b"too short")
-
-    bad_checksum = bytearray(POWER_ON_COMMAND)
-    bad_checksum[-1] = 0x00
-    with pytest.raises(ProtocolError):
-        validate_frame(bytes(bad_checksum))
-
-
 def test_ble_name_normalization_accepts_h7124_prefix() -> None:
     assert normalize_ble_name("GVH712438FE") == "H7124-38FE"
     assert normalize_ble_name("GVH7124178E") == "H7124-178E"
@@ -181,6 +163,10 @@ def test_profile_lookup_matches_h7124_ble_names() -> None:
 
 
 def test_h7124_profile_exposes_exact_protocol_frames() -> None:
+    assert H7124_PROFILE.key == "h7124"
+    assert H7124_PROFILE.model == "H7124"
+    assert H7124_PROFILE.display_name == "Govee H7124 Air Purifier"
+    assert H7124_PROFILE.local_name_prefixes == ("GVH7124",)
     assert H7124_PROFILE.service_uuid == "00010203-0405-0607-0809-0a0b0c0d1910"
     assert H7124_PROFILE.notify_char_uuid == "00010203-0405-0607-0809-0a0b0c0d2b10"
     assert H7124_PROFILE.write_char_uuid == "00010203-0405-0607-0809-0a0b0c0d2b11"

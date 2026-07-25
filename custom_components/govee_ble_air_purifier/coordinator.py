@@ -8,30 +8,14 @@ from datetime import timedelta
 import logging
 from typing import Any
 
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
 from .const import DEFAULT_POLLING_INTERVAL_SECONDS
+from .models import PurifierState
 from .profiles import H7124_PROFILE, ModelProfile
 
 POLLING_INTERVAL = timedelta(seconds=DEFAULT_POLLING_INTERVAL_SECONDS)
 LOGGER = logging.getLogger(__name__)
-
-try:  # pragma: no cover - exercised in Home Assistant, not pure unit tests
-    from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-except ModuleNotFoundError:  # pragma: no cover - fallback keeps pure tests lightweight
-    DataUpdateCoordinator = object  # type: ignore[assignment]
-
-    class UpdateFailed(Exception):
-        """Fallback UpdateFailed for tests without Home Assistant installed."""
-
-
-@dataclass(frozen=True)
-class GoveeData:
-    """State shared by all Home Assistant entities."""
-
-    is_on: bool | None = None
-    pm25: int | None = None
-    filter_life: int | None = None
-    fan_mode: str | None = None
-
 
 @dataclass
 class GoveeRuntimeData:
@@ -42,7 +26,7 @@ class GoveeRuntimeData:
     controller: Any
 
 
-class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
+class GoveeCoordinator(DataUpdateCoordinator):
     """Coordinate BLE polling and command-side refreshes."""
 
     def __init__(
@@ -52,41 +36,32 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         *,
         profile: ModelProfile = H7124_PROFILE,
         polling_interval: timedelta = POLLING_INTERVAL,
-        update_method_only: bool = False,
     ) -> None:
         self._hass = hass
         self.client = client
         self.profile = profile
         self.polling_interval = polling_interval
-        self.data: GoveeData | None = None
+        self.data: PurifierState | None = None
         self.last_poll_success = False
         self.last_pm25_update_success = False
         self.pm25_sample_revision = 0
         self._last_fan_mode: str | None = None
         self._state_lock = asyncio.Lock()
         self._background_refresh_task: asyncio.Task[Any] | None = None
-        self._standalone = update_method_only or DataUpdateCoordinator is object
-        if not self._standalone:
-            super().__init__(
-                hass,
-                LOGGER,
-                name="Govee BLE Air Purifier",
-                update_interval=polling_interval,
-            )
+        super().__init__(
+            hass,
+            LOGGER,
+            name="Govee BLE Air Purifier",
+            update_interval=polling_interval,
+        )
 
-    def _publish_data(self, data: GoveeData) -> None:
+    def _publish_data(self, data: PurifierState) -> None:
         """Publish coordinator data to subscribed entities immediately."""
 
-        if not self._standalone and hasattr(self, "async_set_updated_data"):
-            self.async_set_updated_data(data)  # type: ignore[attr-defined]
-            return
-        self.data = data
+        self.async_set_updated_data(data)
 
     def _schedule_background_refresh(self) -> None:
         """Refresh later without blocking command UI updates."""
-
-        if self._standalone:
-            return
 
         self._cancel_background_refresh()
 
@@ -119,10 +94,9 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
         task = self._cancel_background_refresh()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
-        if not self._standalone and DataUpdateCoordinator is not object:
-            await super().async_shutdown()  # type: ignore[misc]
+        await super().async_shutdown()
 
-    async def _async_update_data(self) -> GoveeData:
+    async def _async_update_data(self) -> PurifierState:
         """Fetch current state from the BLE client."""
 
         async with self._state_lock:
@@ -136,8 +110,8 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
             self.last_pm25_update_success = client_data.pm25 is not None
             if self.last_pm25_update_success:
                 self.pm25_sample_revision += 1
-            current = self.data or GoveeData()
-            data = GoveeData(
+            current = self.data or PurifierState()
+            data = PurifierState(
                 is_on=client_data.is_on,
                 pm25=(
                     client_data.pm25 if client_data.pm25 is not None else current.pm25
@@ -149,12 +123,9 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
             return data
 
     async def async_request_refresh(self) -> None:
-        """Refresh data in standalone tests or delegate to HA in production."""
+        """Request a coordinator refresh."""
 
-        if self._standalone:
-            await self._async_update_data()
-            return
-        await super().async_request_refresh()  # type: ignore[misc]
+        await super().async_request_refresh()
 
     async def async_set_power(self, is_on: bool) -> None:
         """Set power and refresh shared state."""
@@ -165,9 +136,9 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
             confirmed_is_on = is_on if result is None else result
             if not confirmed_is_on:
                 self._last_fan_mode = None
-            current = self.data or GoveeData()
+            current = self.data or PurifierState()
             self._publish_data(
-                GoveeData(
+                PurifierState(
                     is_on=confirmed_is_on,
                     pm25=current.pm25,
                     filter_life=current.filter_life,
@@ -190,12 +161,14 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
                     result = await self.client.async_set_power_and_fan_mode(mode)
                     confirmed_is_on = (
                         result.is_on
-                        if isinstance(result, GoveeData) and result.is_on is not None
+                        if isinstance(result, PurifierState)
+                        and result.is_on is not None
                         else True
                     )
                     confirmed_mode = (
                         result.fan_mode
-                        if isinstance(result, GoveeData) and result.fan_mode is not None
+                        if isinstance(result, PurifierState)
+                        and result.fan_mode is not None
                         else mode
                     )
                 else:
@@ -208,9 +181,9 @@ class GoveeCoordinator(DataUpdateCoordinator):  # type: ignore[misc]
                 confirmed_is_on = True if self.data is None else self.data.is_on
                 confirmed_mode = mode if mode_result is None else mode_result
             self._last_fan_mode = confirmed_mode
-            current = self.data or GoveeData()
+            current = self.data or PurifierState()
             self._publish_data(
-                GoveeData(
+                PurifierState(
                     is_on=confirmed_is_on,
                     pm25=current.pm25,
                     filter_life=current.filter_life,

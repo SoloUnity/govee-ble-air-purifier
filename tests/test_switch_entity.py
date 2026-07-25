@@ -1,48 +1,24 @@
 import importlib
 import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
+from tests.helpers.ha_stubs import (
+    CoordinatorEntity as _CoordinatorEntity,
+    DeviceInfo as _DeviceInfo,
+    HomeAssistantError as _HomeAssistantError,
+    RestoreEntity as _RestoreEntity,
+    install_modules,
+)
 
 
 MODULE_NAME = "custom_components.govee_ble_air_purifier.switch"
 
 
-class _CoordinatorEntity:
-    def __init__(self, coordinator) -> None:
-        self.coordinator = coordinator
-        self.hass = None
-        self._remove_callbacks = []
-        self.state_writes = 0
-
-    async def async_added_to_hass(self) -> None:
-        return None
-
-    def async_on_remove(self, callback) -> None:
-        self._remove_callbacks.append(callback)
-
-    def async_write_ha_state(self) -> None:
-        self.state_writes += 1
-
-
 class _SwitchEntity:
     pass
-
-
-class _RestoreEntity:
-    async def async_get_last_state(self):
-        return getattr(self, "_test_last_state", None)
-
-
-class _HomeAssistantError(Exception):
-    pass
-
-
-class _DeviceInfo(dict):
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
 
 
 class _FakeCoordinator:
@@ -102,62 +78,28 @@ class _FakeController:
 
 
 def _import_switch(monkeypatch: pytest.MonkeyPatch):
-    homeassistant_module = ModuleType("homeassistant")
-    components_module = ModuleType("homeassistant.components")
-    switch_module = ModuleType("homeassistant.components.switch")
-    config_entries_module = ModuleType("homeassistant.config_entries")
-    const_module = ModuleType("homeassistant.const")
-    core_module = ModuleType("homeassistant.core")
-    exceptions_module = ModuleType("homeassistant.exceptions")
-    helpers_module = ModuleType("homeassistant.helpers")
-    device_registry_module = ModuleType("homeassistant.helpers.device_registry")
-    entity_registry_module = ModuleType("homeassistant.helpers.entity_registry")
-    entity_platform_module = ModuleType("homeassistant.helpers.entity_platform")
-    restore_state_module = ModuleType("homeassistant.helpers.restore_state")
-    update_coordinator_module = ModuleType("homeassistant.helpers.update_coordinator")
-
-    switch_module.SwitchEntity = _SwitchEntity
-    config_entries_module.ConfigEntry = object
-    const_module.STATE_ON = "on"
-    core_module.HomeAssistant = object
-    exceptions_module.HomeAssistantError = _HomeAssistantError
-    device_registry_module.DeviceInfo = _DeviceInfo
-    entity_platform_module.AddEntitiesCallback = object
-    restore_state_module.RestoreEntity = _RestoreEntity
-    restore_state_module.async_get = lambda hass: hass.restore_state
-    entity_registry_module.async_get = lambda hass: hass.entity_registry
-    update_coordinator_module.CoordinatorEntity = _CoordinatorEntity
-
-    homeassistant_module.components = components_module
-    homeassistant_module.config_entries = config_entries_module
-    homeassistant_module.const = const_module
-    homeassistant_module.core = core_module
-    homeassistant_module.exceptions = exceptions_module
-    homeassistant_module.helpers = helpers_module
-    components_module.switch = switch_module
-    helpers_module.device_registry = device_registry_module
-    helpers_module.entity_registry = entity_registry_module
-    helpers_module.entity_platform = entity_platform_module
-    helpers_module.restore_state = restore_state_module
-    helpers_module.update_coordinator = update_coordinator_module
-
-    modules = {
-        "homeassistant": homeassistant_module,
-        "homeassistant.components": components_module,
-        "homeassistant.components.switch": switch_module,
-        "homeassistant.config_entries": config_entries_module,
-        "homeassistant.const": const_module,
-        "homeassistant.core": core_module,
-        "homeassistant.exceptions": exceptions_module,
-        "homeassistant.helpers": helpers_module,
-        "homeassistant.helpers.device_registry": device_registry_module,
-        "homeassistant.helpers.entity_registry": entity_registry_module,
-        "homeassistant.helpers.entity_platform": entity_platform_module,
-        "homeassistant.helpers.restore_state": restore_state_module,
-        "homeassistant.helpers.update_coordinator": update_coordinator_module,
-    }
-    for name, module in modules.items():
-        monkeypatch.setitem(sys.modules, name, module)
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.switch": {"SwitchEntity": _SwitchEntity},
+            "homeassistant.config_entries": {"ConfigEntry": object},
+            "homeassistant.const": {"STATE_ON": "on"},
+            "homeassistant.core": {"HomeAssistant": object},
+            "homeassistant.exceptions": {"HomeAssistantError": _HomeAssistantError},
+            "homeassistant.helpers.device_registry": {"DeviceInfo": _DeviceInfo},
+            "homeassistant.helpers.entity_registry": {
+                "async_get": lambda hass: hass.entity_registry
+            },
+            "homeassistant.helpers.entity_platform": {"AddEntitiesCallback": object},
+            "homeassistant.helpers.restore_state": {
+                "RestoreEntity": _RestoreEntity,
+                "async_get": lambda hass: hass.restore_state,
+            },
+            "homeassistant.helpers.update_coordinator": {
+                "CoordinatorEntity": _CoordinatorEntity
+            },
+        },
+    )
 
     sys.modules.pop(MODULE_NAME, None)
     sys.modules.pop("custom_components.govee_ble_air_purifier.entity", None)
@@ -188,6 +130,8 @@ async def test_switch_setup_creates_custom_auto_entity(
     assert isinstance(entity, switch.GoveeCustomAutoSwitch)
     assert entity._attr_unique_id == "aabbccddeeff_custom_auto"
     assert entity._attr_translation_key == "custom_auto"
+    assert switch.ATTR_CUSTOM_AUTO_ACTIVE == "custom_auto_active"
+    assert switch.ATTR_CUSTOM_AUTO_SPEED == "custom_auto_speed"
 
 
 @pytest.mark.asyncio
@@ -234,6 +178,25 @@ async def test_switch_restores_custom_auto_when_fan_entity_is_disabled(
         "custom_auto_active": True,
         "custom_auto_speed": 60,
     }
+
+
+@pytest.mark.asyncio
+async def test_switch_discards_invalid_restored_speed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    switch = _import_switch(monkeypatch)
+    coordinator = _FakeCoordinator()
+    controller = _FakeController()
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = switch.GoveeCustomAutoSwitch(coordinator, entry, controller)
+    entity._test_last_state = SimpleNamespace(
+        state="on",
+        attributes={"custom_auto_active": True, "custom_auto_speed": 50},
+    )
+
+    await entity.async_added_to_hass()
+
+    assert controller.activations == [(None, True)]
 
 
 @pytest.mark.asyncio

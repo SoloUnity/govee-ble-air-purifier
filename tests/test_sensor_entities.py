@@ -1,11 +1,16 @@
 import importlib
 import sys
 from dataclasses import dataclass
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
-from custom_components.govee_ble_air_purifier.coordinator import GoveeData
+from custom_components.govee_ble_air_purifier.models import PurifierState
+from tests.helpers.ha_stubs import (
+    CoordinatorEntity as _CoordinatorEntity,
+    DeviceInfo as _DeviceInfo,
+    install_modules,
+)
 
 
 MODULE_NAME = "custom_components.govee_ble_air_purifier.sensor"
@@ -35,72 +40,30 @@ class _EntityCategory:
     DIAGNOSTIC = "diagnostic"
 
 
-class _CoordinatorEntity:
-    def __init__(self, coordinator) -> None:
-        self.coordinator = coordinator
-
-    @property
-    def available(self) -> bool:
-        return getattr(self.coordinator, "last_update_success", True)
-
-
-class _DeviceInfo(dict):
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-
-
 def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
-    homeassistant_module = ModuleType("homeassistant")
-    components_module = ModuleType("homeassistant.components")
-    sensor_module = ModuleType("homeassistant.components.sensor")
-    config_entries_module = ModuleType("homeassistant.config_entries")
-    const_module = ModuleType("homeassistant.const")
-    core_module = ModuleType("homeassistant.core")
-    helpers_module = ModuleType("homeassistant.helpers")
-    device_registry_module = ModuleType("homeassistant.helpers.device_registry")
-    entity_module = ModuleType("homeassistant.helpers.entity")
-    entity_platform_module = ModuleType("homeassistant.helpers.entity_platform")
-    update_coordinator_module = ModuleType("homeassistant.helpers.update_coordinator")
-
-    sensor_module.SensorDeviceClass = _SensorDeviceClass
-    sensor_module.SensorEntity = object
-    sensor_module.SensorEntityDescription = _SensorEntityDescription
-    sensor_module.SensorStateClass = _SensorStateClass
-    config_entries_module.ConfigEntry = object
-    const_module.CONCENTRATION_MICROGRAMS_PER_CUBIC_METER = "µg/m³"
-    const_module.PERCENTAGE = "%"
-    core_module.HomeAssistant = object
-    device_registry_module.DeviceInfo = _DeviceInfo
-    entity_module.EntityCategory = _EntityCategory
-    entity_platform_module.AddEntitiesCallback = object
-    update_coordinator_module.CoordinatorEntity = _CoordinatorEntity
-
-    homeassistant_module.components = components_module
-    homeassistant_module.config_entries = config_entries_module
-    homeassistant_module.const = const_module
-    homeassistant_module.core = core_module
-    homeassistant_module.helpers = helpers_module
-    components_module.sensor = sensor_module
-    helpers_module.device_registry = device_registry_module
-    helpers_module.entity = entity_module
-    helpers_module.entity_platform = entity_platform_module
-    helpers_module.update_coordinator = update_coordinator_module
-
-    modules = {
-        "homeassistant": homeassistant_module,
-        "homeassistant.components": components_module,
-        "homeassistant.components.sensor": sensor_module,
-        "homeassistant.config_entries": config_entries_module,
-        "homeassistant.const": const_module,
-        "homeassistant.core": core_module,
-        "homeassistant.helpers": helpers_module,
-        "homeassistant.helpers.device_registry": device_registry_module,
-        "homeassistant.helpers.entity": entity_module,
-        "homeassistant.helpers.entity_platform": entity_platform_module,
-        "homeassistant.helpers.update_coordinator": update_coordinator_module,
-    }
-    for name, module in modules.items():
-        monkeypatch.setitem(sys.modules, name, module)
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.sensor": {
+                "SensorDeviceClass": _SensorDeviceClass,
+                "SensorEntity": object,
+                "SensorEntityDescription": _SensorEntityDescription,
+                "SensorStateClass": _SensorStateClass,
+            },
+            "homeassistant.config_entries": {"ConfigEntry": object},
+            "homeassistant.const": {
+                "CONCENTRATION_MICROGRAMS_PER_CUBIC_METER": "µg/m³",
+                "PERCENTAGE": "%",
+            },
+            "homeassistant.core": {"HomeAssistant": object},
+            "homeassistant.helpers.device_registry": {"DeviceInfo": _DeviceInfo},
+            "homeassistant.helpers.entity": {"EntityCategory": _EntityCategory},
+            "homeassistant.helpers.entity_platform": {"AddEntitiesCallback": object},
+            "homeassistant.helpers.update_coordinator": {
+                "CoordinatorEntity": _CoordinatorEntity
+            },
+        },
+    )
 
 
 def _import_sensor(monkeypatch: pytest.MonkeyPatch):
@@ -116,7 +79,7 @@ async def test_sensor_platform_surfaces_pm25_and_filter_life(
 ) -> None:
     sensor = _import_sensor(monkeypatch)
     coordinator = SimpleNamespace(
-        data=GoveeData(is_on=True, pm25=8, filter_life=94, fan_mode="Low"),
+        data=PurifierState(is_on=True, pm25=8, filter_life=94, fan_mode="Low"),
         profile=SimpleNamespace(model="H7124"),
     )
     entry = SimpleNamespace(
@@ -131,6 +94,10 @@ async def test_sensor_platform_surfaces_pm25_and_filter_life(
     assert [entity.entity_description.key for entity in added_entities] == [
         "pm25",
         "filter_life",
+    ]
+    assert [entity._attr_unique_id for entity in added_entities] == [
+        "aabbccddeeff_pm25",
+        "aabbccddeeff_filter_life",
     ]
     assert [entity.native_value for entity in added_entities] == [8, 94]
 
@@ -161,7 +128,7 @@ async def test_pm25_sensor_is_unavailable_with_cached_value_after_update_failure
 ) -> None:
     sensor = _import_sensor(monkeypatch)
     coordinator = SimpleNamespace(
-        data=GoveeData(is_on=True, pm25=8, filter_life=94, fan_mode="Low"),
+        data=PurifierState(is_on=True, pm25=8, filter_life=94, fan_mode="Low"),
         profile=SimpleNamespace(model="H7124"),
         last_update_success=False,
     )
@@ -186,7 +153,7 @@ async def test_pm25_sensor_is_unavailable_without_cached_value_after_update_fail
 ) -> None:
     sensor = _import_sensor(monkeypatch)
     coordinator = SimpleNamespace(
-        data=GoveeData(is_on=True, pm25=None, filter_life=94, fan_mode="Low"),
+        data=PurifierState(is_on=True, pm25=None, filter_life=94, fan_mode="Low"),
         profile=SimpleNamespace(model="H7124"),
         last_update_success=False,
     )

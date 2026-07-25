@@ -7,30 +7,20 @@ from collections.abc import Callable
 import logging
 from typing import Any
 
-from .coordinator import GoveeData
-from .profiles import H7124_PROFILE, ModelProfile
-from .protocol import (
-    ProtocolError,
+from ..models import PurifierState
+from ..profiles import H7124_PROFILE, ModelProfile
+from ..protocol import (
     is_fan_mode_confirmation,
     is_power_confirmation,
-    validate_frame,
 )
+from . import GoveeBleClientError, transport
+from .framing import ProtocolError, validate_frame
+from .transport import _async_wait_until
 
 DEFAULT_TIMEOUT = 10.0
 POLL_TIMEOUT = 5.0
 COMMAND_CONFIRMATION_TIMEOUT = 2.0
 _LOGGER = logging.getLogger(__name__)
-
-
-async def _async_wait_until(awaitable: Any, deadline: float) -> Any:
-    """Await one stage without extending the transaction deadline."""
-
-    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
-    return await asyncio.wait_for(awaitable, remaining)
-
-
-class GoveeBleClientError(Exception):
-    """Raised when BLE communication fails."""
 
 
 class GoveeBleClient:
@@ -44,7 +34,7 @@ class GoveeBleClient:
         self._profile = profile
         self._lock = asyncio.Lock()
 
-    async def async_get_state(self) -> GoveeData:
+    async def async_get_state(self) -> PurifierState:
         """Poll power, PM2.5, and filter-life state."""
 
         power_frame, status_frame = await self._async_write_and_wait_many(
@@ -55,7 +45,7 @@ class GoveeBleClient:
             timeout=POLL_TIMEOUT,
         )
         status = self._profile.decode_status(status_frame)
-        return GoveeData(
+        return PurifierState(
             is_on=self._profile.decode_power_state(power_frame),
             pm25=status.pm25,
             filter_life=status.filter_life,
@@ -90,7 +80,7 @@ class GoveeBleClient:
         )
         return mode
 
-    async def async_set_power_and_fan_mode(self, mode: str) -> GoveeData:
+    async def async_set_power_and_fan_mode(self, mode: str) -> PurifierState:
         """Power on and set fan mode in one serialized BLE connection."""
 
         try:
@@ -110,7 +100,7 @@ class GoveeBleClient:
             ),
             timeout=COMMAND_CONFIRMATION_TIMEOUT,
         )
-        return GoveeData(
+        return PurifierState(
             is_on=self._profile.decode_power_state(power_frame),
             fan_mode=mode,
         )
@@ -242,67 +232,13 @@ class GoveeBleClient:
         *,
         deadline: float | None = None,
     ) -> Any:
-        """Connect with HA Bluetooth helpers and run a BLE operation."""
+        """Run an operation through the shared Bluetooth transport."""
 
         if deadline is None:
             deadline = asyncio.get_running_loop().time() + DEFAULT_TIMEOUT
-
-        try:
-            from bleak_retry_connector import (
-                BleakClientWithServiceCache,
-                close_stale_connections,
-                establish_connection,
-            )
-            from homeassistant.components import bluetooth
-        except ModuleNotFoundError as err:  # pragma: no cover - runtime dependency
-            raise GoveeBleClientError("Home Assistant BLE dependencies are unavailable") from err
-
-        client: Any = None
-        primary_error: BaseException | None = None
-        try:
-            ble_device = bluetooth.async_ble_device_from_address(
-                self._hass, self._address, connectable=True
-            )
-            if ble_device is None:
-                raise GoveeBleClientError(
-                    f"BLE device {self._address} is not available"
-                )
-
-            await _async_wait_until(close_stale_connections(ble_device), deadline)
-            client = await _async_wait_until(
-                establish_connection(
-                    client_class=BleakClientWithServiceCache,
-                    device=ble_device,
-                    name=ble_device.name or self._address,
-                ),
-                deadline,
-            )
-            return await operation(client)
-        except TimeoutError as err:
-            primary_error = GoveeBleClientError(
-                "Timed out waiting for purifier response"
-            )
-            raise primary_error from err
-        except asyncio.TimeoutError as err:
-            primary_error = GoveeBleClientError(
-                "Timed out waiting for purifier response"
-            )
-            raise primary_error from err
-        except BaseException as err:
-            primary_error = err
-            raise
-        finally:
-            try:
-                if client is not None:
-                    await _async_wait_until(client.disconnect(), deadline)
-            except Exception:
-                if primary_error is None:
-                    _LOGGER.debug(
-                        "Suppressing BLE disconnect failure after successful operation",
-                        exc_info=True,
-                    )
-                else:
-                    _LOGGER.debug(
-                        "Suppressing BLE disconnect failure to preserve primary error",
-                        exc_info=True,
-                    )
+        return await transport.async_with_connection(
+            self._hass,
+            self._address,
+            operation,
+            deadline=deadline,
+        )

@@ -2,12 +2,19 @@ import importlib
 import math
 import sys
 from enum import IntFlag
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
-from custom_components.govee_ble_air_purifier.coordinator import GoveeData
+from custom_components.govee_ble_air_purifier.models import PurifierState
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
+from tests.helpers.ha_stubs import (
+    CoordinatorEntity as _CoordinatorEntity,
+    DeviceInfo as _DeviceInfo,
+    HomeAssistantError as _HomeAssistantError,
+    RestoreEntity as _RestoreEntity,
+    install_modules,
+)
 
 
 MODULE_NAME = "custom_components.govee_ble_air_purifier.fan"
@@ -25,45 +32,15 @@ class _LegacyFanEntityFeature(IntFlag):
     PRESET_MODE = 8
 
 
-class _CoordinatorEntity:
-    def __init__(self, coordinator) -> None:
-        self.coordinator = coordinator
-        self._remove_callbacks = []
-        self.state_writes = 0
-
-    async def async_added_to_hass(self) -> None:
-        return None
-
-    def async_on_remove(self, callback) -> None:
-        self._remove_callbacks.append(callback)
-
-    def async_write_ha_state(self) -> None:
-        self.state_writes += 1
-
-
 class _FanEntity:
     pass
-
-
-class _RestoreEntity:
-    async def async_get_last_state(self):
-        return getattr(self, "_test_last_state", None)
-
-
-class _HomeAssistantError(Exception):
-    pass
-
-
-class _DeviceInfo(dict):
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
 
 
 class _FakeCoordinator:
     profile = H7124_PROFILE
 
     def __init__(self) -> None:
-        self.data = GoveeData(is_on=True, pm25=7, filter_life=93, fan_mode="Low")
+        self.data = PurifierState(is_on=True, pm25=7, filter_life=93, fan_mode="Low")
         self.power_commands: list[bool] = []
         self.fan_mode_commands: list[str] = []
         self.fail_modes: set[str] = set()
@@ -73,7 +50,7 @@ class _FakeCoordinator:
         self.power_commands.append(is_on)
         if self.fail_power:
             raise RuntimeError("failed to set power")
-        self.data = GoveeData(
+        self.data = PurifierState(
             is_on=is_on,
             pm25=self.data.pm25 if self.data else None,
             filter_life=self.data.filter_life if self.data else None,
@@ -84,7 +61,7 @@ class _FakeCoordinator:
         self.fan_mode_commands.append(mode)
         if mode in self.fail_modes:
             raise RuntimeError(f"failed to set {mode}")
-        self.data = GoveeData(is_on=True, pm25=7, filter_life=93, fan_mode=mode)
+        self.data = PurifierState(is_on=True, pm25=7, filter_life=93, fan_mode=mode)
 
 
 class _FakeController:
@@ -140,20 +117,6 @@ def _install_homeassistant_modules(
     monkeypatch: pytest.MonkeyPatch,
     fan_features: type[IntFlag] = _FanEntityFeature,
 ) -> None:
-    homeassistant_module = ModuleType("homeassistant")
-    components_module = ModuleType("homeassistant.components")
-    fan_module = ModuleType("homeassistant.components.fan")
-    config_entries_module = ModuleType("homeassistant.config_entries")
-    core_module = ModuleType("homeassistant.core")
-    exceptions_module = ModuleType("homeassistant.exceptions")
-    helpers_module = ModuleType("homeassistant.helpers")
-    device_registry_module = ModuleType("homeassistant.helpers.device_registry")
-    entity_platform_module = ModuleType("homeassistant.helpers.entity_platform")
-    restore_state_module = ModuleType("homeassistant.helpers.restore_state")
-    update_coordinator_module = ModuleType("homeassistant.helpers.update_coordinator")
-    util_module = ModuleType("homeassistant.util")
-    percentage_module = ModuleType("homeassistant.util.percentage")
-
     def ordered_list_item_to_percentage(options: list[str], item: str) -> int:
         return round(((options.index(item) + 1) * 100) / len(options))
 
@@ -164,48 +127,28 @@ def _install_homeassistant_modules(
         )
         return options[index]
 
-    fan_module.FanEntity = _FanEntity
-    fan_module.FanEntityFeature = fan_features
-    config_entries_module.ConfigEntry = object
-    core_module.HomeAssistant = object
-    exceptions_module.HomeAssistantError = _HomeAssistantError
-    device_registry_module.DeviceInfo = _DeviceInfo
-    entity_platform_module.AddEntitiesCallback = object
-    restore_state_module.RestoreEntity = _RestoreEntity
-    update_coordinator_module.CoordinatorEntity = _CoordinatorEntity
-    percentage_module.ordered_list_item_to_percentage = ordered_list_item_to_percentage
-    percentage_module.percentage_to_ordered_list_item = percentage_to_ordered_list_item
-
-    homeassistant_module.components = components_module
-    homeassistant_module.config_entries = config_entries_module
-    homeassistant_module.core = core_module
-    homeassistant_module.exceptions = exceptions_module
-    homeassistant_module.helpers = helpers_module
-    homeassistant_module.util = util_module
-    components_module.fan = fan_module
-    helpers_module.device_registry = device_registry_module
-    helpers_module.entity_platform = entity_platform_module
-    helpers_module.restore_state = restore_state_module
-    helpers_module.update_coordinator = update_coordinator_module
-    util_module.percentage = percentage_module
-
-    modules = {
-        "homeassistant": homeassistant_module,
-        "homeassistant.components": components_module,
-        "homeassistant.components.fan": fan_module,
-        "homeassistant.config_entries": config_entries_module,
-        "homeassistant.core": core_module,
-        "homeassistant.exceptions": exceptions_module,
-        "homeassistant.helpers": helpers_module,
-        "homeassistant.helpers.device_registry": device_registry_module,
-        "homeassistant.helpers.entity_platform": entity_platform_module,
-        "homeassistant.helpers.restore_state": restore_state_module,
-        "homeassistant.helpers.update_coordinator": update_coordinator_module,
-        "homeassistant.util": util_module,
-        "homeassistant.util.percentage": percentage_module,
-    }
-    for name, module in modules.items():
-        monkeypatch.setitem(sys.modules, name, module)
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.fan": {
+                "FanEntity": _FanEntity,
+                "FanEntityFeature": fan_features,
+            },
+            "homeassistant.config_entries": {"ConfigEntry": object},
+            "homeassistant.core": {"HomeAssistant": object},
+            "homeassistant.exceptions": {"HomeAssistantError": _HomeAssistantError},
+            "homeassistant.helpers.device_registry": {"DeviceInfo": _DeviceInfo},
+            "homeassistant.helpers.entity_platform": {"AddEntitiesCallback": object},
+            "homeassistant.helpers.restore_state": {"RestoreEntity": _RestoreEntity},
+            "homeassistant.helpers.update_coordinator": {
+                "CoordinatorEntity": _CoordinatorEntity
+            },
+            "homeassistant.util.percentage": {
+                "ordered_list_item_to_percentage": ordered_list_item_to_percentage,
+                "percentage_to_ordered_list_item": percentage_to_ordered_list_item,
+            },
+        },
+    )
 
 
 def _import_fan(
@@ -216,12 +159,6 @@ def _import_fan(
     sys.modules.pop(MODULE_NAME, None)
     sys.modules.pop("custom_components.govee_ble_air_purifier.entity", None)
     return importlib.import_module(MODULE_NAME)
-
-
-def test_loaded_platforms_match_cloud_style_control_layout() -> None:
-    from custom_components.govee_ble_air_purifier.const import PLATFORMS
-
-    assert PLATFORMS == ["fan", "sensor", "switch"]
 
 
 def test_fan_import_supports_home_assistant_before_turn_feature_flags(
@@ -251,6 +188,7 @@ async def test_fan_setup_creates_one_air_purifier_fan(
 
     assert len(added_entities) == 1
     assert isinstance(added_entities[0], fan.GoveeAirPurifierFan)
+    assert added_entities[0]._attr_unique_id == "aabbccddeeff_fan"
     assert added_entities[0]._attr_name is None
 
 
