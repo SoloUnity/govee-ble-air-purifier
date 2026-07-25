@@ -6,6 +6,7 @@ import pytest
 from custom_components.govee_ble_air_purifier.bluetooth.client import (
     GoveeBleClient,
     GoveeBleClientError,
+    connection_idle_timeout_for_polling_interval,
 )
 from custom_components.govee_ble_air_purifier.models import PurifierState
 from custom_components.govee_ble_air_purifier.protocol import build_frame
@@ -364,6 +365,27 @@ async def test_connection_is_established_once_and_reused(
     assert disconnects[0][0] is fake
 
 
+@pytest.mark.parametrize(
+    ("polling_interval", "expected_timeout"),
+    [
+        (5, 10.0),
+        (10, 15.0),
+        (20, 25.0),
+        (25, 30.0),
+        (30, 5.0),
+        (60, 5.0),
+        (300, 5.0),
+    ],
+)
+def test_connection_idle_timeout_adapts_to_polling_interval(
+    polling_interval: int, expected_timeout: float
+) -> None:
+    assert (
+        connection_idle_timeout_for_polling_interval(polling_interval)
+        == expected_timeout
+    )
+
+
 @pytest.mark.asyncio
 async def test_connection_delegate_creates_default_deadline_when_omitted(
     monkeypatch: pytest.MonkeyPatch,
@@ -515,7 +537,10 @@ async def test_idle_timeout_disconnects_and_next_operation_reconnects(
     from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
-    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    monkeypatch.setattr(client_module, "CONNECTION_IDLE_GRACE", 0.0)
+    client = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:FF", polling_interval_seconds=60
+    )
     connected_clients = [FakeBleakClient(), FakeBleakClient()]
     establish_count = 0
     disconnected = asyncio.Event()
@@ -539,7 +564,6 @@ async def test_idle_timeout_disconnects_and_next_operation_reconnects(
     async def operation(passed_client: Any) -> Any:
         return passed_client
 
-    monkeypatch.setattr(client_module, "CONNECTION_IDLE_TIMEOUT", 0.0)
     monkeypatch.setattr(
         transport, "async_establish_connection", async_establish_connection
     )

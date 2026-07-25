@@ -99,14 +99,18 @@ by lock waiting, connection establishment when needed, notification setup,
 writes, response waits, notification cleanup, and failure cleanup.
 
 The client caches a healthy GATT connection across transactions. Every
-successful operation resets a 30-second idle timer, so the default 10-second
-polling interval normally retains one connection while intervals above 30
-seconds release it between polls. Idle cleanup acquires the transaction lock,
-and entry shutdown cancels pending idle cleanup before closing the connection.
-An unexpected-disconnect callback clears only the client instance that raised
-it; identity checking prevents a delayed callback from clearing a replacement.
-The next poll or command reconnects through Home Assistant. Transaction failure
-invalidates the connection but does not replay the operation.
+successful operation resets an idle timer derived from the configured polling
+interval. Intervals from 5 through 25 seconds use the interval plus a 5-second
+margin, retaining the connection through the next expected poll without
+exceeding 30 seconds. Longer intervals use a 5-second grace for command bursts
+and the coordinator's delayed refresh, then release the connection rather than
+occupying a Bluetooth slot without reaching the next poll. Idle cleanup
+acquires the transaction lock, and entry shutdown cancels pending idle cleanup
+before closing the connection. An unexpected-disconnect callback clears only
+the client instance that raised it; identity checking prevents a delayed
+callback from clearing a replacement. The next poll or command reconnects
+through Home Assistant. Transaction failure invalidates the connection but does
+not replay the operation.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
 notification subscription to issue the power and status queries in sequence.

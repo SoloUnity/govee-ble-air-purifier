@@ -355,11 +355,12 @@ must not be exposed.
   proxies to participate.
 - Transactions are asynchronous and serialized per purifier so commands and
   polls cannot overlap.
-- A healthy GATT connection is reused. Successful activity resets a 30-second
+- A healthy GATT connection is reused. Successful activity resets an adaptive
   idle timeout; unexpected disconnects and failed transactions clear it, and
   the next poll or command reconnects through Home Assistant.
-- The default 10-second poll normally retains a connection slot continuously.
-  Polling intervals above 30 seconds release it between polls, and entry unload
+- Polling intervals from 5 through 25 seconds retain the connection for the
+  interval plus a 5-second margin, up to 30 seconds. Longer intervals retain it
+  for only a 5-second command-and-refresh grace before release. Entry unload
   always closes it.
 - GATT notifications provide query responses and command confirmation.
 

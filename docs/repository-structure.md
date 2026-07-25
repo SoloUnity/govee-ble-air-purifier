@@ -69,7 +69,8 @@ bluetooth/
 - `bluetooth/client.py` owns the per-purifier transaction lock, writes,
   notification subscription and cleanup, response futures, matching, and shared
   deadlines. It also retains a healthy connection, handles disconnect callbacks,
-  and serializes 30-second idle release and explicit shutdown.
+  derives adaptive idle release from the polling interval, and serializes that
+  release with explicit shutdown.
 - `bluetooth/transport.py` owns Home Assistant BLE-device lookup, stale
   connection cleanup before establishment, connection establishment, and
   bounded best-effort disconnect primitives.

@@ -7,6 +7,7 @@ from collections.abc import Callable
 import logging
 from typing import Any
 
+from ..const import DEFAULT_POLLING_INTERVAL_SECONDS
 from ..models import PurifierState
 from ..profiles import H7124_PROFILE, ModelProfile
 from ..protocol import (
@@ -20,20 +21,40 @@ from .transport import _async_wait_until
 DEFAULT_TIMEOUT = 10.0
 POLL_TIMEOUT = 5.0
 COMMAND_CONFIRMATION_TIMEOUT = 2.0
-CONNECTION_IDLE_TIMEOUT = 30.0
+CONNECTION_IDLE_GRACE = 5.0
+MAX_CONNECTION_IDLE_TIMEOUT = 30.0
 DISCONNECT_TIMEOUT = 5.0
 _LOGGER = logging.getLogger(__name__)
+
+
+def connection_idle_timeout_for_polling_interval(
+    polling_interval_seconds: float,
+) -> float:
+    """Retain through the next poll or release after a short activity grace."""
+
+    next_poll_timeout = polling_interval_seconds + CONNECTION_IDLE_GRACE
+    if next_poll_timeout <= MAX_CONNECTION_IDLE_TIMEOUT:
+        return next_poll_timeout
+    return CONNECTION_IDLE_GRACE
 
 
 class GoveeBleClient:
     """Small serialized request/response BLE client."""
 
     def __init__(
-        self, hass: Any, address: str, *, profile: ModelProfile = H7124_PROFILE
+        self,
+        hass: Any,
+        address: str,
+        *,
+        profile: ModelProfile = H7124_PROFILE,
+        polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
     ) -> None:
         self._hass = hass
         self._address = address
         self._profile = profile
+        self._connection_idle_timeout = (
+            connection_idle_timeout_for_polling_interval(polling_interval_seconds)
+        )
         self._lock = asyncio.Lock()
         self._client: Any = None
         self._idle_disconnect_handle: asyncio.TimerHandle | None = None
@@ -317,7 +338,7 @@ class GoveeBleClient:
             return
         loop = asyncio.get_running_loop()
         self._idle_disconnect_handle = loop.call_later(
-            CONNECTION_IDLE_TIMEOUT, self._start_idle_disconnect
+            self._connection_idle_timeout, self._start_idle_disconnect
         )
 
     def _start_idle_disconnect(self) -> None:

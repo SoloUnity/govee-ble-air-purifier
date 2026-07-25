@@ -49,7 +49,9 @@ async def test_setup_failure_stops_controller_and_coordinator(
     calls: list[str] = []
 
     class FakeClient:
-        def __init__(self, hass, address, *, profile) -> None:
+        def __init__(
+            self, hass, address, *, profile, polling_interval_seconds
+        ) -> None:
             return None
 
     class FakeCoordinator:

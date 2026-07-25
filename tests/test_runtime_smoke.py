@@ -182,10 +182,13 @@ async def test_integration_setup_and_unload_lifecycle(
     events: list[object] = []
 
     class FakeClient:
-        def __init__(self, hass, address, *, profile) -> None:
+        def __init__(
+            self, hass, address, *, profile, polling_interval_seconds
+        ) -> None:
             self.hass = hass
             self.address = address
             self.profile = profile
+            self.polling_interval_seconds = polling_interval_seconds
 
     class FakeCoordinator:
         def __init__(self, hass, client, *, profile, polling_interval) -> None:
@@ -254,6 +257,7 @@ async def test_integration_setup_and_unload_lifecycle(
     assert await integration.async_setup_entry(hass, entry) is True
     assert entry.runtime_data.profile.key == "h7124"
     assert entry.runtime_data.coordinator.client.address == "AA:BB:CC:DD:EE:FF"
+    assert entry.runtime_data.coordinator.client.polling_interval_seconds == 20
     assert entry.runtime_data.coordinator.polling_interval.total_seconds() == 20
     assert entry.runtime_data.controller.coordinator is entry.runtime_data.coordinator
     assert entry.update_listener is integration._async_update_listener

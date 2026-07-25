@@ -20,14 +20,18 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
 
     address = entry.data[CONF_ADDRESS]
     profile = get_profile(entry.data.get(CONF_PROFILE))
-    client = GoveeBleClient(hass, address, profile=profile)
+    polling_interval_seconds = polling_interval_from_options(entry.options)
+    client = GoveeBleClient(
+        hass,
+        address,
+        profile=profile,
+        polling_interval_seconds=polling_interval_seconds,
+    )
     coordinator = GoveeCoordinator(
         hass,
         client,
         profile=profile,
-        polling_interval=timedelta(
-            seconds=polling_interval_from_options(entry.options)
-        ),
+        polling_interval=timedelta(seconds=polling_interval_seconds),
     )
     controller: CustomAutoController | None = None
     runtime_data: GoveeRuntimeData | None = None

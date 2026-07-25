@@ -71,9 +71,10 @@ uses `<=`; only a valid reading above that boundary resets its timer.
 
 - Keep your Home Assistant Bluetooth adapter or Bluetooth proxy close enough to
   the purifier for a reliable connection.
-- The integration reuses a healthy connection and releases it after 30 seconds
-  without BLE activity. Polling every 10 seconds therefore normally keeps it
-  connected.
+- The integration adapts healthy-connection reuse to the polling interval. For
+  intervals up to 25 seconds, it retains the connection for the interval plus a
+  5-second margin, capped at 30 seconds. Longer intervals use a 5-second grace
+  for related commands and refreshes before releasing the connection.
 - If setup or controls do not respond, close the Govee app and try again. The
   purifier may only allow one Bluetooth connection at a time, so the app may
   also be unable to connect while Home Assistant is actively polling.
