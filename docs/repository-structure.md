@@ -68,9 +68,11 @@ bluetooth/
   validation, and `ProtocolError`.
 - `bluetooth/client.py` owns the per-purifier transaction lock, writes,
   notification subscription and cleanup, response futures, matching, and shared
-  deadlines.
+  deadlines. It also retains a healthy connection, handles disconnect callbacks,
+  and serializes 30-second idle release and explicit shutdown.
 - `bluetooth/transport.py` owns Home Assistant BLE-device lookup, stale
-  connection cleanup, connection establishment, and disconnect.
+  connection cleanup before establishment, connection establishment, and
+  bounded best-effort disconnect primitives.
 
 ## State And Custom Auto
 

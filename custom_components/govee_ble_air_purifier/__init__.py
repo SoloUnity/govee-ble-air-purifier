@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import timedelta
 from typing import Any
 
@@ -28,19 +29,31 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
             seconds=polling_interval_from_options(entry.options)
         ),
     )
-    await coordinator.async_config_entry_first_refresh()
-
-    controller = CustomAutoController(
-        hass,
-        coordinator,
-        CustomAutoConfig.from_options(entry.options),
-        config_entry=entry,
-    )
-    entry.runtime_data = GoveeRuntimeData(
-        coordinator=coordinator, profile=profile, controller=controller
-    )
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    controller: CustomAutoController | None = None
+    runtime_data: GoveeRuntimeData | None = None
+    try:
+        await coordinator.async_config_entry_first_refresh()
+        controller = CustomAutoController(
+            hass,
+            coordinator,
+            CustomAutoConfig.from_options(entry.options),
+            config_entry=entry,
+        )
+        runtime_data = GoveeRuntimeData(
+            coordinator=coordinator, profile=profile, controller=controller
+        )
+        entry.runtime_data = runtime_data
+        entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException:
+        if controller is not None:
+            with suppress(Exception):
+                await controller.async_stop()
+        with suppress(Exception):
+            await coordinator.async_shutdown()
+        if getattr(entry, "runtime_data", None) is runtime_data:
+            entry.runtime_data = None
+        raise
     return True
 
 

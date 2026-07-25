@@ -20,14 +20,14 @@ async def _async_wait_until(awaitable: Awaitable[_T], deadline: float) -> _T:
     return await asyncio.wait_for(awaitable, remaining)
 
 
-async def async_with_connection(
+async def async_establish_connection(
     hass: Any,
     address: str,
-    operation: Callable[[Any], Awaitable[_T]],
+    disconnected_callback: Callable[[Any], None],
     *,
     deadline: float,
-) -> _T:
-    """Connect with Home Assistant Bluetooth helpers and run an operation."""
+) -> Any:
+    """Establish a connection through Home Assistant Bluetooth helpers."""
 
     try:
         from bleak_retry_connector import (
@@ -41,8 +41,6 @@ async def async_with_connection(
             "Home Assistant BLE dependencies are unavailable"
         ) from err
 
-    client: Any = None
-    primary_error: BaseException | None = None
     try:
         ble_device = bluetooth.async_ble_device_from_address(
             hass, address, connectable=True
@@ -51,32 +49,23 @@ async def async_with_connection(
             raise GoveeBleClientError(f"BLE device {address} is not available")
 
         await _async_wait_until(close_stale_connections(ble_device), deadline)
-        client = await _async_wait_until(
+        return await _async_wait_until(
             establish_connection(
                 client_class=BleakClientWithServiceCache,
                 device=ble_device,
                 name=ble_device.name or address,
+                disconnected_callback=disconnected_callback,
             ),
             deadline,
         )
-        return await operation(client)
     except (TimeoutError, asyncio.TimeoutError) as err:
-        primary_error = GoveeBleClientError(
-            "Timed out waiting for purifier response"
-        )
-        raise primary_error from err
-    except BaseException as err:
-        primary_error = err
-        raise
-    finally:
-        try:
-            if client is not None:
-                await _async_wait_until(client.disconnect(), deadline)
-        except Exception:
-            _LOGGER.debug(
-                "Suppressing BLE disconnect failure%s",
-                " to preserve primary error"
-                if primary_error
-                else " after successful operation",
-                exc_info=True,
-            )
+        raise GoveeBleClientError("Timed out waiting for purifier response") from err
+
+
+async def async_disconnect(client: Any, *, deadline: float) -> None:
+    """Disconnect without allowing cleanup failure to escape."""
+
+    try:
+        await _async_wait_until(client.disconnect(), deadline)
+    except Exception:
+        _LOGGER.debug("Suppressing BLE disconnect failure", exc_info=True)

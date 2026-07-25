@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import custom_components.govee_ble_air_purifier as integration
 from custom_components.govee_ble_air_purifier import async_unload_entry
 
 
@@ -30,3 +31,74 @@ async def test_successful_unload_stops_controller_and_coordinator() -> None:
 
     assert await async_unload_entry(hass, entry) is True
     assert set(calls) == {"controller", "coordinator"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fail_first_refresh", "expected_calls"),
+    [
+        (True, ["refresh", "coordinator"]),
+        (False, ["refresh", "controller", "coordinator"]),
+    ],
+)
+async def test_setup_failure_stops_controller_and_coordinator(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_first_refresh: bool,
+    expected_calls: list[str],
+) -> None:
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, hass, address, *, profile) -> None:
+            return None
+
+    class FakeCoordinator:
+        def __init__(self, hass, client, *, profile, polling_interval) -> None:
+            return None
+
+        async def async_config_entry_first_refresh(self) -> None:
+            calls.append("refresh")
+            if fail_first_refresh:
+                raise RuntimeError("setup failed")
+
+        async def async_shutdown(self) -> None:
+            calls.append("coordinator")
+
+    class FakeController:
+        def __init__(self, hass, coordinator, config, *, config_entry) -> None:
+            return None
+
+        async def async_stop(self) -> None:
+            calls.append("controller")
+
+    class FakeEntry:
+        data = {
+            "address": "AA:BB:CC:DD:EE:FF",
+            "name": "Purifier",
+            "profile": "h7124",
+        }
+        options = {}
+        runtime_data = None
+
+        def add_update_listener(self, listener):
+            return lambda: None
+
+        def async_on_unload(self, callback) -> None:
+            return None
+
+    async def forward_entry_setups(entry, platforms) -> None:
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(integration, "GoveeBleClient", FakeClient)
+    monkeypatch.setattr(integration, "GoveeCoordinator", FakeCoordinator)
+    monkeypatch.setattr(integration, "CustomAutoController", FakeController)
+    entry = FakeEntry()
+    hass = SimpleNamespace(
+        config_entries=SimpleNamespace(async_forward_entry_setups=forward_entry_setups)
+    )
+
+    with pytest.raises(RuntimeError, match="setup failed"):
+        await integration.async_setup_entry(hass, entry)
+
+    assert calls == expected_calls
+    assert entry.runtime_data is None

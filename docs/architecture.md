@@ -95,25 +95,38 @@ profile rather than duplicating those constants.
 
 `bluetooth/client.py` owns one serialized transaction lock per configured
 purifier. A transaction deadline starts before lock acquisition and is shared
-by lock waiting, connection work, notification setup, writes, response waits,
-notification cleanup, and disconnect cleanup.
+by lock waiting, connection establishment when needed, notification setup,
+writes, response waits, notification cleanup, and failure cleanup.
 
-For polling, `GoveeBleClient.async_get_state()` uses one connection and one
+The client caches a healthy GATT connection across transactions. Every
+successful operation resets a 30-second idle timer, so the default 10-second
+polling interval normally retains one connection while intervals above 30
+seconds release it between polls. Idle cleanup acquires the transaction lock,
+and entry shutdown cancels pending idle cleanup before closing the connection.
+An unexpected-disconnect callback clears only the client instance that raised
+it; identity checking prevents a delayed callback from clearing a replacement.
+The next poll or command reconnects through Home Assistant. Transaction failure
+invalidates the connection but does not replay the operation.
+
+For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
 notification subscription to issue the power and status queries in sequence.
+The underlying connection may have been retained from an earlier transaction.
 The notification handler accepts only the matcher for the current request,
 validates the frame, and resolves its pending future. Commands use the same
 serialized path and publish no success merely because a write completed; they
 wait for a matching confirmation. Power-on plus mode can be sent in one locked
-connection.
+transaction. Notification cleanup failure preserves an otherwise successful
+result but discards the connection before another operation can use it.
 
 `bluetooth/client.py` owns transaction serialization, writes, notification
-subscription, response matching, and notification cleanup. It delegates
-connection lifecycle work to `bluetooth/transport.py`.
+subscription, response matching, notification cleanup, connection reuse, idle
+release, and disconnect-callback state. It delegates Home Assistant connection
+mechanics to `bluetooth/transport.py`.
 
 `bluetooth/transport.py` owns Home Assistant's connectable BLE-device lookup,
-stale-connection cleanup, connection establishment, and disconnect. It applies
-the caller's existing deadline without extending it and suppresses cleanup
-errors when needed to preserve the primary result or exception.
+stale-connection cleanup before establishment, connection establishment, and
+bounded best-effort disconnect. It applies the caller's existing deadline
+without extending it and suppresses disconnect cleanup errors.
 
 ## Coordinator Publication
 
@@ -205,11 +218,13 @@ policy ownership, shared-state publication, and BLE request/notification state.
 Config entry setup resolves the profile, creates the client and coordinator,
 performs the first refresh, creates `CustomAutoController` from
 `CustomAutoConfig`, stores `GoveeRuntimeData`, and forwards the active fan,
-sensor, and switch platforms. A failed first refresh prevents entity creation.
+sensor, and switch platforms. Any setup failure stops the controller if it was
+created and shuts down the coordinator so a successful first refresh cannot
+leak its retained connection.
 
 After successful platform unload, the controller removes listeners and cancels
 evaluation and timer tasks, then the coordinator cancels its delayed refresh
-and shuts down polling.
+and shuts down polling before closing the BLE client.
 
 ## Test Lanes
 
@@ -231,8 +246,9 @@ physical purifier.
 The main test boundaries are:
 
 - `tests/bluetooth/test_framing.py`, `test_client.py`, and `test_transport.py`
-  cover generic framing, serialized notification transactions, deadlines, and
-  Home Assistant connection ownership.
+  cover generic framing, serialized notification transactions, deadlines,
+  connection reuse, idle release, reconnection, and Home Assistant connection
+  ownership.
 - `tests/custom_auto/test_config.py`, `test_policy.py`, and `test_controller.py`
   cover parsing and validation, pure speed selection, and mutable timer and
   ownership behavior.
@@ -252,4 +268,5 @@ Physical BLE interoperability remains a device-level verification concern.
 6. Downshift equality qualifies; only a valid reading above the boundary resets
    its timer or mature target.
 7. Model-specific byte interpretation remains below the coordinator.
-8. Unload leaves no controller timers or delayed coordinator refresh task.
+8. Unload leaves no controller timers, delayed coordinator refresh, idle
+   disconnect task, or retained BLE connection.

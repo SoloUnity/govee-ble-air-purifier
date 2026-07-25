@@ -89,12 +89,15 @@ class GoveeCoordinator(DataUpdateCoordinator):
         return task
 
     async def async_shutdown(self) -> None:
-        """Cancel delayed command refreshes and stop coordinator polling."""
+        """Cancel refreshes, stop polling, and close the BLE client."""
 
-        task = self._cancel_background_refresh()
-        if task is not None:
-            await asyncio.gather(task, return_exceptions=True)
-        await super().async_shutdown()
+        try:
+            task = self._cancel_background_refresh()
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+            await super().async_shutdown()
+        finally:
+            await self.client.async_close()
 
     async def _async_update_data(self) -> PurifierState:
         """Fetch current state from the BLE client."""

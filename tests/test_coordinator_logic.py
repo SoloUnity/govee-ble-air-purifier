@@ -16,6 +16,7 @@ class FakeClient:
         self.pm25 = 12
         self.filter_life = 87
         self.state_fetches = 0
+        self.closed = False
 
     async def async_get_state(self) -> PurifierState:
         self.state_fetches += 1
@@ -39,6 +40,9 @@ class FakeClient:
         self.power = True
         self.commands.append(b"power_on_and_" + FAN_MODE_COMMANDS[mode])
         return PurifierState(is_on=True, fan_mode=mode)
+
+    async def async_close(self) -> None:
+        self.closed = True
 
 
 class FakeHass:
@@ -257,7 +261,8 @@ async def test_background_refresh_scheduling_is_coalesced() -> None:
     from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
 
     hass = FakeHass()
-    coordinator = GoveeCoordinator(hass, FakeClient())
+    client = FakeClient()
+    coordinator = GoveeCoordinator(hass, client)
 
     try:
         coordinator._schedule_background_refresh()
@@ -335,7 +340,8 @@ async def test_coordinator_shutdown_cancels_pending_background_refresh_and_deleg
     from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
 
     hass = FakeHass()
-    coordinator = GoveeCoordinator(hass, FakeClient())
+    client = FakeClient()
+    coordinator = GoveeCoordinator(hass, client)
     coordinator._schedule_background_refresh()
     pending_refresh = hass.tasks[-1]
     delegated: list[bool] = []
@@ -350,6 +356,7 @@ async def test_coordinator_shutdown_cancels_pending_background_refresh_and_deleg
     assert pending_refresh.cancelled()
     assert coordinator._background_refresh_task is None
     assert delegated == [True]
+    assert client.closed is True
 
 
 @pytest.mark.asyncio

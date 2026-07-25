@@ -35,6 +35,7 @@ class FakeBleakClient:
         self.stall_stop_notify = stall_stop_notify
         self.stall_disconnect = stall_disconnect
         self.stage_delay = stage_delay
+        self.is_connected = True
         self.disconnected = False
         self.disconnect_started = False
         self.notify_handler = None
@@ -64,6 +65,7 @@ class FakeBleakClient:
         self.disconnect_started = True
         if self.stall_disconnect:
             await asyncio.Event().wait()
+        self.is_connected = False
         self.disconnected = True
         if self.fail_disconnect:
             raise RuntimeError("disconnect failed")
@@ -312,34 +314,54 @@ async def test_fan_mode_command_waits_for_exact_echo_confirmation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connection_delegate_passes_one_absolute_deadline(
+async def test_connection_is_established_once_and_reused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
     hass = object()
     client = GoveeBleClient(hass, "AA:BB:CC:DD:EE:FF")
+    fake = FakeBleakClient()
+    callbacks: list[Any] = []
+    calls: list[tuple[Any, str, float]] = []
+    disconnects: list[tuple[Any, float]] = []
 
-    def operation(_client: Any) -> None:
-        return None
-
-    calls: list[tuple[Any, str, Any, float]] = []
-
-    async def async_with_connection(
-        passed_hass: Any,
-        address: str,
-        passed_operation: Any,
-        *,
-        deadline: float,
-    ) -> str:
-        calls.append((passed_hass, address, passed_operation, deadline))
+    async def operation(passed_client: Any) -> str:
+        assert passed_client is fake
         return "result"
 
-    monkeypatch.setattr(transport, "async_with_connection", async_with_connection)
+    async def async_establish_connection(
+        passed_hass: Any,
+        address: str,
+        disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        calls.append((passed_hass, address, deadline))
+        callbacks.append(disconnected_callback)
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        disconnects.append((passed_client, deadline))
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
     deadline = asyncio.get_running_loop().time() + 4.0
 
     assert await client._async_with_connection(operation, deadline=deadline) == "result"
-    assert calls == [(hass, "AA:BB:CC:DD:EE:FF", operation, deadline)]
+    assert await client._async_with_connection(operation, deadline=deadline) == "result"
+
+    assert calls == [(hass, "AA:BB:CC:DD:EE:FF", deadline)]
+    assert len(callbacks) == 1
+    assert disconnects == []
+
+    await client.async_close()
+
+    assert len(disconnects) == 1
+    assert disconnects[0][0] is fake
 
 
 @pytest.mark.asyncio
@@ -352,22 +374,251 @@ async def test_connection_delegate_creates_default_deadline_when_omitted(
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
     deadlines: list[float] = []
 
-    async def async_with_connection(
+    fake = FakeBleakClient()
+
+    async def async_establish_connection(
         _hass: Any,
         _address: str,
-        _operation: Any,
+        _disconnected_callback: Any,
         *,
         deadline: float,
-    ) -> None:
+    ) -> FakeBleakClient:
         deadlines.append(deadline)
+        return fake
 
-    monkeypatch.setattr(transport, "async_with_connection", async_with_connection)
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
     monkeypatch.setattr(client_module, "DEFAULT_TIMEOUT", 7.0)
     loop = asyncio.get_running_loop()
     before = loop.time()
 
-    await client._async_with_connection(lambda _client: None)
+    async def operation(_client: Any) -> None:
+        return None
+
+    await client._async_with_connection(operation)
 
     after = loop.time()
     assert len(deadlines) == 1
     assert before + 7.0 <= deadlines[0] <= after + 7.0
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_callback_reconnects_and_ignores_stale_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    connected_clients = [FakeBleakClient(), FakeBleakClient()]
+    callbacks: list[Any] = []
+    establish_count = 0
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        nonlocal establish_count
+        connected = connected_clients[establish_count]
+        establish_count += 1
+        callbacks.append(disconnected_callback)
+        return connected
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    async def operation(passed_client: Any) -> Any:
+        return passed_client
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+
+    assert await client._async_with_connection(operation) is connected_clients[0]
+    connected_clients[0].is_connected = False
+    callbacks[0](connected_clients[0])
+    assert await client._async_with_connection(operation) is connected_clients[1]
+
+    callbacks[0](connected_clients[0])
+    assert await client._async_with_connection(operation) is connected_clients[1]
+    assert establish_count == 2
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_operation_failure_invalidates_connection_without_replaying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    connected_clients = [FakeBleakClient(), FakeBleakClient()]
+    establish_count = 0
+    disconnects: list[Any] = []
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        nonlocal establish_count
+        connected = connected_clients[establish_count]
+        establish_count += 1
+        return connected
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        disconnects.append(passed_client)
+        await passed_client.disconnect()
+
+    attempts = 0
+
+    async def failing_operation(_client: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("operation failed")
+
+    async def successful_operation(passed_client: Any) -> Any:
+        return passed_client
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+
+    with pytest.raises(ValueError, match="operation failed"):
+        await client._async_with_connection(failing_operation)
+
+    assert attempts == 1
+    assert disconnects == [connected_clients[0]]
+    assert await client._async_with_connection(successful_operation) is connected_clients[1]
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_idle_timeout_disconnects_and_next_operation_reconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    connected_clients = [FakeBleakClient(), FakeBleakClient()]
+    establish_count = 0
+    disconnected = asyncio.Event()
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        nonlocal establish_count
+        connected = connected_clients[establish_count]
+        establish_count += 1
+        return connected
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+        disconnected.set()
+
+    async def operation(passed_client: Any) -> Any:
+        return passed_client
+
+    monkeypatch.setattr(client_module, "CONNECTION_IDLE_TIMEOUT", 0.0)
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+
+    assert await client._async_with_connection(operation) is connected_clients[0]
+    await asyncio.wait_for(disconnected.wait(), 0.1)
+    assert connected_clients[0].is_connected is False
+
+    assert await client._async_with_connection(operation) is connected_clients[1]
+    assert establish_count == 2
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_notification_cleanup_failure_preserves_result_and_reconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    connected_clients = [
+        FakeBleakClient(fail_stop_notify=True),
+        FakeBleakClient(),
+    ]
+    establish_count = 0
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        nonlocal establish_count
+        connected = connected_clients[establish_count]
+        establish_count += 1
+        return connected
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+
+    assert await client.async_set_power(True) is True
+    assert connected_clients[0].disconnected is True
+    assert await client.async_set_power(True) is True
+    assert establish_count == 2
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_active_transaction_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    connected = FakeBleakClient()
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    client._client = connected
+    await client._lock.acquire()
+
+    close_task = asyncio.create_task(client.async_close())
+    await asyncio.sleep(0)
+
+    assert close_task.done() is False
+    assert connected.disconnected is False
+
+    client._lock.release()
+    await close_task
+
+    assert connected.disconnected is True

@@ -20,6 +20,8 @@ from .transport import _async_wait_until
 DEFAULT_TIMEOUT = 10.0
 POLL_TIMEOUT = 5.0
 COMMAND_CONFIRMATION_TIMEOUT = 2.0
+CONNECTION_IDLE_TIMEOUT = 30.0
+DISCONNECT_TIMEOUT = 5.0
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -33,6 +35,10 @@ class GoveeBleClient:
         self._address = address
         self._profile = profile
         self._lock = asyncio.Lock()
+        self._client: Any = None
+        self._idle_disconnect_handle: asyncio.TimerHandle | None = None
+        self._idle_disconnect_task: asyncio.Task[Any] | None = None
+        self._closed = False
 
     async def async_get_state(self) -> PurifierState:
         """Poll power, PM2.5, and filter-life state."""
@@ -122,6 +128,8 @@ class GoveeBleClient:
                     deadline,
                 )
 
+        self._cancel_idle_disconnect()
+        await self._async_wait_for_idle_disconnect(deadline)
         try:
             await _async_wait_until(self._lock.acquire(), deadline)
         except (TimeoutError, asyncio.TimeoutError) as err:
@@ -152,6 +160,8 @@ class GoveeBleClient:
         timeout: float = DEFAULT_TIMEOUT,
     ) -> tuple[bytes, ...]:
         deadline = asyncio.get_running_loop().time() + timeout
+        self._cancel_idle_disconnect()
+        await self._async_wait_for_idle_disconnect(deadline)
         try:
             await _async_wait_until(self._lock.acquire(), deadline)
         except (TimeoutError, asyncio.TimeoutError) as err:
@@ -162,6 +172,7 @@ class GoveeBleClient:
             frames: list[bytes] = []
             loop = asyncio.get_running_loop()
             future: asyncio.Future[bytes] | None = None
+            discard_connection = False
 
             def notification_handler(_sender: Any, data: bytearray | bytes) -> None:
                 nonlocal future
@@ -181,7 +192,7 @@ class GoveeBleClient:
                     future.set_result(frame)
 
             async def operation(client: Any) -> tuple[bytes, ...]:
-                nonlocal future
+                nonlocal discard_connection, future
                 primary_error: BaseException | None = None
                 try:
                     await _async_wait_until(
@@ -216,13 +227,18 @@ class GoveeBleClient:
                             client.stop_notify(self._profile.notify_char_uuid), deadline
                         )
                     except Exception:
+                        discard_connection = True
                         _LOGGER.debug(
                             "Suppressing BLE notification cleanup failure%s",
                             " to preserve primary error" if primary_error else "",
                             exc_info=True,
                         )
 
-            return await self._async_with_connection(operation, deadline=deadline)
+            result = await self._async_with_connection(operation, deadline=deadline)
+            if discard_connection:
+                self._cancel_idle_disconnect()
+                await self._async_drop_connection(deadline)
+            return result
         finally:
             self._lock.release()
 
@@ -232,13 +248,128 @@ class GoveeBleClient:
         *,
         deadline: float | None = None,
     ) -> Any:
-        """Run an operation through the shared Bluetooth transport."""
+        """Run an operation through the shared reusable Bluetooth connection."""
 
         if deadline is None:
             deadline = asyncio.get_running_loop().time() + DEFAULT_TIMEOUT
-        return await transport.async_with_connection(
-            self._hass,
-            self._address,
-            operation,
-            deadline=deadline,
+        if self._closed:
+            raise GoveeBleClientError("BLE client is closed")
+
+        client = self._client
+        if client is None or not client.is_connected:
+            self._client = None
+            client = await transport.async_establish_connection(
+                self._hass,
+                self._address,
+                self._handle_disconnect,
+                deadline=deadline,
+            )
+            self._client = client
+            if not client.is_connected:
+                await self._async_drop_connection(deadline)
+                raise GoveeBleClientError("Purifier disconnected while connecting")
+
+        try:
+            result = await operation(client)
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            await self._async_drop_connection(deadline)
+            raise GoveeBleClientError(
+                "Timed out waiting for purifier response"
+            ) from err
+        except BaseException:
+            await self._async_drop_connection(deadline)
+            raise
+
+        self._schedule_idle_disconnect()
+        return result
+
+    def _handle_disconnect(self, client: Any) -> None:
+        """Forget only the connection that actually disconnected."""
+
+        if self._client is client:
+            self._client = None
+
+    def _cancel_idle_disconnect(self) -> None:
+        """Cancel an idle timer that has not started disconnecting."""
+
+        if self._idle_disconnect_handle is not None:
+            self._idle_disconnect_handle.cancel()
+            self._idle_disconnect_handle = None
+
+    async def _async_wait_for_idle_disconnect(self, deadline: float) -> None:
+        """Wait for an idle disconnect that already won the scheduling race."""
+
+        task = self._idle_disconnect_task
+        if task is None or task is asyncio.current_task():
+            return
+        try:
+            await _async_wait_until(asyncio.shield(task), deadline)
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            raise GoveeBleClientError(
+                "Timed out waiting for purifier response"
+            ) from err
+
+    def _schedule_idle_disconnect(self) -> None:
+        """Release a healthy connection after an idle period."""
+
+        self._cancel_idle_disconnect()
+        if self._closed:
+            return
+        loop = asyncio.get_running_loop()
+        self._idle_disconnect_handle = loop.call_later(
+            CONNECTION_IDLE_TIMEOUT, self._start_idle_disconnect
         )
+
+    def _start_idle_disconnect(self) -> None:
+        """Start serialized idle cleanup when its timer expires."""
+
+        self._idle_disconnect_handle = None
+        if self._closed or self._idle_disconnect_task is not None:
+            return
+
+        async def disconnect_idle_client() -> None:
+            try:
+                async with self._lock:
+                    deadline = (
+                        asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT
+                    )
+                    await self._async_drop_connection(deadline)
+            finally:
+                if self._idle_disconnect_task is asyncio.current_task():
+                    self._idle_disconnect_task = None
+
+        if self._hass is not None and hasattr(self._hass, "async_create_task"):
+            task = self._hass.async_create_task(disconnect_idle_client())
+        else:
+            task = asyncio.create_task(disconnect_idle_client())
+        self._idle_disconnect_task = task
+
+    async def _async_drop_connection(self, deadline: float) -> None:
+        """Forget and best-effort disconnect the cached connection."""
+
+        client = self._client
+        self._client = None
+        if client is not None:
+            await transport.async_disconnect(client, deadline=deadline)
+
+    async def async_close(self) -> None:
+        """Cancel idle cleanup and close the cached connection."""
+
+        self._closed = True
+        self._cancel_idle_disconnect()
+        task = self._idle_disconnect_task
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.gather(task, return_exceptions=True)
+
+        deadline = (
+            asyncio.get_running_loop().time() + DEFAULT_TIMEOUT + DISCONNECT_TIMEOUT
+        )
+        try:
+            await _async_wait_until(self._lock.acquire(), deadline)
+        except (TimeoutError, asyncio.TimeoutError):
+            _LOGGER.debug("Timed out waiting to close BLE client", exc_info=True)
+            return
+        try:
+            await self._async_drop_connection(deadline)
+        finally:
+            self._lock.release()
