@@ -5,7 +5,9 @@ Govee H7124-style BLE air purifiers. Home Assistant loads the code under
 `custom_components/`; the repository is not a standalone service.
 
 For runtime interactions and lock ownership, see
-[`architecture.md`](architecture.md).
+[`architecture.md`](architecture.md). For Home Assistant and HACS standards,
+support baselines, user-interface layouts, and authoritative external links, see
+[`home-assistant-hacs-reference.md`](home-assistant-hacs-reference.md).
 
 ## Top-Level Layout
 
@@ -13,7 +15,7 @@ For runtime interactions and lock ownership, see
 govee-ble-air-purifier/
 |-- custom_components/govee_ble_air_purifier/  # Integration package
 |-- tests/                                      # Fast and runtime smoke tests
-|-- docs/                                       # Maintainer documentation
+|-- docs/                                       # User-interface and maintainer references
 |-- .github/workflows/validate.yml              # CI validation lanes
 |-- README.md                                   # Installation and user guide
 |-- hacs.json                                   # HACS metadata
