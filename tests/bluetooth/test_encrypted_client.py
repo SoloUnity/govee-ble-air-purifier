@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -171,6 +172,31 @@ async def test_h7129_reuses_shared_protocol_after_one_handshake(
 
 
 @pytest.mark.asyncio
+async def test_h7129_debug_logs_show_transaction_stages_without_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = EncryptedFakeBleakClient(SESSION_KEY_1)
+    _callbacks, _disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+
+    await client.async_get_state()
+
+    assert "H7129 BLE transaction started with 2 requests" in caplog.text
+    assert "H7129 Govee V1 handshake stage: waiting for e7 01 response" in caplog.text
+    assert "H7129 Govee V1 handshake stage: waiting for e7 02 response" in caplog.text
+    assert "H7129 BLE transaction completed" in caplog.text
+    assert "AA:BB:CC:DD:EE:FF" not in caplog.text
+    assert SESSION_KEY_1.hex() not in caplog.text
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
 async def test_h7129_reconnect_negotiates_a_new_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -217,10 +243,15 @@ async def test_h7129_rejects_mismatched_handshake_confirmation(
 @pytest.mark.asyncio
 async def test_h7129_handshake_timeout_discards_connection(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     fake = EncryptedFakeBleakClient(SESSION_KEY_1, respond_to_handshake=False)
     _callbacks, disconnects = _install_connections(monkeypatch, [fake])
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
 
     with pytest.raises(GoveeBleClientError, match="Timed out establishing"):
         await asyncio.wait_for(
@@ -234,6 +265,10 @@ async def test_h7129_handshake_timeout_discards_connection(
 
     assert disconnects == [fake]
     assert client._session_key is None
+    assert (
+        "H7129 Govee V1 handshake timed out during waiting for e7 01 response"
+        in caplog.text
+    )
 
 
 @pytest.mark.asyncio

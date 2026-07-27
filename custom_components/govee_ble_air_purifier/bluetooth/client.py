@@ -191,18 +191,30 @@ class GoveeBleClient:
         *,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> tuple[bytes, ...]:
-        deadline = asyncio.get_running_loop().time() + timeout
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + timeout
+        stage = "waiting for idle disconnect cleanup"
+        _LOGGER.debug(
+            "%s BLE transaction started with %d requests (%.2f second timeout)",
+            self._profile.model,
+            len(requests),
+            timeout,
+        )
+        self._log_stage("BLE transaction", stage, started, deadline)
         self._cancel_idle_disconnect()
         await self._async_wait_for_idle_disconnect(deadline)
+        stage = "waiting for transaction lock"
+        self._log_stage("BLE transaction", stage, started, deadline)
         try:
             await _async_wait_until(self._lock.acquire(), deadline)
         except (TimeoutError, asyncio.TimeoutError) as err:
+            self._log_timeout("BLE transaction", stage, started)
             raise GoveeBleClientError(
                 "Timed out waiting for purifier response"
             ) from err
         try:
             frames: list[bytes] = []
-            loop = asyncio.get_running_loop()
             future: asyncio.Future[bytes] | None = None
             discard_connection = False
 
@@ -229,17 +241,21 @@ class GoveeBleClient:
                     future.set_result(frame)
 
             async def operation(client: Any) -> tuple[bytes, ...]:
-                nonlocal discard_connection, future
+                nonlocal discard_connection, future, stage
                 primary_error: BaseException | None = None
                 try:
+                    stage = "starting application notifications"
+                    self._log_stage("BLE transaction", stage, started, deadline)
                     await _async_wait_until(
                         client.start_notify(
                             self._profile.notify_char_uuid, notification_handler
                         ),
                         deadline,
                     )
-                    for command, _matcher in requests:
+                    for index, (command, _matcher) in enumerate(requests, start=1):
                         future = loop.create_future()
+                        stage = f"writing request {index}/{len(requests)}"
+                        self._log_stage("BLE transaction", stage, started, deadline)
                         await _async_wait_until(
                             client.write_gatt_char(
                                 self._profile.write_char_uuid,
@@ -248,13 +264,20 @@ class GoveeBleClient:
                             ),
                             deadline,
                         )
+                        stage = f"waiting for response {index}/{len(requests)}"
+                        self._log_stage("BLE transaction", stage, started, deadline)
                         frames.append(await _async_wait_until(future, deadline))
                     return tuple(frames)
                 except (TimeoutError, asyncio.TimeoutError) as err:
+                    self._log_timeout("BLE transaction", stage, started)
                     primary_error = GoveeBleClientError(
                         "Timed out waiting for purifier response"
                     )
                     raise primary_error from err
+                except Exception as err:
+                    primary_error = err
+                    self._log_failure("BLE transaction", stage, started)
+                    raise
                 except BaseException as err:
                     primary_error = err
                     raise
@@ -262,6 +285,8 @@ class GoveeBleClient:
                     if future is not None and not future.done():
                         future.cancel()
                     try:
+                        stage = "stopping application notifications"
+                        self._log_stage("BLE transaction", stage, started, deadline)
                         await _async_wait_until(
                             client.stop_notify(self._profile.notify_char_uuid), deadline
                         )
@@ -277,6 +302,11 @@ class GoveeBleClient:
             if discard_connection:
                 self._cancel_idle_disconnect()
                 await self._async_drop_connection(deadline)
+            _LOGGER.debug(
+                "%s BLE transaction completed in %.2f seconds",
+                self._profile.model,
+                loop.time() - started,
+            )
             return result
         finally:
             self._lock.release()
@@ -296,6 +326,10 @@ class GoveeBleClient:
 
         client = self._client
         if client is None or not client.is_connected:
+            started = asyncio.get_running_loop().time()
+            self._log_stage(
+                "BLE connection", "establishing transport", started, deadline
+            )
             self._client = None
             self._session_key = None
             client = await transport.async_establish_connection(
@@ -305,6 +339,9 @@ class GoveeBleClient:
                 deadline=deadline,
             )
             self._client = client
+            self._log_stage(
+                "BLE connection", "transport connected", started, deadline
+            )
             if not client.is_connected:
                 await self._async_drop_connection(deadline)
                 raise GoveeBleClientError("Purifier disconnected while connecting")
@@ -318,6 +355,9 @@ class GoveeBleClient:
                             "Purifier disconnected during encrypted-session setup"
                         )
                     self._session_key = session_key
+                    self._log_stage(
+                        "BLE connection", "encrypted session ready", started, deadline
+                    )
                 except (TimeoutError, asyncio.TimeoutError) as err:
                     await self._async_drop_connection(deadline)
                     raise GoveeBleClientError(
@@ -334,6 +374,10 @@ class GoveeBleClient:
                 except BaseException:
                     await self._async_drop_connection(deadline)
                     raise
+        else:
+            _LOGGER.debug(
+                "%s reusing active BLE connection", self._profile.model
+            )
 
         try:
             result = await operation(client)
@@ -353,6 +397,7 @@ class GoveeBleClient:
         """Forget only the connection that actually disconnected."""
 
         if self._client is client:
+            _LOGGER.debug("%s BLE connection disconnected", self._profile.model)
             self._client = None
             self._session_key = None
 
@@ -380,9 +425,11 @@ class GoveeBleClient:
         """Negotiate one connection-specific Govee V1 session key."""
 
         loop = asyncio.get_running_loop()
+        started = loop.time()
         future: asyncio.Future[bytes] | None = None
         expected_command = 0
         primary_error: BaseException | None = None
+        stage = "starting handshake notifications"
 
         def notification_handler(_sender: Any, data: bytearray | bytes) -> None:
             if future is None or future.done():
@@ -396,6 +443,7 @@ class GoveeBleClient:
                 future.set_result(frame)
 
         try:
+            self._log_stage("Govee V1 handshake", stage, started, deadline)
             await _async_wait_until(
                 client.start_notify(
                     self._profile.notify_char_uuid, notification_handler
@@ -406,6 +454,8 @@ class GoveeBleClient:
             expected_command = 0x01
             session_request = build_handshake_request(expected_command)
             future = loop.create_future()
+            stage = "writing e7 01 request"
+            self._log_stage("Govee V1 handshake", stage, started, deadline)
             await _async_wait_until(
                 client.write_gatt_char(
                     self._profile.write_char_uuid,
@@ -414,12 +464,18 @@ class GoveeBleClient:
                 ),
                 deadline,
             )
+            stage = "waiting for e7 01 response"
+            self._log_stage("Govee V1 handshake", stage, started, deadline)
             session_response = await _async_wait_until(future, deadline)
+            stage = "validating e7 01 response"
+            self._log_stage("Govee V1 handshake", stage, started, deadline)
             session_key = parse_session_key(session_response)
 
             expected_command = 0x02
             confirmation_request = build_handshake_request(expected_command)
             future = loop.create_future()
+            stage = "writing e7 02 request"
+            self._log_stage("Govee V1 handshake", stage, started, deadline)
             await _async_wait_until(
                 client.write_gatt_char(
                     self._profile.write_char_uuid,
@@ -428,11 +484,28 @@ class GoveeBleClient:
                 ),
                 deadline,
             )
+            stage = "waiting for e7 02 response"
+            self._log_stage("Govee V1 handshake", stage, started, deadline)
             confirmation_response = await _async_wait_until(future, deadline)
+            stage = "validating e7 02 response"
+            self._log_stage("Govee V1 handshake", stage, started, deadline)
             validate_handshake_confirmation(
                 confirmation_response, confirmation_request
             )
+            _LOGGER.debug(
+                "%s Govee V1 handshake completed in %.2f seconds",
+                self._profile.model,
+                loop.time() - started,
+            )
             return session_key
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            primary_error = err
+            self._log_timeout("Govee V1 handshake", stage, started)
+            raise
+        except Exception as err:
+            primary_error = err
+            self._log_failure("Govee V1 handshake", stage, started)
+            raise
         except BaseException as err:
             primary_error = err
             raise
@@ -440,6 +513,12 @@ class GoveeBleClient:
             if future is not None and not future.done():
                 future.cancel()
             try:
+                self._log_stage(
+                    "Govee V1 handshake",
+                    "stopping handshake notifications",
+                    started,
+                    deadline,
+                )
                 await _async_wait_until(
                     client.stop_notify(self._profile.notify_char_uuid), deadline
                 )
@@ -451,6 +530,47 @@ class GoveeBleClient:
                 )
                 if primary_error is None:
                     raise
+
+    def _log_stage(
+        self, operation: str, stage: str, started: float, deadline: float
+    ) -> None:
+        """Log one BLE operation stage without device or protocol secrets."""
+
+        now = asyncio.get_running_loop().time()
+        _LOGGER.debug(
+            "%s %s stage: %s (%.2f seconds elapsed, %.2f seconds remaining)",
+            self._profile.model,
+            operation,
+            stage,
+            now - started,
+            max(0.0, deadline - now),
+        )
+
+    def _log_timeout(self, operation: str, stage: str, started: float) -> None:
+        """Log the precise stage that exhausted an operation deadline."""
+
+        elapsed = asyncio.get_running_loop().time() - started
+        _LOGGER.debug(
+            "%s %s timed out during %s after %.2f seconds",
+            self._profile.model,
+            operation,
+            stage,
+            elapsed,
+            exc_info=True,
+        )
+
+    def _log_failure(self, operation: str, stage: str, started: float) -> None:
+        """Log the precise stage that failed an operation."""
+
+        elapsed = asyncio.get_running_loop().time() - started
+        _LOGGER.debug(
+            "%s %s failed during %s after %.2f seconds",
+            self._profile.model,
+            operation,
+            stage,
+            elapsed,
+            exc_info=True,
+        )
 
     def _cancel_idle_disconnect(self) -> None:
         """Cancel an idle timer that has not started disconnecting."""

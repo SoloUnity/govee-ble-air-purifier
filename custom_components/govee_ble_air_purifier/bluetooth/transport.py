@@ -29,6 +29,9 @@ async def async_establish_connection(
 ) -> Any:
     """Establish a connection through Home Assistant Bluetooth helpers."""
 
+    started = asyncio.get_running_loop().time()
+    stage = "loading Home Assistant Bluetooth helpers"
+
     try:
         from bleak_retry_connector import (
             BleakClientWithServiceCache,
@@ -42,14 +45,20 @@ async def async_establish_connection(
         ) from err
 
     try:
+        stage = "looking up a connectable BLE device"
+        _LOGGER.debug("BLE connection stage: %s", stage)
         ble_device = bluetooth.async_ble_device_from_address(
             hass, address, connectable=True
         )
         if ble_device is None:
             raise GoveeBleClientError(f"BLE device {address} is not available")
 
+        stage = "closing stale connections"
+        _LOGGER.debug("BLE connection stage: %s", stage)
         await _async_wait_until(close_stale_connections(ble_device), deadline)
-        return await _async_wait_until(
+        stage = "establishing a new connection"
+        _LOGGER.debug("BLE connection stage: %s", stage)
+        client = await _async_wait_until(
             establish_connection(
                 client_class=BleakClientWithServiceCache,
                 device=ble_device,
@@ -58,7 +67,18 @@ async def async_establish_connection(
             ),
             deadline,
         )
+        _LOGGER.debug(
+            "BLE connection established in %.2f seconds",
+            asyncio.get_running_loop().time() - started,
+        )
+        return client
     except (TimeoutError, asyncio.TimeoutError) as err:
+        _LOGGER.debug(
+            "BLE connection timed out while %s after %.2f seconds",
+            stage,
+            asyncio.get_running_loop().time() - started,
+            exc_info=True,
+        )
         raise GoveeBleClientError("Timed out waiting for purifier response") from err
 
 
@@ -66,6 +86,8 @@ async def async_disconnect(client: Any, *, deadline: float) -> None:
     """Disconnect without allowing cleanup failure to escape."""
 
     try:
+        _LOGGER.debug("Disconnecting BLE client")
         await _async_wait_until(client.disconnect(), deadline)
+        _LOGGER.debug("BLE client disconnected")
     except Exception:
         _LOGGER.debug("Suppressing BLE disconnect failure", exc_info=True)

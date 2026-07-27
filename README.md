@@ -107,3 +107,12 @@ uses `<=`; only a valid reading above that boundary resets its timer.
   model-specific profile takes effect after an update and a Home Assistant
   restart.
 - This integration works locally over Bluetooth.
+
+## Troubleshooting
+
+From the integration's page in **Settings > Devices & services**, select
+**Enable debug logging**, reproduce the problem, and then disable debug logging
+to download the log. Debug output identifies connection, encrypted-handshake,
+notification, request, and response stages. The integration's stage messages do
+not include BLE addresses, packet payloads, or encryption keys; supporting Home
+Assistant Bluetooth libraries may include device identifiers.

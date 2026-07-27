@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -113,6 +114,7 @@ async def test_unavailable_device_fails_before_connection(
 @pytest.mark.asyncio
 async def test_stage_timeout_is_translated_without_extending_deadline(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     events: list[str] = []
     _install_connection_modules(monkeypatch, events)
@@ -124,6 +126,7 @@ async def test_stage_timeout_is_translated_without_extending_deadline(
         raise TimeoutError
 
     monkeypatch.setattr(transport, "_async_wait_until", timeout_wait_until)
+    caplog.set_level(logging.DEBUG, logger=transport.__name__)
 
     with pytest.raises(GoveeBleClientError, match="Timed out waiting"):
         await transport.async_establish_connection(
@@ -135,6 +138,7 @@ async def test_stage_timeout_is_translated_without_extending_deadline(
 
     assert deadlines == [42.0]
     assert events == ["lookup"]
+    assert "BLE connection timed out while closing stale connections" in caplog.text
 
 
 @pytest.mark.asyncio
