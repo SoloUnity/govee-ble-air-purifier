@@ -7,7 +7,9 @@ adding a purifier, changing its settings, and finding its entities.
 This is both a user-interface reference and a maintainer checklist. Runtime
 design and lock ownership are documented separately in
 [`architecture.md`](architecture.md), while the file map is in
-[`repository-structure.md`](repository-structure.md).
+[`repository-structure.md`](repository-structure.md). The detailed BLE protocol
+reference is
+[`govee-ble-air-purifier-protocol.md`](govee-ble-air-purifier-protocol.md).
 
 ## Product And Support Baseline
 
@@ -406,9 +408,15 @@ must not be exposed.
 ## BLE And Device Protocol Specification
 
 Bluetooth Low Energy GATT is the transport standard. The application protocol
-above GATT is Govee `H712*` family behavior encoded by this repository; only the
-H7124 definition is physically tested and validated. It is not presented as an
-official public Govee specification.
+above GATT is Govee `H712*` family behavior encoded by this repository. The
+H7124 implementation is physically tested and validated. H7129 behavior has
+also been captured from a physical device and decrypted, but encrypted H7129
+sessions are not yet implemented or validated by the integration. This is not
+presented as an official public Govee specification.
+
+The detailed command, response, capture-evidence, and encrypted-transport
+reference is
+[`govee-ble-air-purifier-protocol.md`](govee-ble-air-purifier-protocol.md).
 
 The values below document the tested H7124 definition stored in
 `model_profiles/h7124.json` and `model_profiles/default.json`:
@@ -534,18 +542,3 @@ when the developer documentation does not show enough implementation detail.
 - [Adding a custom repository](https://www.hacs.xyz/docs/faq/custom_repositories/)
 - [Installing and configuring HACS integrations](https://www.hacs.xyz/docs/use/repositories/type/integration/)
 - [Reference integration template](https://github.com/custom-components/blueprint)
-
-## Repository Documentation Map
-
-Use these repository documents for different questions:
-
-| Document | Use it for |
-| --- | --- |
-| [`../README.md`](../README.md) | End-user installation, basic setup, Custom Auto behavior, and troubleshooting notes. |
-| [`home-assistant-hacs-reference.md`](home-assistant-hacs-reference.md) | Home Assistant and HACS standards, support baselines, UI menu layouts, packaging, protocol summary, and external documentation links. |
-| [`architecture.md`](architecture.md) | Runtime object ownership, state publication, Custom Auto behavior, concurrency, and cleanup invariants. |
-| [`repository-structure.md`](repository-structure.md) | File locations, package boundaries, dependency shape, tests, and validation files. |
-
-For exact current behavior, verify the corresponding implementation and tests.
-For external platform requirements, verify the linked Home Assistant or HACS
-documentation because those projects evolve independently of this repository.

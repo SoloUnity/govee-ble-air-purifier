@@ -10,7 +10,9 @@ standalone service.
 For runtime interactions and lock ownership, see
 [`architecture.md`](architecture.md). For Home Assistant and HACS standards,
 support baselines, user-interface layouts, and authoritative external links, see
-[`home-assistant-hacs-reference.md`](home-assistant-hacs-reference.md).
+[`home-assistant-hacs-reference.md`](home-assistant-hacs-reference.md). For the
+detailed H7124 and H7129 BLE protocol, see
+[`govee-ble-air-purifier-protocol.md`](govee-ble-air-purifier-protocol.md).
 
 ## Top-Level Layout
 
