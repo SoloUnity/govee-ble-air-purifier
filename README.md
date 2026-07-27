@@ -7,9 +7,9 @@ It also gives you basic control of the purifier and shows remaining filter life.
 ## Supported Devices
 
 - Govee `H712*` family BLE air purifiers
-- Devices with Bluetooth names starting with `GVH712` followed by one
-  alphanumeric model character (for example `GVH7124` for the H7124 or
-  `GVH712C` for the H712C)
+- Devices with Bluetooth names containing `H712` followed by one ASCII letter
+  or digit, matched case-insensitively (for example `GVH7124`, `GVH712C`, or
+  `ihoment_H7129_6A7D`)
 
 **Only the Govee H7124 has been physically tested and validated.** Other `H712*`
 models are recognized but run on the H7124 protocol definition, so they may

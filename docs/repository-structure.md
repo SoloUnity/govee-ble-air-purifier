@@ -76,11 +76,11 @@ bluetooth/
   matchers, and status decoding for the recognized family. Models with
   different response semantics or framing require Python changes here; they
   cannot be added by JSON alone.
-- `profiles.py` matches advertised names beginning `GVH712` plus one
-  alphanumeric model character, selects the exact `model_profiles/<model>.json`
-  when present and `default.json` otherwise (H7124 protocol behavior), and
-  binds the resolved advertisement prefixes, UUIDs, commands, matchers,
-  decoders, and capabilities into `ModelProfile`.
+- `profiles.py` searches advertised names case-insensitively for `H712` plus one
+  ASCII letter or digit, selects the exact
+  `model_profiles/<model>.json` when present and `default.json` otherwise
+  (H7124 protocol behavior), and binds the resolved advertisement identity,
+  UUIDs, commands, matchers, decoders, and capabilities into `ModelProfile`.
 - `bluetooth/framing.py` provides generic 20-byte frame construction, checksum
   validation, and `ProtocolError`.
 - `bluetooth/client.py` owns the per-purifier transaction lock, writes,
@@ -169,6 +169,7 @@ tests/
 |-- helpers/
 |   `-- ha_stubs.py
 |-- conftest.py
+|-- scan_bluetooth.py
 |-- test_protocol.py
 |-- test_coordinator_logic.py
 |-- test_fan_entity.py
@@ -185,9 +186,11 @@ tests/
 
 The fast lane excludes `test_runtime_smoke.py` and uses focused substitutes;
 `tests/conftest.py` supplies a minimal coordinator stub when Home Assistant is
-not installed. The separate smoke lane installs real Home Assistant versions
-and runs only `test_runtime_smoke.py` to check imports, API inheritance and
-signatures, entity construction, config flow, and lifecycle composition.
+not installed. `scan_bluetooth.py` is a manually run, passive BLE advertisement
+scanner and is not collected by pytest. The separate smoke lane installs real
+Home Assistant versions and runs only `test_runtime_smoke.py` to check imports,
+API inheritance and signatures, entity construction, config flow, and lifecycle
+composition.
 
 ```bash
 python -m pytest --ignore=tests/test_runtime_smoke.py

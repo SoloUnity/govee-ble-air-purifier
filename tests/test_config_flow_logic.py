@@ -61,16 +61,24 @@ def test_discovered_device_options_include_name_address_and_signal() -> None:
 def test_discovered_device_options_include_h712_family_fallback_models() -> None:
     options = build_discovered_device_options(
         [
+            _service_info("ihoment_H7129_6A7D", "AA:BB:CC:DD:EE:09", rssi=-45),
             _service_info("GVH7126LIVING", "AA:BB:CC:DD:EE:06", rssi=-50),
+            _service_info("ihoment_H7129_6B51", "AA:BB:CC:DD:EE:19", rssi=-55),
             _service_info("GVH712CBEDROOM", "AA:BB:CC:DD:EE:0C", rssi=-60),
             _service_info("GVH712", "AA:BB:CC:DD:EE:00", rssi=-40),
-            _service_info("gvh7124", "AA:BB:CC:DD:EE:04", rssi=-30),
         ]
     )
 
-    assert [option.profile_key for option in options] == ["h7126", "h712c"]
+    assert [option.profile_key for option in options] == [
+        "h7129",
+        "h7126",
+        "h7129",
+        "h712c",
+    ]
     assert [option.name for option in options] == [
+        "ihoment_H7129_6A7D",
         "GVH7126LIVING",
+        "ihoment_H7129_6B51",
         "GVH712CBEDROOM",
     ]
 

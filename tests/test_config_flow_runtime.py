@@ -382,10 +382,10 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
 async def test_discovered_family_model_persists_exact_profile_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    address = "AA:BB:CC:DD:EE:0C"
+    address = "AA:BB:CC:DD:EE:09"
     bluetooth_module = ModuleType("homeassistant.components.bluetooth")
     bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: (
-        SimpleNamespace(name="GVH712CBEDROOM", address=address, rssi=-45),
+        SimpleNamespace(name="ihoment_H7129_6A7D", address=address, rssi=-45),
     )
     config_flow = _import_config_flow(monkeypatch, bluetooth_module)
     flow = config_flow.GoveeBleAirPurifierConfigFlow()
@@ -400,11 +400,11 @@ async def test_discovered_family_model_persists_exact_profile_key(
 
     assert result["step_id"] == "custom_auto"
     assert flow._pending_entry == {
-        "title": "GVH712CBEDROOM",
+        "title": "ihoment_H7129_6A7D",
         "data": {
             "address": address,
-            "name": "GVH712CBEDROOM",
-            "profile": "h712c",
+            "name": "ihoment_H7129_6A7D",
+            "profile": "h7129",
         },
     }
 
@@ -413,11 +413,11 @@ async def test_discovered_family_model_persists_exact_profile_key(
 async def test_manual_family_model_uses_model_specific_default_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    address = "AA:BB:CC:DD:EE:06"
+    address = "AA:BB:CC:DD:EE:19"
     bluetooth_module = ModuleType("homeassistant.components.bluetooth")
     bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
     bluetooth_module.async_last_service_info = lambda *args, **kwargs: SimpleNamespace(
-        name="GVH7126LIVING", address=address
+        name="ihoment_H7129_6B51", address=address
     )
     config_flow = _import_config_flow(monkeypatch, bluetooth_module)
     flow = config_flow.GoveeBleAirPurifierConfigFlow()
@@ -432,8 +432,8 @@ async def test_manual_family_model_uses_model_specific_default_name(
     )
 
     assert result["step_id"] == "custom_auto"
-    assert flow._pending_entry["title"] == "Govee H7126 Air Purifier"
-    assert flow._pending_entry["data"]["profile"] == "h7126"
+    assert flow._pending_entry["title"] == "Govee H7129 Air Purifier"
+    assert flow._pending_entry["data"]["profile"] == "h7129"
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ design and lock ownership are documented separately in
 | Python package baseline | Python 3.12 or newer | `pyproject.toml` |
 | Recognized model family | Govee `H712*` BLE purifiers | `profiles.py` and `model_profiles/` |
 | Physically tested and validated model | Govee H7124 only | `model_profiles/h7124.json` and `model_profiles/default.json` |
-| Recognized BLE local name | Starts with `GVH712` followed by one alphanumeric model character (for example `GVH7124` or `GVH712C`) | `profiles.py` |
+| Recognized BLE local name | Contains `H712` followed by one ASCII letter or digit, case-insensitively (for example `GVH7124`, `GVH712C`, or `ihoment_H7129_6A7D`) | `profiles.py` |
 | Home Assistant integration type | `device` | `manifest.json` |
 | Home Assistant IoT class | `local_polling` | `manifest.json` |
 | Active entity platforms | `fan`, `sensor`, `switch` | `const.py` |
@@ -137,7 +137,7 @@ Home Assistant's cache of connectable Bluetooth advertisements.
 ```text
 Govee BLE Air Purifier
 |-- Recently seen purifier
-|   |-- <recognized GVH712* devices currently in the BLE cache>
+|   |-- <recognized names containing H712 plus one ASCII letter or digit>
 |   `-- Enter address manually
 |-- BLE address for manual setup
 |-- Name
@@ -155,10 +155,11 @@ The fields behave as follows:
 | Polling interval | Whole seconds from 5 through 300; default is 10. |
 
 Manual address entry is not blind. Home Assistant must have cached a
-connectable advertisement for that address whose name matches the recognized
-family pattern: `GVH712` followed by one alphanumeric model character. The
-purifier does not have to remain visible at the instant the form is submitted
-if Home Assistant still has compatible advertisement history.
+connectable advertisement for that address whose name contains the recognized
+family token: `H712` followed by one ASCII letter or digit,
+case-insensitively. The purifier does not have to remain visible at the instant
+the form is submitted if Home Assistant still has compatible advertisement
+history.
 
 The normalized BLE address is the config entry's unique ID, which prevents the
 same purifier from being configured twice. Address, name, and model profile are
@@ -411,7 +412,7 @@ The values below document the tested H7124 definition stored in
 | Item | Tested H7124 profile value |
 | --- | --- |
 | Profile key | `h7124` (other `h712?` keys fall back to `default.json`) |
-| Advertised name prefix | `GVH712` plus one alphanumeric model character |
+| Advertised name token | `H712` plus one ASCII letter or digit, anywhere in the name and case-insensitive |
 | Service UUID | `00010203-0405-0607-0809-0a0b0c0d1910` |
 | Notify characteristic | `00010203-0405-0607-0809-0a0b0c0d2b10` |
 | Write characteristic | `00010203-0405-0607-0809-0a0b0c0d2b11` |

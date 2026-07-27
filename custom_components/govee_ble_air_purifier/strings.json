@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Govee BLE Air Purifier",
-        "description": "Choose a recently seen GVH712* purifier, or enter its BLE address manually. Only H7124 has been tested. Other H712 models use the H7124 protocol fallback and may not work or may expose mismatched features.",
+        "description": "Choose a recently seen purifier whose BLE name contains H712 followed by one ASCII letter or digit (case-insensitive), or enter its BLE address manually. Only H7124 has been tested. Other H712 models use the H7124 protocol fallback and may not work or may expose mismatched features.",
         "data": {
           "discovered_device": "Recently seen purifier",
           "address": "BLE address for manual setup",

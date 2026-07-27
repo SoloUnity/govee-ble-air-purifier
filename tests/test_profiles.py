@@ -43,6 +43,8 @@ def test_bundled_h7124_definition_matches_default_fallback() -> None:
         ("GVH712438FE", "H7124", "H7124-38FE"),
         ("GVH7126LIVING", "H7126", "H7126-LIVING"),
         ("GVH712C", "H712C", "H712C"),
+        ("ihoment_H7129_6A7D", "H7129", "H7129-6A7D"),
+        ("prefix_h712c_suffix", "H712C", "H712C-suffix"),
     ],
 )
 def test_ble_names_resolve_family_model(
@@ -56,11 +58,27 @@ def test_ble_names_resolve_family_model(
     assert profile.model == model
 
 
-@pytest.mark.parametrize("name", [None, "", "GVH712", "gvh7124", "Other"])
+@pytest.mark.parametrize(
+    "name",
+    [None, "", "GVH712", "ihoment_H712", "H7119", "H712\N{KELVIN SIGN}", "Other"],
+)
 def test_ble_names_reject_non_family_devices(name: str | None) -> None:
     assert model_from_ble_name(name) is None
     assert normalize_ble_name(name) is None
     assert match_profile(name) is None
+
+
+def test_observed_ihoment_h7129_name_uses_default_protocol_profile() -> None:
+    profile = match_profile("ihoment_H7129_6B51")
+
+    assert profile is not None
+    assert profile.key == "h7129"
+    assert profile.model == "H7129"
+    assert profile.matches_local_name("GVH7129BEDROOM")
+    assert profile.matches_local_name("ihoment_H7129_6B51")
+    assert not profile.matches_local_name("GVH7124BEDROOM")
+    assert profile.service_uuid == H7124_PROFILE.service_uuid
+    assert profile.status_query_command == H7124_PROFILE.status_query_command
 
 
 def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> None:

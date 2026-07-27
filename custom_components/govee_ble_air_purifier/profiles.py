@@ -25,7 +25,7 @@ PROFILE_DIRECTORY = Path(__file__).with_name("model_profiles")
 DEFAULT_PROFILE_KEY = "default"
 H7124_PROFILE_KEY = "h7124"
 
-_BLE_NAME_PATTERN = re.compile(r"^GV(H712[0-9A-Z])")
+_BLE_MODEL_PATTERN = re.compile(r"(H712[0-9A-Z])", re.IGNORECASE | re.ASCII)
 _PROFILE_KEY_PATTERN = re.compile(r"h712[0-9a-z]\Z")
 _TOP_LEVEL_KEYS = {"schema_version", "gatt", "commands"}
 _GATT_KEYS = {"service_uuid", "notify_char_uuid", "write_char_uuid"}
@@ -69,7 +69,7 @@ class ModelProfile:
     def matches_local_name(self, name: str | None) -> bool:
         """Return true if a BLE local name belongs to this model profile."""
 
-        return bool(name) and name.startswith(self.local_name_prefixes)
+        return model_from_ble_name(name) == self.model
 
     @property
     def supports_custom_auto(self) -> bool:
@@ -234,18 +234,18 @@ _PROFILE_DEFINITIONS = _load_profile_definitions()
 def model_from_ble_name(name: str | None) -> str | None:
     """Extract an H712-family model from a Govee BLE local name."""
 
-    if not name or (match := _BLE_NAME_PATTERN.match(name)) is None:
+    if not name or (match := _BLE_MODEL_PATTERN.search(name)) is None:
         return None
-    return match.group(1)
+    return match.group(1).upper()
 
 
 def normalize_ble_name(name: str | None) -> str | None:
     """Return a stable human-readable identifier for an H712 BLE name."""
 
-    if not name or (match := _BLE_NAME_PATTERN.match(name)) is None:
+    if not name or (match := _BLE_MODEL_PATTERN.search(name)) is None:
         return None
-    model = match.group(1)
-    suffix = name[match.end() :]
+    model = match.group(1).upper()
+    suffix = name[match.end() :].lstrip(" _-")
     return f"{model}-{suffix}" if suffix else model
 
 

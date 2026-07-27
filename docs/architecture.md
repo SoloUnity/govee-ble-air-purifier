@@ -113,15 +113,15 @@ query, and fan-mode command frames. The JSON owns those GATT UUIDs and
 outbound frames; it does not own response interpretation. Future model files
 are complete definitions, not partial inheritance over another file.
 
-`profiles.py` matches advertised names beginning `GVH712` plus one
-alphanumeric model character (for example `GVH7124` or `GVH712C`), loads the
-exact lowercase model JSON when present (for example `h7126.json`), and
-otherwise falls back to `default.json`, which means H7124 protocol behavior.
-It packages the resolved UUIDs, commands, matchers, decoders, advertised name
-prefixes, and capabilities as `ModelProfile`. Higher layers receive a profile
-rather than duplicating those constants. Only the H7124 definition is
-physically tested and validated; fallback models are unverified and may fail
-or expose unsupported or mismatched features.
+`profiles.py` searches advertised names case-insensitively for `H712` plus one
+ASCII letter or digit (for example `GVH7124`, `GVH712C`, or
+`ihoment_H7129_6A7D`), loads the exact lowercase model JSON when present (for
+example `h7126.json`), and otherwise falls back to `default.json`, which means
+H7124 protocol behavior. It packages the resolved UUIDs, commands, matchers,
+decoders, advertised identity, and capabilities as `ModelProfile`. Higher
+layers receive a profile rather than duplicating those constants. Only the
+H7124 definition is physically tested and validated; fallback models are
+unverified and may fail or expose unsupported or mismatched features.
 
 Fan-mode lists may vary by exact profile. The integration creates the Custom
 Auto switch only when the profile provides Sleep, Low, Medium, High, Turbo,
