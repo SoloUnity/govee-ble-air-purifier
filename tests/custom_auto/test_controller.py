@@ -747,6 +747,18 @@ async def test_restore_retains_speed_confirms_upward_correction_and_restarts_tim
 
 
 @pytest.mark.asyncio
+async def test_force_activation_reasserts_speed_when_controller_is_active() -> None:
+    coordinator = FakeCoordinator(pm25=None, mode="Low")
+    controller = CustomAutoController(None, coordinator, custom_auto_config())
+    await controller.async_activate(restored_speed=40)
+
+    await controller.async_activate(force=True)
+
+    assert coordinator.commands == ["Low"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
 async def test_invalid_restored_speed_falls_back_to_coordinator_mode() -> None:
     coordinator = FakeCoordinator(pm25=None, mode="Medium")
     controller = CustomAutoController(None, coordinator, custom_auto_config())

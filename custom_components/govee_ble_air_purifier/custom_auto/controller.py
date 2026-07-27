@@ -77,7 +77,11 @@ class CustomAutoController:
         return lambda: self._state_listeners.discard(listener)
 
     async def async_activate(
-        self, *, restored_speed: int | None = None, restoring: bool = False
+        self,
+        *,
+        restored_speed: int | None = None,
+        restoring: bool = False,
+        force: bool = False,
     ) -> None:
         """Activate custom auto and establish or restore its manual speed."""
 
@@ -87,6 +91,8 @@ class CustomAutoController:
             already_active = self._active
             try:
                 if already_active:
+                    if force and self._current_speed in CUSTOM_AUTO_SPEEDS:
+                        await self._async_set_speed(self._current_speed, force=True)
                     return
 
                 self._active = True
@@ -110,13 +116,13 @@ class CustomAutoController:
                     else None
                 )
                 if pm25 is None:
-                    await self._async_set_speed(self._current_speed)
+                    await self._async_set_speed(self._current_speed, force=force)
                 else:
                     self._observe_upshift_sample(
                         self._speed_for_pm(pm25),
                         self.coordinator.pm25_sample_revision,
                     )
-                    await self._async_set_speed(self._current_speed)
+                    await self._async_set_speed(self._current_speed, force=force)
                     if update_succeeded:
                         self._update_downshift_timers(pm25)
                 self._notify_state_listeners()
@@ -301,8 +307,8 @@ class CustomAutoController:
     def _speed_for_pm(self, pm25: int) -> int:
         return speed_for_pm(pm25, self.config.up_thresholds)
 
-    async def _async_set_speed(self, speed: int) -> None:
-        if speed == self._current_speed:
+    async def _async_set_speed(self, speed: int, *, force: bool = False) -> None:
+        if not force and speed == self._current_speed:
             mode = getattr(self.coordinator.data, "fan_mode", None)
             is_on = getattr(self.coordinator.data, "is_on", None)
             if mode == SPEED_TO_MODE[speed] and is_on is not False:

@@ -67,8 +67,17 @@ fan-mode sets do not expose these controls.
 While Custom Auto is on, the fan's logical preset remains Auto while Home
 Assistant sends the underlying manual speeds Sleep (20%), Low (40%), Medium
 (60%), High (80%), and Turbo (100%) according to PM2.5. Selecting a manual
-percentage or Manual preset, or turning the purifier off, turns Custom Auto off.
-Selecting the fan's Auto preset uses the purifier's built-in Auto mode.
+percentage or Manual preset turns Custom Auto off. Selecting the fan's Auto
+preset uses the purifier's built-in Auto mode.
+
+Turning the purifier off suspends either selected Auto mode instead of
+forgetting it. A later Home Assistant or physical-button power-on resumes
+hardware Auto or Custom Auto, including the last Custom Auto speed. The Custom
+Auto switch remains on while that selection is suspended. Turning the switch
+off while the purifier is off changes the resume target to hardware Auto without
+powering on the purifier. This intent survives Home Assistant restarts; mode
+changes made directly on the purifier cannot be detected because its verified
+poll responses do not report fan mode.
 
 The defaults reproduce the original Home Assistant automations: Excellent to
 Good increases to 40% above 3 and returns to 20% at or below 3 after 7 minutes;

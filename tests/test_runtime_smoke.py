@@ -98,11 +98,15 @@ async def test_platform_setup_uses_real_home_assistant_entities() -> None:
         active=False,
         async_add_listener=lambda listener: lambda: None,
     )
+    auto_resume = SimpleNamespace(
+        async_add_listener=lambda listener: lambda: None,
+    )
     entry = SimpleNamespace(
         data={"name": "Runtime smoke purifier"},
         runtime_data=SimpleNamespace(
             controller=controller,
             coordinator=coordinator,
+            auto_resume=auto_resume,
         ),
         unique_id="aabbccddeeff",
     )

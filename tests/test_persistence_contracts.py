@@ -1,5 +1,12 @@
 """Contracts for values persisted by Home Assistant across releases."""
 
+from custom_components.govee_ble_air_purifier.auto_resume import (
+    ATTR_AUTO_RESUME_CUSTOM_SPEED,
+    ATTR_AUTO_RESUME_MODE,
+    ATTR_AUTO_RESUME_SUSPENDED,
+    AUTO_MODE_CUSTOM,
+    AUTO_MODE_HARDWARE,
+)
 from custom_components.govee_ble_air_purifier.const import (
     CONF_ADDRESS,
     CONF_CUSTOM_AUTO_DELAY_20,
@@ -78,3 +85,19 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
 
 def test_active_platform_contract_is_stable() -> None:
     assert PLATFORMS == ["fan", "sensor", "switch"]
+
+
+def test_auto_resume_restore_values_are_stable() -> None:
+    assert (
+        ATTR_AUTO_RESUME_MODE,
+        ATTR_AUTO_RESUME_SUSPENDED,
+        ATTR_AUTO_RESUME_CUSTOM_SPEED,
+    ) == (
+        "auto_resume_mode",
+        "auto_resume_suspended",
+        "auto_resume_custom_speed",
+    )
+    assert (AUTO_MODE_HARDWARE, AUTO_MODE_CUSTOM) == (
+        "hardware_auto",
+        "custom_auto",
+    )

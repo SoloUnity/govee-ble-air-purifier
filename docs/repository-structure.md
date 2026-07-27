@@ -32,9 +32,11 @@ The integration package's root Home Assistant entrypoints are:
 - `__init__.py`: config-entry setup, runtime composition, option reload, and
   unload.
 - `config_flow.py`: setup and options flows.
+- `auto_resume.py`: persisted hardware-Auto and Custom-Auto selection,
+  suspension, and power-on reconciliation.
 - `fan.py`: power, manual speeds, and Manual or hardware Auto presets.
 - `sensor.py`: PM2.5 and filter-life sensors.
-- `switch.py`: restored logical ownership for integration-managed Custom Auto.
+- `switch.py`: selected and active state for integration-managed Custom Auto.
 - `diagnostics.py`: redacted config, coordinator, and controller diagnostics.
 
 `entity.py` supplies common coordinator subscription, device information, and
@@ -95,6 +97,7 @@ bluetooth/
 ## State And Custom Auto
 
 ```text
+auto_resume.py
 coordinator.py
 custom_auto/
 |-- __init__.py
@@ -103,10 +106,14 @@ custom_auto/
 `-- controller.py
 ```
 
+- `auto_resume.py` owns the shared automatic-mode intent, serialization of
+  explicit mode changes, physical power-transition reconciliation, and resume
+  retries. The fan and Custom Auto entities replicate its persisted attributes;
+  startup restores the newest available record so either entity may be disabled.
 - `coordinator.py` defines `GoveeRuntimeData` and `GoveeCoordinator`. The
   coordinator polls, serializes state-changing work, merges `PurifierState`,
-  publishes confirmed commands immediately, and schedules reconciliation
-  refreshes.
+  publishes confirmed commands immediately, tracks fresh poll revisions, and
+  schedules reconciliation refreshes.
 - `custom_auto/config.py` owns defaults, option parsing and validation, and the
   immutable `CustomAutoConfig`.
 - `custom_auto/policy.py` owns pure speed constants, mode mappings, and upward
@@ -115,9 +122,9 @@ custom_auto/
   tracking, upshift confirmation, downshift timers, retries, coordinator calls,
   and transactional ownership handoff.
 
-Coordinator publication fans out to entities and, while active, the Custom Auto
-controller. The controller can call back through the coordinator to request a
-confirmed mode command; it does not call Bluetooth code directly.
+Coordinator publication fans out to entities, the Auto resume manager, and,
+while active, the Custom Auto controller. Both runtime controllers call through
+the coordinator for confirmed commands; neither calls Bluetooth code directly.
 
 ## Dependency Shape
 

@@ -45,6 +45,14 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
                     "current_speed": 80,
                 }
             ),
+            auto_resume=SimpleNamespace(
+                diagnostics=lambda: {
+                    "mode": "custom_auto",
+                    "suspended": False,
+                    "custom_speed": 80,
+                    "reconcile_pending": False,
+                }
+            ),
         ),
     )
     hass = SimpleNamespace(
@@ -65,6 +73,12 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
         "custom_auto": {
             "active": True,
             "current_speed": 80,
+        },
+        "auto_resume": {
+            "mode": "custom_auto",
+            "suspended": False,
+            "custom_speed": 80,
+            "reconcile_pending": False,
         },
     }
 
@@ -100,4 +114,5 @@ async def test_diagnostics_redacts_arbitrary_user_provided_name(
         "options": {},
         "state": None,
         "custom_auto": None,
+        "auto_resume": None,
     }

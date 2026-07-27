@@ -13,6 +13,9 @@ async def test_successful_unload_stops_controller_and_coordinator() -> None:
     async def stop_controller() -> None:
         calls.append("controller")
 
+    async def stop_auto_resume() -> None:
+        calls.append("auto_resume")
+
     async def stop_coordinator() -> None:
         calls.append("coordinator")
 
@@ -21,6 +24,7 @@ async def test_successful_unload_stops_controller_and_coordinator() -> None:
 
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
+            auto_resume=SimpleNamespace(async_stop=stop_auto_resume),
             controller=SimpleNamespace(async_stop=stop_controller),
             coordinator=SimpleNamespace(async_shutdown=stop_coordinator),
         )
@@ -30,7 +34,7 @@ async def test_successful_unload_stops_controller_and_coordinator() -> None:
     )
 
     assert await async_unload_entry(hass, entry) is True
-    assert set(calls) == {"controller", "coordinator"}
+    assert calls == ["auto_resume", "controller", "coordinator"]
 
 
 @pytest.mark.asyncio
@@ -38,7 +42,10 @@ async def test_successful_unload_stops_controller_and_coordinator() -> None:
     ("fail_first_refresh", "expected_calls"),
     [
         (True, ["refresh", "coordinator"]),
-        (False, ["refresh", "controller", "coordinator"]),
+        (
+            False,
+            ["refresh", "restore", "auto_resume", "controller", "coordinator"],
+        ),
     ],
 )
 async def test_setup_failure_stops_controller_and_coordinator(
@@ -73,7 +80,20 @@ async def test_setup_failure_stops_controller_and_coordinator(
         async def async_stop(self) -> None:
             calls.append("controller")
 
+    class FakeAutoResume:
+        def __init__(
+            self, hass, coordinator, controller, *, config_entry
+        ) -> None:
+            return None
+
+        async def async_stop(self) -> None:
+            calls.append("auto_resume")
+
+        async def async_restore_from_hass(self, unique_id: str) -> None:
+            calls.append("restore")
+
     class FakeEntry:
+        unique_id = "aabbccddeeff"
         data = {
             "address": "AA:BB:CC:DD:EE:FF",
             "name": "Purifier",
@@ -94,6 +114,7 @@ async def test_setup_failure_stops_controller_and_coordinator(
     monkeypatch.setattr(integration, "GoveeBleClient", FakeClient)
     monkeypatch.setattr(integration, "GoveeCoordinator", FakeCoordinator)
     monkeypatch.setattr(integration, "CustomAutoController", FakeController)
+    monkeypatch.setattr(integration, "AutoResumeManager", FakeAutoResume)
     entry = FakeEntry()
     hass = SimpleNamespace(
         config_entries=SimpleNamespace(async_forward_entry_setups=forward_entry_setups)

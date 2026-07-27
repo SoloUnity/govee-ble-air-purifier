@@ -24,6 +24,7 @@ class GoveeRuntimeData:
     coordinator: "GoveeCoordinator"
     profile: ModelProfile
     controller: Any
+    auto_resume: Any
 
 
 class GoveeCoordinator(DataUpdateCoordinator):
@@ -45,6 +46,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
         self.last_poll_success = False
         self.last_pm25_update_success = False
         self.pm25_sample_revision = 0
+        self.poll_revision = 0
         self._last_fan_mode: str | None = None
         self._state_lock = asyncio.Lock()
         self._background_refresh_task: asyncio.Task[Any] | None = None
@@ -110,6 +112,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
                 self.last_pm25_update_success = False
                 raise UpdateFailed(str(err)) from err
             self.last_poll_success = True
+            self.poll_revision += 1
             self.last_pm25_update_success = client_data.pm25 is not None
             if self.last_pm25_update_success:
                 self.pm25_sample_revision += 1

@@ -6,19 +6,19 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers import restore_state
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN
-from .custom_auto.policy import CUSTOM_AUTO_SPEEDS
+from .auto_resume import (
+    ATTR_AUTO_RESUME_CUSTOM_SPEED,
+    ATTR_AUTO_RESUME_MODE,
+    ATTR_AUTO_RESUME_SUSPENDED,
+    AUTO_MODE_CUSTOM,
+)
 from .entity import GoveeAirPurifierEntity
 
-PRESET_AUTO = "Auto"
 ATTR_CUSTOM_AUTO_ACTIVE = "custom_auto_active"
 ATTR_CUSTOM_AUTO_SPEED = "custom_auto_speed"
 
@@ -36,6 +36,7 @@ async def async_setup_entry(
                 entry.runtime_data.coordinator,
                 entry,
                 entry.runtime_data.controller,
+                entry.runtime_data.auto_resume,
             )
         ]
     )
@@ -46,87 +47,57 @@ class GoveeCustomAutoSwitch(GoveeAirPurifierEntity, SwitchEntity, RestoreEntity)
 
     _attr_translation_key = "custom_auto"
 
-    def __init__(self, coordinator, entry, controller) -> None:
+    def __init__(self, coordinator, entry, controller, auto_resume) -> None:
         """Initialize the Custom Auto switch."""
 
         super().__init__(coordinator, entry, "custom_auto")
         self._controller = controller
+        self._auto_resume = auto_resume
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to and restore logical custom-auto ownership."""
+        """Subscribe to logical Custom Auto selection and activity."""
 
         await super().async_added_to_hass()
         self.async_on_remove(
             self._controller.async_add_listener(self._handle_controller_update)
         )
-        restored = await self._async_get_last_custom_auto_state()
-        if restored is None:
-            return
-        last_state, legacy_fan_state = restored
-        attributes = last_state.attributes
-        if (
-            attributes.get(ATTR_CUSTOM_AUTO_ACTIVE) is not True
-            and (legacy_fan_state or last_state.state != STATE_ON)
-        ):
-            return
-        restored_speed = attributes.get(ATTR_CUSTOM_AUTO_SPEED)
-        if restored_speed not in CUSTOM_AUTO_SPEEDS:
-            restored_speed = None
-        await self._controller.async_activate(
-            restored_speed=restored_speed, restoring=True
+        self.async_on_remove(
+            self._auto_resume.async_add_listener(self._handle_controller_update)
         )
-
-    async def _async_get_last_custom_auto_state(self) -> tuple[Any, bool] | None:
-        """Return switch state or migrate the legacy fan restore record."""
-
-        if (last_state := await self.async_get_last_state()) is not None:
-            return last_state, False
-        if self.hass is None:
-            return None
-        fan_entity_id = er.async_get(self.hass).async_get_entity_id(
-            "fan", DOMAIN, f"{self._entry.unique_id}_fan"
-        )
-        if fan_entity_id is None:
-            return None
-        stored_state = restore_state.async_get(self.hass).last_states.get(fan_entity_id)
-        return (stored_state.state, True) if stored_state is not None else None
 
     @property
     def is_on(self) -> bool:
         """Return whether Custom Auto currently owns fan speed."""
 
-        return self._controller.active
+        return self._auto_resume.state.mode == AUTO_MODE_CUSTOM
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Activate Custom Auto, powering on the purifier if needed."""
 
         try:
-            if not self._controller.active:
-                await self._controller.async_activate()
+            await self._auto_resume.async_enable_custom_auto()
         except Exception as err:
             raise HomeAssistantError(f"Failed to enable Custom Auto: {err}") from err
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Hand control from Custom Auto to the purifier's hardware Auto mode."""
 
-        if not self._controller.active:
-            return
         try:
-            await self._controller.async_handoff(
-                lambda: self.coordinator.async_set_fan_mode(PRESET_AUTO)
-            )
+            await self._auto_resume.async_disable_custom_auto()
         except Exception as err:
             raise HomeAssistantError(f"Failed to disable Custom Auto: {err}") from err
 
     @property
-    def extra_state_attributes(self) -> dict[str, bool | int | None]:
-        """Persist logical custom-auto ownership across reloads and restarts."""
+    def extra_state_attributes(self) -> dict[str, str | bool | int | None]:
+        """Persist automatic-mode intent and expose Custom Auto activity."""
 
+        state = self._auto_resume.state
         return {
             ATTR_CUSTOM_AUTO_ACTIVE: self._controller.active,
-            ATTR_CUSTOM_AUTO_SPEED: (
-                self._controller.current_speed if self._controller.active else None
-            ),
+            ATTR_CUSTOM_AUTO_SPEED: self._auto_resume.custom_speed,
+            ATTR_AUTO_RESUME_MODE: state.mode,
+            ATTR_AUTO_RESUME_SUSPENDED: state.suspended,
+            ATTR_AUTO_RESUME_CUSTOM_SPEED: self._auto_resume.custom_speed,
         }
 
     def _handle_controller_update(self) -> None:

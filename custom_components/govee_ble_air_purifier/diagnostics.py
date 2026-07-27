@@ -24,6 +24,7 @@ async def async_get_config_entry_diagnostics(
     runtime_data = getattr(entry, "runtime_data", None)
     coordinator = getattr(runtime_data, "coordinator", None)
     controller = getattr(runtime_data, "controller", None)
+    auto_resume = getattr(runtime_data, "auto_resume", None)
     if coordinator is None:
         coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     state = None
@@ -39,6 +40,7 @@ async def async_get_config_entry_diagnostics(
         "options": dict(getattr(entry, "options", {})),
         "state": state,
         "custom_auto": controller.diagnostics() if controller is not None else None,
+        "auto_resume": auto_resume.diagnostics() if auto_resume is not None else None,
     }
 
 

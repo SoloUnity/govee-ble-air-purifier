@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import math
 import sys
@@ -6,6 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from custom_components.govee_ble_air_purifier.auto_resume import (
+    AUTO_MODE_CUSTOM,
+    AUTO_MODE_HARDWARE,
+    AutoResumeManager,
+)
 from custom_components.govee_ble_air_purifier.models import PurifierState
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
 from tests.helpers.ha_stubs import (
@@ -41,10 +47,20 @@ class _FakeCoordinator:
 
     def __init__(self) -> None:
         self.data = PurifierState(is_on=True, pm25=7, filter_life=93, fan_mode="Low")
+        self.poll_revision = 0
         self.power_commands: list[bool] = []
         self.fan_mode_commands: list[str] = []
         self.fail_modes: set[str] = set()
         self.fail_power = False
+        self.listeners = []
+
+    def async_add_listener(self, listener):
+        self.listeners.append(listener)
+        return lambda: self.listeners.remove(listener)
+
+    def _notify(self) -> None:
+        for listener in list(self.listeners):
+            listener()
 
     async def async_set_power(self, is_on: bool) -> None:
         self.power_commands.append(is_on)
@@ -56,12 +72,14 @@ class _FakeCoordinator:
             filter_life=self.data.filter_life if self.data else None,
             fan_mode=self.data.fan_mode if is_on and self.data else None,
         )
+        self._notify()
 
     async def async_set_fan_mode(self, mode: str) -> None:
         self.fan_mode_commands.append(mode)
         if mode in self.fail_modes:
             raise RuntimeError(f"failed to set {mode}")
         self.data = PurifierState(is_on=True, pm25=7, filter_life=93, fan_mode=mode)
+        self._notify()
 
 
 class _FakeController:
@@ -87,7 +105,11 @@ class _FakeController:
             listener()
 
     async def async_activate(
-        self, *, restored_speed: int | None = None, restoring: bool = False
+        self,
+        *,
+        restored_speed: int | None = None,
+        restoring: bool = False,
+        force: bool = False,
     ) -> None:
         self.activations.append((restored_speed, restoring))
         self.active = True
@@ -135,11 +157,18 @@ def _install_homeassistant_modules(
                 "FanEntityFeature": fan_features,
             },
             "homeassistant.config_entries": {"ConfigEntry": object},
+            "homeassistant.const": {"STATE_ON": "on"},
             "homeassistant.core": {"HomeAssistant": object},
             "homeassistant.exceptions": {"HomeAssistantError": _HomeAssistantError},
             "homeassistant.helpers.device_registry": {"DeviceInfo": _DeviceInfo},
+            "homeassistant.helpers.entity_registry": {
+                "async_get": lambda hass: hass.entity_registry
+            },
             "homeassistant.helpers.entity_platform": {"AddEntitiesCallback": object},
-            "homeassistant.helpers.restore_state": {"RestoreEntity": _RestoreEntity},
+            "homeassistant.helpers.restore_state": {
+                "RestoreEntity": _RestoreEntity,
+                "async_get": lambda hass: hass.restore_state,
+            },
             "homeassistant.helpers.update_coordinator": {
                 "CoordinatorEntity": _CoordinatorEntity
             },
@@ -161,6 +190,12 @@ def _import_fan(
     return importlib.import_module(MODULE_NAME)
 
 
+def _auto_resume(
+    coordinator: _FakeCoordinator, controller: _FakeController, hass=None
+) -> AutoResumeManager:
+    return AutoResumeManager(hass, coordinator, controller)
+
+
 def test_fan_import_supports_home_assistant_before_turn_feature_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -177,10 +212,16 @@ async def test_fan_setup_creates_one_air_purifier_fan(
 ) -> None:
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    auto_resume = _auto_resume(coordinator, controller)
     entry = SimpleNamespace(
         unique_id="aabbccddeeff",
         data={"name": "Bedroom Purifier"},
-        runtime_data=SimpleNamespace(coordinator=coordinator, controller=None),
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            controller=controller,
+            auto_resume=auto_resume,
+        ),
     )
     added_entities = []
 
@@ -198,8 +239,10 @@ async def test_fan_entity_maps_power_speed_and_presets(
 ) -> None:
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    auto_resume = _auto_resume(coordinator, controller)
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
-    entity = fan.GoveeAirPurifierFan(coordinator, entry)
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
 
     assert entity.is_on is True
     assert entity.percentage == 40
@@ -238,10 +281,11 @@ async def test_custom_auto_reports_auto_with_underlying_percentage_and_manual_di
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
     controller = _FakeController(coordinator)
+    auto_resume = _auto_resume(coordinator, controller)
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
-    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
 
-    await controller.async_activate()
+    await auto_resume.async_enable_custom_auto()
     assert entity.preset_mode == "Auto"
     assert entity.percentage == 80
 
@@ -250,12 +294,12 @@ async def test_custom_auto_reports_auto_with_underlying_percentage_and_manual_di
     assert coordinator.fan_mode_commands[-1] == "Turbo"
     assert entity.preset_mode == "Manual"
 
-    await controller.async_activate()
+    await auto_resume.async_enable_custom_auto()
     await entity.async_set_preset_mode("Manual")
     assert controller.handoffs == 2
     assert entity.preset_mode == "Manual"
 
-    await controller.async_activate()
+    await auto_resume.async_enable_custom_auto()
     await entity.async_turn_off()
     assert controller.handoffs == 3
     assert coordinator.power_commands[-1] is False
@@ -268,10 +312,11 @@ async def test_auto_preset_deactivates_custom_auto_and_uses_hardware_auto(
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
     controller = _FakeController(coordinator)
+    auto_resume = _auto_resume(coordinator, controller)
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
-    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
 
-    await controller.async_activate()
+    await auto_resume.async_enable_custom_auto()
     await entity.async_set_preset_mode("Auto")
 
     assert controller.handoffs == 1
@@ -286,8 +331,10 @@ async def test_manual_speed_is_preserved_across_hardware_auto(
 ) -> None:
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    auto_resume = _auto_resume(coordinator, controller)
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
-    entity = fan.GoveeAirPurifierFan(coordinator, entry)
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
 
     await entity.async_set_preset_mode("Auto")
     await entity.async_set_preset_mode("Manual")
@@ -296,22 +343,215 @@ async def test_manual_speed_is_preserved_across_hardware_auto(
 
 
 @pytest.mark.asyncio
-async def test_fan_is_not_a_custom_auto_restoration_owner(
+async def test_fan_migrates_legacy_custom_auto_restore_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fan = _import_fan(monkeypatch)
-    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
     last_state = SimpleNamespace(
+        state="on",
         attributes={"custom_auto_active": True, "custom_auto_speed": 60}
     )
-
+    hass = SimpleNamespace(
+        entity_registry=SimpleNamespace(
+            async_get_entity_id=lambda domain, platform, unique_id: (
+                "fan.bedroom" if domain == "fan" else None
+            )
+        ),
+        restore_state=SimpleNamespace(
+            last_states={"fan.bedroom": SimpleNamespace(state=last_state)}
+        ),
+    )
     coordinator = _FakeCoordinator()
     controller = _FakeController(coordinator)
-    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
-    entity._test_last_state = last_state
+    auto_resume = _auto_resume(coordinator, controller, hass)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
+    await auto_resume.async_restore_from_hass(entry.unique_id)
+    await entity.async_added_to_hass()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert auto_resume.state.mode == AUTO_MODE_CUSTOM
+    assert controller.activations == [(60, True)]
+
+
+@pytest.mark.asyncio
+async def test_fan_restores_suspended_custom_auto_without_powering_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fan = _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    coordinator.data = PurifierState(
+        is_on=False, pm25=7, filter_life=93, fan_mode=None
+    )
+    controller = _FakeController(coordinator)
+    restored_state = SimpleNamespace(
+        state="off",
+        attributes={
+            "auto_resume_mode": AUTO_MODE_CUSTOM,
+            "auto_resume_suspended": True,
+            "auto_resume_custom_speed": 40,
+        },
+    )
+    hass = SimpleNamespace(
+        entity_registry=SimpleNamespace(
+            async_get_entity_id=lambda domain, platform, unique_id: (
+                "fan.bedroom" if domain == "fan" else None
+            )
+        ),
+        restore_state=SimpleNamespace(
+            last_states={"fan.bedroom": SimpleNamespace(state=restored_state)}
+        ),
+    )
+    auto_resume = _auto_resume(coordinator, controller, hass)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
+
+    await auto_resume.async_restore_from_hass(entry.unique_id)
     await entity.async_added_to_hass()
 
     assert controller.activations == []
+    assert coordinator.power_commands == []
+    assert entity.preset_mode == "Auto"
+    assert entity.extra_state_attributes == {
+        "auto_resume_mode": AUTO_MODE_CUSTOM,
+        "auto_resume_suspended": True,
+        "auto_resume_custom_speed": 40,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fan_migrates_existing_custom_auto_switch_restore_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    coordinator.data = PurifierState(
+        is_on=False, pm25=7, filter_life=93, fan_mode=None
+    )
+    controller = _FakeController(coordinator)
+    switch_state = SimpleNamespace(
+        state="on",
+        attributes={"custom_auto_active": True, "custom_auto_speed": 60},
+    )
+    hass = SimpleNamespace(
+        entity_registry=SimpleNamespace(
+            async_get_entity_id=lambda domain, platform, unique_id: (
+                "switch.bedroom_custom_auto" if domain == "switch" else None
+            )
+        ),
+        restore_state=SimpleNamespace(
+            last_states={
+                "switch.bedroom_custom_auto": SimpleNamespace(state=switch_state)
+            }
+        ),
+    )
+    auto_resume = _auto_resume(coordinator, controller, hass)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+
+    await auto_resume.async_restore_from_hass(entry.unique_id)
+
+    assert auto_resume.state.mode == AUTO_MODE_CUSTOM
+    assert auto_resume.state.suspended is True
+    assert auto_resume.state.custom_speed == 60
+    assert controller.activations == []
+
+
+@pytest.mark.asyncio
+async def test_new_fan_restore_schema_prevents_stale_switch_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    fan_state = SimpleNamespace(
+        state="on",
+        attributes={
+            "auto_resume_mode": None,
+            "auto_resume_suspended": False,
+            "auto_resume_custom_speed": None,
+        },
+    )
+    switch_state = SimpleNamespace(
+        state="on",
+        attributes={"custom_auto_active": True},
+    )
+    hass = SimpleNamespace(
+        entity_registry=SimpleNamespace(
+            async_get_entity_id=lambda domain, platform, unique_id: (
+                "fan.bedroom"
+                if domain == "fan"
+                else "switch.bedroom_custom_auto"
+            )
+        ),
+        restore_state=SimpleNamespace(
+            last_states={
+                "fan.bedroom": SimpleNamespace(state=fan_state),
+                "switch.bedroom_custom_auto": SimpleNamespace(
+                    state=switch_state
+                )
+            }
+        ),
+    )
+    auto_resume = _auto_resume(coordinator, controller, hass)
+    entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
+
+    await auto_resume.async_restore_from_hass(entry.unique_id)
+
+    assert auto_resume.state.mode is None
+    assert controller.activations == []
+
+
+@pytest.mark.asyncio
+async def test_newest_restore_replica_wins_when_fan_was_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _import_fan(monkeypatch)
+    coordinator = _FakeCoordinator()
+    controller = _FakeController(coordinator)
+    fan_state = SimpleNamespace(
+        state="on",
+        last_updated=SimpleNamespace(timestamp=lambda: 1.0),
+        attributes={
+            "auto_resume_mode": AUTO_MODE_HARDWARE,
+            "auto_resume_suspended": False,
+            "auto_resume_custom_speed": None,
+        },
+    )
+    switch_state = SimpleNamespace(
+        state="on",
+        last_updated=SimpleNamespace(timestamp=lambda: 2.0),
+        attributes={
+            "auto_resume_mode": AUTO_MODE_CUSTOM,
+            "auto_resume_suspended": False,
+            "auto_resume_custom_speed": 60,
+        },
+    )
+    hass = SimpleNamespace(
+        entity_registry=SimpleNamespace(
+            async_get_entity_id=lambda domain, platform, unique_id: (
+                "fan.bedroom"
+                if domain == "fan"
+                else "switch.bedroom_custom_auto"
+            )
+        ),
+        restore_state=SimpleNamespace(
+            last_states={
+                "fan.bedroom": SimpleNamespace(state=fan_state),
+                "switch.bedroom_custom_auto": SimpleNamespace(
+                    state=switch_state
+                ),
+            }
+        ),
+    )
+    auto_resume = _auto_resume(coordinator, controller, hass)
+
+    await auto_resume.async_restore_from_hass("aabbccddeeff")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert auto_resume.state.mode == AUTO_MODE_CUSTOM
+    assert auto_resume.state.custom_speed == 60
 
 
 @pytest.mark.asyncio
@@ -321,9 +561,11 @@ async def test_failed_hardware_mode_handoff_reactivates_custom_auto(
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
     controller = _FakeController(coordinator)
+    auto_resume = _auto_resume(coordinator, controller)
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
-    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
-    await controller.async_activate(restored_speed=40)
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
+    await auto_resume.async_enable_custom_auto()
+    controller.current_speed = 40
     coordinator.fail_modes.add("Auto")
 
     with pytest.raises(_HomeAssistantError, match="Failed to set purifier preset"):
@@ -331,7 +573,7 @@ async def test_failed_hardware_mode_handoff_reactivates_custom_auto(
 
     assert controller.active is True
     assert controller.handoffs == 1
-    assert controller.activations == [(40, False)]
+    assert controller.activations == [(None, False)]
     assert coordinator.fan_mode_commands[-1] == "Auto"
 
 
@@ -342,9 +584,11 @@ async def test_failed_power_off_handoff_keeps_custom_auto_active(
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
     controller = _FakeController(coordinator)
+    auto_resume = _auto_resume(coordinator, controller)
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
-    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
-    await controller.async_activate(restored_speed=40)
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
+    await auto_resume.async_enable_custom_auto()
+    controller.current_speed = 40
     coordinator.fail_power = True
 
     with pytest.raises(_HomeAssistantError, match="Failed to turn purifier off"):
@@ -355,20 +599,21 @@ async def test_failed_power_off_handoff_keeps_custom_auto_active(
 
 
 @pytest.mark.asyncio
-async def test_fan_writes_controller_state_and_removes_listener_on_entity_cleanup(
+async def test_fan_writes_resume_state_and_removes_listener_on_entity_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fan = _import_fan(monkeypatch)
     coordinator = _FakeCoordinator()
     controller = _FakeController(coordinator)
+    auto_resume = _auto_resume(coordinator, controller)
     entry = SimpleNamespace(unique_id="aabbccddeeff", data={"name": "Bedroom"})
-    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller)
+    entity = fan.GoveeAirPurifierFan(coordinator, entry, controller, auto_resume)
 
     await entity.async_added_to_hass()
-    controller.active = True
-    controller.notify()
+    await auto_resume.async_set_hardware_auto()
 
     assert entity.state_writes == 1
-    assert len(controller.listeners) == 1
+    assert auto_resume.state.mode == AUTO_MODE_HARDWARE
     entity._remove_callbacks[0]()
-    assert controller.listeners == []
+    await auto_resume.async_set_manual_mode("Low")
+    assert entity.state_writes == 1

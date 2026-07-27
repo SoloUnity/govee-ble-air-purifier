@@ -6,6 +6,7 @@ from contextlib import suppress
 from datetime import timedelta
 from typing import Any
 
+from .auto_resume import AutoResumeManager
 from .bluetooth.client import GoveeBleClient
 from .const import CONF_ADDRESS, CONF_PROFILE, PLATFORMS
 from .coordinator import GoveeCoordinator, GoveeRuntimeData
@@ -34,6 +35,7 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         polling_interval=timedelta(seconds=polling_interval_seconds),
     )
     controller: CustomAutoController | None = None
+    auto_resume: AutoResumeManager | None = None
     runtime_data: GoveeRuntimeData | None = None
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -43,13 +45,26 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
             CustomAutoConfig.from_options(entry.options),
             config_entry=entry,
         )
+        auto_resume = AutoResumeManager(
+            hass,
+            coordinator,
+            controller,
+            config_entry=entry,
+        )
+        await auto_resume.async_restore_from_hass(entry.unique_id)
         runtime_data = GoveeRuntimeData(
-            coordinator=coordinator, profile=profile, controller=controller
+            coordinator=coordinator,
+            profile=profile,
+            controller=controller,
+            auto_resume=auto_resume,
         )
         entry.runtime_data = runtime_data
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
+        if auto_resume is not None:
+            with suppress(Exception):
+                await auto_resume.async_stop()
         if controller is not None:
             with suppress(Exception):
                 await controller.async_stop()
@@ -66,6 +81,7 @@ async def async_unload_entry(hass: Any, entry: Any) -> bool:
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        await entry.runtime_data.auto_resume.async_stop()
         await entry.runtime_data.controller.async_stop()
         await entry.runtime_data.coordinator.async_shutdown()
     return unload_ok

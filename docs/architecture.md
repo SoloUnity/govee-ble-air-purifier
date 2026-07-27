@@ -18,9 +18,11 @@ Home Assistant config entry ---> __init__.py ---> GoveeRuntimeData
                                                     |       |       \
                                                     |       |        diagnostics
                                                     |       |
-                         fan/sensor/switch entities |       CustomAutoController
-                                            \       |       /
-                                             GoveeCoordinator
+                          fan/sensor/switch entities |       CustomAutoController
+                                             \       |       /
+                                              AutoResumeManager
+                                                     |
+                                              GoveeCoordinator
                                                     |
                                               GoveeBleClient
                                               /       |      \
@@ -49,7 +51,8 @@ The branches have these boundaries:
   `diagnostics.py`, and the active `fan.py`, `sensor.py`, and `switch.py`
   platform modules.
 - `__init__.py` is the composition root for a loaded config entry. It creates
-  one client, coordinator, and Custom Auto controller, stores them in
+  one client, coordinator, Custom Auto controller, and Auto resume manager,
+  stores them in
   `ConfigEntry.runtime_data`, forwards platform setup, reloads on option
   changes, and stops runtime work after successful platform unload.
 - Entities consume the shared runtime objects; they do not create BLE clients
@@ -235,35 +238,49 @@ run through `async_handoff()`: the controller retains ownership until the
 coordinator command succeeds and best-effort reasserts the prior speed on
 failure.
 
-The switch restores Custom Auto ownership and controlled speed. The fan exposes
-manual percentages and the purifier's hardware Auto preset; while Custom Auto
-owns control, the fan reports logical Auto while the controller sends manual
-speed commands.
+`auto_resume.py` owns integration-known automatic-mode intent. It serializes
+explicit fan and switch commands, suspends hardware Auto or Custom Auto after a
+confirmed power-off, and resumes that mode after either a Home Assistant
+turn-on or a fresh poll detects physical power-on. A poll revision distinguishes
+fresh device observations from command-side coordinator publications, so a
+resume command cannot trigger itself recursively.
+
+The manager restores the newest replicated fan or Custom Auto entity record
+before platform setup, including migration of the former switch-only Custom
+Auto record. This keeps persistence working if either entity is disabled and
+prevents a stale disabled-entity record from winning. Restoring suspended intent
+never powers on an off purifier. The switch reports Custom Auto selected while
+active or suspended, and its attributes distinguish actual controller activity
+from the remembered selection. While Custom Auto owns control, the fan reports
+logical Auto while the controller sends manual speed commands.
 
 ## Concurrency
 
-When all three locks are involved, acquisition proceeds in this order:
+When all four locks are involved, acquisition proceeds in this order:
 
 ```text
-CustomAutoController._lock
-  -> GoveeCoordinator._state_lock
-     -> GoveeBleClient._lock
+AutoResumeManager._lock
+  -> CustomAutoController._lock
+     -> GoveeCoordinator._state_lock
+        -> GoveeBleClient._lock
 ```
 
-Coordinator callbacks only schedule controller evaluation; they do not await
-the controller lock. This avoids lock inversion. The locks separately protect
-policy ownership, shared-state publication, and BLE request/notification state.
+Coordinator callbacks only schedule controller or Auto-resume evaluation; they
+do not await either runtime lock. This avoids lock inversion. The locks
+separately protect remembered intent, policy ownership, shared-state
+publication, and BLE request/notification state.
 
 ## Runtime Setup And Cleanup
 
 Config entry setup resolves the profile, creates the client and coordinator,
 performs the first refresh, creates `CustomAutoController` from
-`CustomAutoConfig`, stores `GoveeRuntimeData`, and forwards the active fan,
-sensor, and switch platforms. Any setup failure stops the controller if it was
-created and shuts down the coordinator so a successful first refresh cannot
-leak its retained connection.
+`CustomAutoConfig`, creates `AutoResumeManager`, stores `GoveeRuntimeData`, and
+forwards the active fan, sensor, and switch platforms. Any setup failure stops
+the manager and controller if they were created and shuts down the coordinator
+so a successful first refresh cannot leak its retained connection.
 
-After successful platform unload, the controller removes listeners and cancels
+After successful platform unload, the Auto resume manager removes its listener
+and cancels reconciliation, the controller removes listeners and cancels
 evaluation and timer tasks, then the coordinator cancels its delayed refresh
 and shuts down polling before closing the BLE client.
 
@@ -301,7 +318,8 @@ Physical BLE interoperability remains a device-level verification concern.
 
 ## Maintainer Invariants
 
-1. One client, coordinator, and controller exist per loaded config entry.
+1. One client, coordinator, Custom Auto controller, and Auto resume manager
+   exist per loaded config entry.
 2. BLE transactions for a purifier do not overlap.
 3. Polls and commands do not publish coordinator state concurrently.
 4. Commands publish state only after purifier confirmation.
@@ -311,5 +329,5 @@ Physical BLE interoperability remains a device-level verification concern.
 7. Model-specific byte interpretation remains below the coordinator. JSON
    model definitions own only GATT UUIDs and outbound command frames; response
    matching, confirmation, and decoding semantics stay in Python.
-8. Unload leaves no controller timers, delayed coordinator refresh, idle
-   disconnect task, or retained BLE connection.
+8. Unload leaves no Auto-resume task, controller timer, delayed coordinator
+   refresh, idle disconnect task, or retained BLE connection.

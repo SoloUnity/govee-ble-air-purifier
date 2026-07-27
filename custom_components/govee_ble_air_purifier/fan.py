@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
@@ -10,11 +9,19 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util.percentage import (
     ordered_list_item_to_percentage,
     percentage_to_ordered_list_item,
 )
 
+from .auto_resume import (
+    ATTR_AUTO_RESUME_CUSTOM_SPEED,
+    ATTR_AUTO_RESUME_MODE,
+    ATTR_AUTO_RESUME_SUSPENDED,
+    AUTO_MODE_CUSTOM,
+    AUTO_MODE_HARDWARE,
+)
 from .entity import GoveeAirPurifierEntity
 from .profiles import fan_mode_labels
 
@@ -34,12 +41,13 @@ async def async_setup_entry(
                 entry.runtime_data.coordinator,
                 entry,
                 entry.runtime_data.controller,
+                entry.runtime_data.auto_resume,
             )
         ]
     )
 
 
-class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
+class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity, RestoreEntity):
     """Cloud-style fan entity for the purifier."""
 
     _attr_supported_features = (
@@ -50,7 +58,7 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
     if hasattr(FanEntityFeature, "TURN_OFF"):
         _attr_supported_features |= FanEntityFeature.TURN_OFF
 
-    def __init__(self, coordinator, entry, controller=None) -> None:
+    def __init__(self, coordinator, entry, controller, auto_resume) -> None:
         """Initialize the fan entity."""
 
         super().__init__(coordinator, entry, "fan")
@@ -71,21 +79,31 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
             self._attr_preset_modes.append(PRESET_AUTO)
         self._last_manual_speed = self._default_manual_speed
         self._controller = controller
+        self._auto_resume = auto_resume
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to custom-auto ownership changes."""
+        """Subscribe to automatic-mode intent changes."""
 
         await super().async_added_to_hass()
-        if self._controller is None:
-            return
         self.async_on_remove(
-            self._controller.async_add_listener(self._handle_controller_update)
+            self._auto_resume.async_add_listener(self._handle_auto_resume_update)
         )
 
-    def _handle_controller_update(self) -> None:
-        """Write logical custom-auto ownership changes to Home Assistant."""
+    def _handle_auto_resume_update(self) -> None:
+        """Write automatic-mode intent changes to Home Assistant."""
 
         self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | bool | int | None]:
+        """Persist automatic-mode intent across reloads and restarts."""
+
+        state = self._auto_resume.state
+        return {
+            ATTR_AUTO_RESUME_MODE: state.mode,
+            ATTR_AUTO_RESUME_SUSPENDED: state.suspended,
+            ATTR_AUTO_RESUME_CUSTOM_SPEED: self._auto_resume.custom_speed,
+        }
 
     @property
     def _default_manual_speed(self) -> str | None:
@@ -106,7 +124,7 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
         """Return current manual speed as a Home Assistant percentage."""
 
         data = self.coordinator.data
-        if self._controller is not None and self._controller.active:
+        if self._controller.active:
             return self._controller.current_speed
         if data is None or data.is_on is False or data.fan_mode not in self._manual_speeds:
             return None
@@ -117,7 +135,7 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
         """Return Auto or Manual for the fan preset control."""
 
         data = self.coordinator.data
-        if self._controller is not None and self._controller.active:
+        if self._auto_resume.state.mode in (AUTO_MODE_HARDWARE, AUTO_MODE_CUSTOM):
             return PRESET_AUTO
         if data is None:
             return None
@@ -142,7 +160,7 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
             if preset_mode is not None:
                 await self.async_set_preset_mode(preset_mode)
                 return
-            await self.coordinator.async_set_power(True)
+            await self._auto_resume.async_turn_on()
         except Exception as err:
             raise HomeAssistantError(f"Failed to turn purifier on: {err}") from err
 
@@ -150,9 +168,7 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
         """Turn the purifier off."""
 
         try:
-            await self._async_handoff_custom_auto(
-                lambda: self.coordinator.async_set_power(False)
-            )
+            await self._auto_resume.async_turn_off()
         except Exception as err:
             raise HomeAssistantError(f"Failed to turn purifier off: {err}") from err
 
@@ -167,9 +183,7 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
                 raise ValueError("This purifier profile has no manual fan speeds")
             speed = percentage_to_ordered_list_item(self._manual_speeds, percentage)
             self._last_manual_speed = speed
-            await self._async_handoff_custom_auto(
-                lambda: self.coordinator.async_set_fan_mode(speed)
-            )
+            await self._auto_resume.async_set_manual_mode(speed)
         except Exception as err:
             raise HomeAssistantError(f"Failed to set purifier speed: {err}") from err
 
@@ -178,33 +192,19 @@ class GoveeAirPurifierFan(GoveeAirPurifierEntity, FanEntity):
 
         try:
             if preset_mode == PRESET_AUTO:
-                if self._controller is None or not self._controller.active:
+                if not self._controller.active:
                     self._current_or_last_manual_speed()
-                await self._async_handoff_custom_auto(
-                    lambda: self.coordinator.async_set_fan_mode(PRESET_AUTO)
-                )
+                await self._auto_resume.async_set_hardware_auto()
                 return
             if preset_mode == PRESET_MANUAL:
                 speed = self._current_or_last_manual_speed()
                 if speed is None:
                     raise ValueError("This purifier profile has no manual fan speeds")
-                await self._async_handoff_custom_auto(
-                    lambda: self.coordinator.async_set_fan_mode(speed)
-                )
+                await self._auto_resume.async_set_manual_mode(speed)
                 return
             raise ValueError(f"Unsupported preset mode: {preset_mode}")
         except Exception as err:
             raise HomeAssistantError(f"Failed to set purifier preset: {err}") from err
-
-    async def _async_handoff_custom_auto(
-        self, command: Callable[[], Awaitable[None]]
-    ) -> None:
-        """Serialize a user command with Custom Auto ownership changes."""
-
-        if self._controller is None:
-            await command()
-            return
-        await self._controller.async_handoff(command)
 
     def _current_or_last_manual_speed(self) -> str | None:
         """Return the current manual speed, previous manual speed, or default."""

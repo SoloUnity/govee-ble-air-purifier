@@ -248,9 +248,13 @@ Turbo 100%. Its **Auto** preset selects the purifier's built-in hardware Auto
 mode. The **Custom Auto** switch is separate: it makes Home Assistant apply the
 configured five-level policy while the fan reports logical Auto.
 
-Selecting a manual percentage or Manual preset, or turning the purifier off,
-hands control away from Custom Auto. Turning Custom Auto off while it owns
-control hands the purifier to hardware Auto without turning the purifier off.
+Selecting a manual percentage or Manual preset hands control away from Custom
+Auto. Turning the purifier off suspends either selected Auto mode; Home
+Assistant restores that intent across restarts and resumes it after a Home
+Assistant or physical-button power-on. Custom Auto remains selected while
+suspended. Turning Custom Auto off hands the purifier to hardware Auto when on,
+or changes the resume target to hardware Auto without powering on an off
+purifier.
 
 Entity unique IDs are derived from the stable config-entry unique ID plus
 `fan`, `pm25`, `filter_life`, or `custom_auto`. These values are persistence
