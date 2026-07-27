@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -317,11 +318,16 @@ async def test_fan_mode_command_waits_for_exact_echo_confirmation() -> None:
 @pytest.mark.asyncio
 async def test_connection_is_established_once_and_reused(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
     hass = object()
     client = GoveeBleClient(hass, "AA:BB:CC:DD:EE:FF")
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
     fake = FakeBleakClient()
     callbacks: list[Any] = []
     calls: list[tuple[Any, str, float]] = []
@@ -363,6 +369,10 @@ async def test_connection_is_established_once_and_reused(
 
     assert len(disconnects) == 1
     assert disconnects[0][0] is fake
+    assert "H7124 BLE idle disconnect scheduled in 15.00 seconds" in caplog.text
+    assert "H7124 BLE client closing (cached connection: True)" in caplog.text
+    assert "H7124 releasing cached BLE connection" in caplog.text
+    assert "H7124 BLE client closed" in caplog.text
 
 
 @pytest.mark.parametrize(

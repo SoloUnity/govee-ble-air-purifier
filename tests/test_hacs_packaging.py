@@ -38,6 +38,7 @@ def test_integration_manifest_has_hacs_required_metadata() -> None:
     assert manifest["iot_class"] == "local_polling"
     assert manifest["integration_type"] == "device"
     assert manifest["dependencies"] == ["bluetooth_adapters"]
+    assert manifest["loggers"] == ["bleak_retry_connector", "habluetooth"]
     assert "requirements" not in manifest
     assert "bluetooth" not in manifest
 

@@ -598,6 +598,11 @@ class GoveeBleClient:
         self._cancel_idle_disconnect()
         if self._closed:
             return
+        _LOGGER.debug(
+            "%s BLE idle disconnect scheduled in %.2f seconds",
+            self._profile.model,
+            self._connection_idle_timeout,
+        )
         loop = asyncio.get_running_loop()
         self._idle_disconnect_handle = loop.call_later(
             self._connection_idle_timeout, self._start_idle_disconnect
@@ -609,6 +614,7 @@ class GoveeBleClient:
         self._idle_disconnect_handle = None
         if self._closed or self._idle_disconnect_task is not None:
             return
+        _LOGGER.debug("%s BLE idle timeout reached", self._profile.model)
 
         async def disconnect_idle_client() -> None:
             try:
@@ -634,11 +640,19 @@ class GoveeBleClient:
         self._client = None
         self._session_key = None
         if client is not None:
+            _LOGGER.debug(
+                "%s releasing cached BLE connection", self._profile.model
+            )
             await transport.async_disconnect(client, deadline=deadline)
 
     async def async_close(self) -> None:
         """Cancel idle cleanup and close the cached connection."""
 
+        _LOGGER.debug(
+            "%s BLE client closing (cached connection: %s)",
+            self._profile.model,
+            self._client is not None,
+        )
         self._closed = True
         self._cancel_idle_disconnect()
         task = self._idle_disconnect_task
@@ -651,9 +665,14 @@ class GoveeBleClient:
         try:
             await _async_wait_until(self._lock.acquire(), deadline)
         except (TimeoutError, asyncio.TimeoutError):
-            _LOGGER.debug("Timed out waiting to close BLE client", exc_info=True)
+            _LOGGER.debug(
+                "%s timed out waiting to close BLE client",
+                self._profile.model,
+                exc_info=True,
+            )
             return
         try:
             await self._async_drop_connection(deadline)
         finally:
             self._lock.release()
+        _LOGGER.debug("%s BLE client closed", self._profile.model)

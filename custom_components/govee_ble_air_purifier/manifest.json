@@ -8,6 +8,6 @@
   "integration_type": "device",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/SoloUnity/govee-ble-air-purifier/issues",
-  "loggers": ["bleak_retry_connector"],
+  "loggers": ["bleak_retry_connector", "habluetooth"],
   "version": "0.1.0"
 }

@@ -113,6 +113,7 @@ uses `<=`; only a valid reading above that boundary resets its timer.
 From the integration's page in **Settings > Devices & services**, select
 **Enable debug logging**, reproduce the problem, and then disable debug logging
 to download the log. Debug output identifies connection, encrypted-handshake,
-notification, request, and response stages. The integration's stage messages do
-not include BLE addresses, packet payloads, or encryption keys; supporting Home
-Assistant Bluetooth libraries may include device identifiers.
+notification, request, response, connection-release, and Bluetooth allocator
+stages. The integration's stage messages do not include BLE addresses, packet
+payloads, or encryption keys; supporting Home Assistant Bluetooth libraries may
+include device identifiers.
