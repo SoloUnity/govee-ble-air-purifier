@@ -58,6 +58,23 @@ def test_discovered_device_options_include_name_address_and_signal() -> None:
     )
 
 
+def test_discovered_device_options_include_h712_family_fallback_models() -> None:
+    options = build_discovered_device_options(
+        [
+            _service_info("GVH7126LIVING", "AA:BB:CC:DD:EE:06", rssi=-50),
+            _service_info("GVH712CBEDROOM", "AA:BB:CC:DD:EE:0C", rssi=-60),
+            _service_info("GVH712", "AA:BB:CC:DD:EE:00", rssi=-40),
+            _service_info("gvh7124", "AA:BB:CC:DD:EE:04", rssi=-30),
+        ]
+    )
+
+    assert [option.profile_key for option in options] == ["h7126", "h712c"]
+    assert [option.name for option in options] == [
+        "GVH7126LIVING",
+        "GVH712CBEDROOM",
+    ]
+
+
 def test_discovered_device_options_deduplicate_by_address_using_strongest_signal() -> None:
     options = build_discovered_device_options(
         [

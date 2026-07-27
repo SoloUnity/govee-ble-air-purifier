@@ -28,6 +28,8 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Custom Auto switch entity."""
 
+    if not entry.runtime_data.coordinator.profile.supports_custom_auto:
+        return
     async_add_entities(
         [
             GoveeCustomAutoSwitch(

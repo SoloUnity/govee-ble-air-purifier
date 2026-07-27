@@ -11,6 +11,8 @@ commands, and Custom Auto share runtime objects but follow distinct branches:
 
 ```text
 Home Assistant config flow ---> setup_helpers.py + profiles.py
+                                                        |
+                                                model_profiles/*.json
 
 Home Assistant config entry ---> __init__.py ---> GoveeRuntimeData
                                                     |       |       \
@@ -24,13 +26,21 @@ Home Assistant config entry ---> __init__.py ---> GoveeRuntimeData
                                               /       |      \
                                       ModelProfile  protocol  transport
                                            |          |          |
-                                           +----> H7124 logic    |
-                                                      |          |
+                              model_profiles/*.json   |          |
+                              (per-model GATT UUIDs   |          |
+                               and outbound 20-byte   |          |
+                               command frames)        |          |
+                                           +--------> shared     |
+                                                      frame      |
+                                                      validation |
+                                                      matching   |
+                                                      decoding   |
+                                                        |        |
                                              generic framing     |
-                                                                 |
+                                                                  |
 Home Assistant Bluetooth <---------------------------------------+
-             |
-          purifier
+              |
+           purifier
 ```
 
 The branches have these boundaries:
@@ -53,13 +63,20 @@ The branches have these boundaries:
 `config_flow.py` implements user setup and options. It uses
 `setup_helpers.py` for cached Bluetooth advertisement selection, address
 normalization, and polling interval handling, and `profiles.py` to match a
-supported model. Manual address entry still requires compatible advertisement
-evidence already available from Home Assistant.
+recognized `H712*` family model from its advertised name. Manual address entry
+still requires compatible advertisement evidence already available from Home
+Assistant. Setup remains a manually started flow with a recently seen BLE
+picker; there is no automatic integration discovery.
 
-Config entry data identifies the address, name, and profile. Options contain
-the polling interval and Custom Auto thresholds and delays. Saving options
-reloads the entry so the coordinator interval and controller configuration are
-rebuilt consistently.
+Config entry data identifies the address, name, and profile. The stored
+profile is the exact detected lowercase model key (for example `h7126`), even
+when `default.json` supplies its behavior, so a later exact model JSON takes
+effect after an update and restart. Existing entries without a stored profile
+and existing `h7124` entries resolve to H7124, and the BLE address remains the
+unique ID. Options contain the polling interval and, when the profile supports
+the required modes, Custom Auto thresholds and delays. Saving options reloads
+the entry so the coordinator interval and controller configuration are rebuilt
+consistently.
 
 `custom_auto/config.py` owns the Custom Auto defaults, bounded integer parsing,
 ordering validation, hysteresis validation, and conversion between config-entry
@@ -70,26 +87,46 @@ use this same boundary.
 
 `models.py` defines two deliberately different immutable values:
 
-- `DecodedStatus` is the narrow result of decoding one H7124 `aa19` status
-  frame. It contains PM2.5 and filter life only.
+- `DecodedStatus` is the narrow result of decoding one status frame (the
+  tested H7124 definition decodes an `aa19` frame). It contains PM2.5 and
+  filter life only.
 - `PurifierState` is the application-facing snapshot exchanged by the BLE
   client, coordinator, entities, diagnostics, and Custom Auto. It also carries
   power and the integration's known fan mode.
 
 `bluetooth/framing.py` is generic frame infrastructure. It builds 20-byte Govee
-frames and validates frame length and XOR checksum. It does not know H7124
+frames and validates frame length and XOR checksum. It does not know model
 commands, response markers, or field offsets.
 
-Root `protocol.py` is H7124-specific. It defines power, state-query, status-query,
-and fan-mode commands; identifies H7124 response and push frames; confirms
-commands; and decodes power, mode pushes, and `DecodedStatus`. Its decoders call
-the generic frame validator before interpreting bytes. A structurally valid
-status frame with PM2.5 above the supported range decodes to `None` for that
-measurement.
+Root `protocol.py` is shared across the recognized `H712*` family. It retains
+shared frame validation, response matching, command confirmation, and status
+decoding. Its decoders call the generic frame validator before interpreting
+bytes. A structurally valid status frame with PM2.5 above the supported range
+decodes to `None` for that measurement. Models whose response semantics or
+framing differ from the tested H7124 behavior still require Python changes
+here; they cannot be added by JSON alone.
 
-`profiles.py` packages the H7124 UUIDs, commands, matchers, decoders, advertised
-name prefixes, and capabilities as `ModelProfile`. Higher layers receive a
-profile rather than duplicating those constants.
+`model_profiles/` holds one complete JSON definition per model. `default.json`
+and `h7124.json` initially contain the physically tested H7124 definition: its
+GATT service and characteristic UUIDs and the exact outbound 20-byte power,
+query, and fan-mode command frames. The JSON owns those GATT UUIDs and
+outbound frames; it does not own response interpretation. Future model files
+are complete definitions, not partial inheritance over another file.
+
+`profiles.py` matches advertised names beginning `GVH712` plus one
+alphanumeric model character (for example `GVH7124` or `GVH712C`), loads the
+exact lowercase model JSON when present (for example `h7126.json`), and
+otherwise falls back to `default.json`, which means H7124 protocol behavior.
+It packages the resolved UUIDs, commands, matchers, decoders, advertised name
+prefixes, and capabilities as `ModelProfile`. Higher layers receive a profile
+rather than duplicating those constants. Only the H7124 definition is
+physically tested and validated; fallback models are unverified and may fail
+or expose unsupported or mismatched features.
+
+Fan-mode lists may vary by exact profile. The integration creates the Custom
+Auto switch only when the profile provides Sleep, Low, Medium, High, Turbo,
+and hardware Auto, preventing the H7124-specific policy from requesting a mode
+that a narrower profile does not define.
 
 ## Bluetooth Ownership
 
@@ -271,6 +308,8 @@ Physical BLE interoperability remains a device-level verification concern.
 5. Invalid or command-side cached PM2.5 data does not drive Custom Auto.
 6. Downshift equality qualifies; only a valid reading above the boundary resets
    its timer or mature target.
-7. Model-specific byte interpretation remains below the coordinator.
+7. Model-specific byte interpretation remains below the coordinator. JSON
+   model definitions own only GATT UUIDs and outbound command frames; response
+   matching, confirmation, and decoding semantics stay in Python.
 8. Unload leaves no controller timers, delayed coordinator refresh, idle
    disconnect task, or retained BLE connection.

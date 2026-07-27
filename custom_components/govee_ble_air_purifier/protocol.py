@@ -1,11 +1,10 @@
-"""Protocol helpers for Govee H7124-style BLE air purifiers."""
+"""Shared response helpers for H712-family Govee BLE air purifiers."""
 
 from __future__ import annotations
 
 from .bluetooth.framing import (
     FRAME_LENGTH,
     ProtocolError,
-    build_frame,
     validate_frame,
 )
 from .models import DecodedStatus
@@ -13,20 +12,6 @@ from .models import DecodedStatus
 MAX_PM25_UG_M3 = 999
 
 
-POWER_OFF_COMMAND = build_frame(bytes.fromhex("33 01 00"))
-POWER_ON_COMMAND = build_frame(bytes.fromhex("33 01 01"))
-STATE_QUERY_COMMAND = build_frame(bytes.fromhex("aa 01"))
-STATUS_QUERY_COMMAND = build_frame(bytes.fromhex("aa 19"))
-
-FAN_MODE_COMMANDS: dict[str, bytes] = {
-    "Low": bytes.fromhex("3a 05 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3f"),
-    "Medium": bytes.fromhex("3a 05 01 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3c"),
-    "High": bytes.fromhex("3a 05 01 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3d"),
-    "Sleep": bytes.fromhex("3a 05 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3a"),
-    "Auto": bytes.fromhex("3a 05 03 00 00 14 00 00 00 00 00 00 00 00 00 00 00 00 00 28"),
-    "Turbo": bytes.fromhex("3a 05 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 38"),
-}
-FAN_MODE_LABELS = list(FAN_MODE_COMMANDS)
 MODE_PUSH_LABELS: dict[int, str] = {
     0x03: "Auto",
     0x05: "Sleep",
@@ -128,12 +113,3 @@ def decode_status(frame: bytes) -> DecodedStatus:
         pm25=raw_pm25 if raw_pm25 <= MAX_PM25_UG_M3 else None,
         filter_life=frame[7],
     )
-
-
-def normalize_ble_name(name: str | None) -> str | None:
-    """Return a stable human/unique-id suffix for GVH7124 BLE names."""
-
-    if not name or not name.startswith("GVH7124"):
-        return None
-    suffix = name.removeprefix("GVH7124")
-    return f"H7124-{suffix}" if suffix else "H7124"

@@ -20,9 +20,10 @@ class GoveeAirPurifierEntity(CoordinatorEntity):
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.unique_id}_{key}"
+        name = entry.data.get("name") or coordinator.profile.display_name
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.unique_id)},
             manufacturer=MANUFACTURER,
             model=coordinator.profile.model,
-            name=entry.data.get("name", "Govee H7124 Air Purifier"),
+            name=name,
         )

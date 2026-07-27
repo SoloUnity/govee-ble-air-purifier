@@ -1,5 +1,6 @@
 import importlib
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -132,6 +133,31 @@ async def test_switch_setup_creates_custom_auto_entity(
     assert entity._attr_translation_key == "custom_auto"
     assert switch.ATTR_CUSTOM_AUTO_ACTIVE == "custom_auto_active"
     assert switch.ATTR_CUSTOM_AUTO_SPEED == "custom_auto_speed"
+
+
+@pytest.mark.asyncio
+async def test_switch_setup_skips_profile_without_custom_auto_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    switch = _import_switch(monkeypatch)
+    coordinator = _FakeCoordinator()
+    coordinator.profile = replace(
+        H7124_PROFILE,
+        fan_mode_commands={"Low": H7124_PROFILE.fan_mode_commands["Low"]},
+    )
+    entry = SimpleNamespace(
+        unique_id="aabbccddeeff",
+        data={"name": "Bedroom"},
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            controller=_FakeController(),
+        ),
+    )
+    added_entities = []
+
+    await switch.async_setup_entry(object(), entry, added_entities.extend)
+
+    assert added_entities == []
 
 
 @pytest.mark.asyncio

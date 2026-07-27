@@ -47,7 +47,6 @@ from .custom_auto.config import (
     validate_custom_auto_values,
 )
 from .profiles import (
-    H7124_PROFILE,
     canonicalize_ble_address,
     get_profile,
     match_profile,
@@ -188,6 +187,8 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._pending_options = {
                 CONF_POLLING_INTERVAL: polling_interval,
             }
+            if not profile.supports_custom_auto:
+                return self._create_pending_entry()
             return await self.async_step_custom_auto()
 
         return self.async_show_form(
@@ -265,35 +266,41 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
         defaults = CustomAutoConfig.from_options(
             self._config_entry.options
         ).as_options()
+        profile = get_profile(
+            getattr(self._config_entry, "data", {}).get(CONF_PROFILE)
+        )
+        supports_custom_auto = profile.supports_custom_auto
         polling_default = polling_interval_from_options(self._config_entry.options)
         submitted_values: dict[str, int] | None = None
         if user_input is not None:
             polling_default = validate_polling_interval_seconds(
                 user_input[CONF_POLLING_INTERVAL]
             )
-            try:
-                submitted_values = _parse_custom_auto_form(user_input)
-                validate_custom_auto_values(submitted_values)
-            except ValueError as err:
-                error = str(err)
-                errors["base"] = (
-                    error
-                    if error
-                    in {
-                        "up_thresholds_not_ascending",
-                        "down_thresholds_not_ascending",
-                        "down_threshold_above_up",
-                    }
-                    else "invalid_custom_auto_value"
-                )
-            else:
+            if supports_custom_auto:
+                try:
+                    submitted_values = _parse_custom_auto_form(user_input)
+                    validate_custom_auto_values(submitted_values)
+                except ValueError as err:
+                    error = str(err)
+                    errors["base"] = (
+                        error
+                        if error
+                        in {
+                            "up_thresholds_not_ascending",
+                            "down_thresholds_not_ascending",
+                            "down_threshold_above_up",
+                        }
+                        else "invalid_custom_auto_value"
+                    )
+            if not errors:
                 options = {
                     key: value
                     for key, value in self._config_entry.options.items()
                     if key != LEGACY_CONF_USE_CUSTOM_AUTO
                 }
                 options[CONF_POLLING_INTERVAL] = polling_default
-                options.update(submitted_values)
+                if submitted_values is not None:
+                    options.update(submitted_values)
                 return self.async_create_entry(title="", data=options)
             if submitted_values is not None:
                 defaults = submitted_values
@@ -303,6 +310,7 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
             data_schema=_options_schema(
                 polling_default=polling_default,
                 custom_auto_defaults=defaults,
+                supports_custom_auto=supports_custom_auto,
             ),
             errors=errors,
         )
@@ -356,7 +364,7 @@ def _user_schema(
                 default=default_device,
             ): vol.In(_select_options(discovered_options)),
             vol.Optional(CONF_ADDRESS): str,
-            vol.Optional(CONF_NAME, default=H7124_PROFILE.display_name): str,
+            vol.Optional(CONF_NAME): str,
             vol.Required(
                 CONF_POLLING_INTERVAL,
                 default=DEFAULT_POLLING_INTERVAL_SECONDS,
@@ -369,6 +377,7 @@ def _options_schema(
     *,
     polling_default: int = DEFAULT_POLLING_INTERVAL_SECONDS,
     custom_auto_defaults: Mapping[str, Any],
+    supports_custom_auto: bool = True,
 ) -> vol.Schema:
     """Build the complete options form."""
 
@@ -378,7 +387,11 @@ def _options_schema(
                 CONF_POLLING_INTERVAL,
                 default=polling_default,
             ): _polling_interval_schema_value(),
-            **_custom_auto_sections(custom_auto_defaults),
+            **(
+                _custom_auto_sections(custom_auto_defaults)
+                if supports_custom_auto
+                else {}
+            ),
         }
     )
 

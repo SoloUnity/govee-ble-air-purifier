@@ -19,8 +19,9 @@ design and lock ownership are documented separately in
 | Home Assistant minimum | `2024.8.0` | `hacs.json` |
 | HACS minimum | `1.34.0` | `hacs.json` |
 | Python package baseline | Python 3.12 or newer | `pyproject.toml` |
-| Supported model profile | Govee H7124 | `profiles.py` |
-| Supported BLE local name | Starts with `GVH7124` | `profiles.py` |
+| Recognized model family | Govee `H712*` BLE purifiers | `profiles.py` and `model_profiles/` |
+| Physically tested and validated model | Govee H7124 only | `model_profiles/h7124.json` and `model_profiles/default.json` |
+| Recognized BLE local name | Starts with `GVH712` followed by one alphanumeric model character (for example `GVH7124` or `GVH712C`) | `profiles.py` |
 | Home Assistant integration type | `device` | `manifest.json` |
 | Home Assistant IoT class | `local_polling` | `manifest.json` |
 | Active entity platforms | `fan`, `sensor`, `switch` | `const.py` |
@@ -29,6 +30,13 @@ design and lock ownership are documented separately in
 
 The integration communicates directly over Bluetooth Low Energy. It does not
 use the Govee cloud, YAML configuration, Matter, Zigbee, Z-Wave, or MQTT.
+
+Only the H7124 is physically tested and validated. Other recognized `H712*`
+models without an exact `model_profiles/<model>.json` file use
+`default.json`, which supplies the tested H7124 protocol behavior. Those
+models are unverified: they may fail to respond or expose unsupported or
+mismatched features. Recognition of the `H712*` family is not family-wide
+verification.
 
 The CI runtime matrix tests the minimum Home Assistant release and the current
 target selected by the repository. At the time of writing those targets are
@@ -84,6 +92,7 @@ HACS installs this runtime directory:
         |-- translations/
         |-- bluetooth/
         |-- custom_auto/
+        |-- model_profiles/
         `-- active entity and support modules
 ```
 
@@ -128,7 +137,7 @@ Home Assistant's cache of connectable Bluetooth advertisements.
 ```text
 Govee BLE Air Purifier
 |-- Recently seen purifier
-|   |-- <compatible GVH7124 devices currently in the BLE cache>
+|   |-- <recognized GVH712* devices currently in the BLE cache>
 |   `-- Enter address manually
 |-- BLE address for manual setup
 |-- Name
@@ -142,21 +151,29 @@ The fields behave as follows:
 | --- | --- |
 | Recently seen purifier | Defaults to the first compatible cached device, or **Enter address manually** when none is available. |
 | BLE address for manual setup | Required only for manual entry. Accepts a complete MAC address or platform BLE UUID. |
-| Name | Defaults to `Govee H7124 Air Purifier`; a discovered device name is used when available unless the user supplies a name. |
+| Name | Defaults to the matched profile's display name (`Govee H7124 Air Purifier` for the tested H7124 definition); a discovered device name is used when available unless the user supplies a name. |
 | Polling interval | Whole seconds from 5 through 300; default is 10. |
 
 Manual address entry is not blind. Home Assistant must have cached a
-connectable advertisement for that address whose name matches `GVH7124`. The
+connectable advertisement for that address whose name matches the recognized
+family pattern: `GVH712` followed by one alphanumeric model character. The
 purifier does not have to remain visible at the instant the form is submitted
 if Home Assistant still has compatible advertisement history.
 
 The normalized BLE address is the config entry's unique ID, which prevents the
 same purifier from being configured twice. Address, name, and model profile are
-stored as config entry data. Polling and Custom Auto values are mutable options.
+stored as config entry data. The stored profile is the exact detected lowercase
+model key such as `h7126`, even when `default.json` supplies the behavior, so
+an exact model file added later takes effect after an update and restart.
+Existing entries that predate the profile key and existing `h7124` entries
+resolve to H7124. Polling and, when supported, Custom Auto values are mutable
+options.
 
 ### Step 2: Five Air Quality Steps
 
-After the device form passes validation, setup displays four expanded sections:
+When the resolved profile defines Sleep, Low, Medium, High, Turbo, and hardware
+Auto, setup displays four expanded sections after the device form passes
+validation:
 
 ```text
 Five Air Quality Steps
@@ -195,9 +212,10 @@ increase value. An increase has no time delay but requires two distinct valid
 PM2.5 samples that both require an upshift. A return qualifies at equality and
 occurs only after its configured delay.
 
-Submitting this step creates and loads the config entry. A failed first BLE
-refresh prevents entities from being created until Home Assistant can set up
-the entry successfully.
+Submitting this step creates and loads the config entry. Profiles with narrower
+fan-mode sets skip this step and create the entry directly from the device form.
+A failed first BLE refresh prevents entities from being created until Home
+Assistant can set up the entry successfully.
 
 ## Device And Entity Layout
 
@@ -213,14 +231,16 @@ Settings > Devices & services > Integrations
 ```
 
 One config entry registers one Home Assistant device with manufacturer `Govee`
-and model `H7124`. The device contains these entities:
+and the exact detected model reported by its resolved profile (for example
+`H7126`, even when that model uses `default.json`). The device contains these
+entities:
 
 | Entity | Home Assistant domain | Purpose |
 | --- | --- | --- |
 | Purifier | `fan` | Power, percentage, and Manual or Auto preset control. |
 | PM2.5 | `sensor` | PM2.5 measurement in micrograms per cubic meter with the Home Assistant PM2.5 device class and measurement state class. |
 | Filter life | `sensor` | Remaining filter percentage with the measurement state class. |
-| Custom Auto | `switch` | Gives integration-managed PM2.5 rules ownership of fan speed. |
+| Custom Auto | `switch` | Gives integration-managed PM2.5 rules ownership of fan speed when the profile defines all policy modes. |
 
 The fan maps percentages to Sleep 20%, Low 40%, Medium 60%, High 80%, and
 Turbo 100%. Its **Auto** preset selects the purifier's built-in hardware Auto
@@ -252,19 +272,20 @@ Depending on the Home Assistant frontend version, **Configure** may appear as a
 button on the entry or in its overflow menu. It opens one form:
 
 ```text
-Five Air Quality Steps
+Purifier Options
 |-- Polling interval in seconds
-|-- Excellent to Good (20% / 40%)
-|-- Good to Fair (40% / 60%)
-|-- Fair to Bad (60% / 80%)
-|-- Bad to Poor (80% / 100%)
+|-- Excellent to Good (20% / 40%) [when Custom Auto is supported]
+|-- Good to Fair (40% / 60%) [when Custom Auto is supported]
+|-- Fair to Bad (60% / 80%) [when Custom Auto is supported]
+|-- Bad to Poor (80% / 100%) [when Custom Auto is supported]
 `-- Submit
 ```
 
-Each air-quality section contains the same increase, return, and delay fields
-shown during setup. Existing values are prefilled and the same ranges and
-ordering rules apply. Saving options reloads the config entry so the polling
-interval and Custom Auto controller use the new settings consistently.
+For profiles that support Custom Auto, each air-quality section contains the
+same increase, return, and delay fields shown during setup. Existing values are
+prefilled and the same ranges and ordering rules apply. Narrower profiles show
+only polling. Saving options reloads the config entry so the polling interval
+and any Custom Auto controller use the new settings consistently.
 
 The BLE address, stored device name, and model profile are setup data and are
 not edited by this options form. To replace the physical device, remove the
@@ -380,13 +401,17 @@ must not be exposed.
 ## BLE And Device Protocol Specification
 
 Bluetooth Low Energy GATT is the transport standard. The application protocol
-above GATT is Govee H7124-specific behavior encoded by this repository; it is
-not presented as an official public Govee specification.
+above GATT is Govee `H712*` family behavior encoded by this repository; only the
+H7124 definition is physically tested and validated. It is not presented as an
+official public Govee specification.
 
-| Item | Current profile value |
+The values below document the tested H7124 definition stored in
+`model_profiles/h7124.json` and `model_profiles/default.json`:
+
+| Item | Tested H7124 profile value |
 | --- | --- |
-| Profile key | `h7124` |
-| Advertised name prefix | `GVH7124` |
+| Profile key | `h7124` (other `h712?` keys fall back to `default.json`) |
+| Advertised name prefix | `GVH712` plus one alphanumeric model character |
 | Service UUID | `00010203-0405-0607-0809-0a0b0c0d1910` |
 | Notify characteristic | `00010203-0405-0607-0809-0a0b0c0d2b10` |
 | Write characteristic | `00010203-0405-0607-0809-0a0b0c0d2b11` |
@@ -399,10 +424,31 @@ not presented as an official public Govee specification.
 
 The status response supplies PM2.5 and filter life. PM2.5 values above 999 are
 treated as invalid rather than published as measurements. The supported fan
-commands are Sleep, Low, Medium, High, Auto, and Turbo. Raw commands, response
-markers, decoder offsets, and confirmation rules are defined in `protocol.py`;
-the profile UUIDs and capabilities are defined in `profiles.py`; generic frame
-length and checksum validation are defined in `bluetooth/framing.py`.
+commands are Sleep, Low, Medium, High, Auto, and Turbo. The GATT UUIDs and the
+exact outbound 20-byte power, query, and fan-mode frames are defined per model
+in `model_profiles/*.json`; response markers, decoder offsets, confirmation
+rules, and status decoding remain in `protocol.py`; profile selection and
+capabilities are defined in `profiles.py`; generic frame length and checksum
+validation are defined in `bluetooth/framing.py`.
+
+### Model Profile Definitions
+
+Each file in `model_profiles/` is a complete definition of one model's GATT
+UUIDs and outbound command frames. Selection loads the exact lowercase model
+file when it exists (for example `h7126.json`); any other recognized `H712*`
+model falls back to `default.json`, which is the tested H7124 definition. A
+future model file is a complete definition, not partial inheritance over
+another file.
+
+The fan entity adapts to the modes listed in the resolved profile. The Custom
+Auto switch is created only when that list includes Sleep, Low, Medium, High,
+Turbo, and hardware Auto; profiles with narrower mode sets remain usable for
+their declared fan commands without exposing an incompatible policy switch.
+
+JSON ownership stops at outbound frames and UUIDs. Shared frame validation,
+response matching, command confirmation, and status decoding stay in
+`protocol.py`, so a model whose response semantics or framing differ from the
+tested H7124 behavior requires Python changes, not only a new JSON file.
 
 ## Persisted Contracts
 
@@ -411,7 +457,11 @@ restored entity state across integration upgrades. The repository therefore
 treats these values as compatibility contracts:
 
 - Domain `govee_ble_air_purifier`.
-- Profile key `h7124`.
+- Profile key is the exact detected lowercase model key such as `h7124` or
+  `h7126`. A stored key may not have an exact `model_profiles/<model>.json`
+  file yet; `default.json` supplies its behavior until one ships. Existing
+  entries that predate the profile key and existing `h7124` entries resolve to
+  H7124.
 - Config entry keys `address`, `name`, and `profile`.
 - Option key `polling_interval` and all `custom_auto_*` threshold and delay
   keys.

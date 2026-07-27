@@ -5,8 +5,9 @@ import pytest
 
 from custom_components.govee_ble_air_purifier.coordinator import POLLING_INTERVAL
 from custom_components.govee_ble_air_purifier.models import PurifierState
-from custom_components.govee_ble_air_purifier.protocol import FAN_MODE_COMMANDS
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
+
+FAN_MODE_COMMANDS = H7124_PROFILE.fan_mode_commands
 
 
 class FakeClient:

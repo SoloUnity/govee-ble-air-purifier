@@ -1,4 +1,4 @@
-"""BLE client for Govee H7124-style air purifiers."""
+"""BLE client for H712-family Govee air purifiers."""
 
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ class GoveeBleClient:
         return self._profile.decode_power_state(frame)
 
     async def async_set_fan_mode(self, mode: str) -> str:
-        """Set purifier fan mode using canonical 3a05 commands."""
+        """Set purifier fan mode using its model profile."""
 
         try:
             command = self._profile.fan_mode_commands[mode]

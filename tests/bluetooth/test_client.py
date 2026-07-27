@@ -8,8 +8,8 @@ from custom_components.govee_ble_air_purifier.bluetooth.client import (
     GoveeBleClientError,
     connection_idle_timeout_for_polling_interval,
 )
+from custom_components.govee_ble_air_purifier.bluetooth.framing import build_frame
 from custom_components.govee_ble_air_purifier.models import PurifierState
-from custom_components.govee_ble_air_purifier.protocol import build_frame
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
 
 

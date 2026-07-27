@@ -1,5 +1,6 @@
 import importlib
 import sys
+from dataclasses import replace
 from enum import Enum
 from types import ModuleType, SimpleNamespace
 
@@ -8,6 +9,7 @@ import pytest
 from custom_components.govee_ble_air_purifier.custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
 )
+from custom_components.govee_ble_air_purifier.profiles import get_profile
 from tests.helpers.ha_stubs import install_modules
 
 
@@ -374,6 +376,117 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
         "polling_interval": 15,
         **CUSTOM_AUTO_DEFAULTS,
     }
+
+
+@pytest.mark.asyncio
+async def test_discovered_family_model_persists_exact_profile_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    address = "AA:BB:CC:DD:EE:0C"
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: (
+        SimpleNamespace(name="GVH712CBEDROOM", address=address, rssi=-45),
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user(
+        {
+            "discovered_device": address,
+            "polling_interval": 15,
+        }
+    )
+
+    assert result["step_id"] == "custom_auto"
+    assert flow._pending_entry == {
+        "title": "GVH712CBEDROOM",
+        "data": {
+            "address": address,
+            "name": "GVH712CBEDROOM",
+            "profile": "h712c",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_manual_family_model_uses_model_specific_default_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    address = "AA:BB:CC:DD:EE:06"
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    bluetooth_module.async_last_service_info = lambda *args, **kwargs: SimpleNamespace(
+        name="GVH7126LIVING", address=address
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user(
+        {
+            "discovered_device": "__manual__",
+            "address": address,
+            "polling_interval": 15,
+        }
+    )
+
+    assert result["step_id"] == "custom_auto"
+    assert flow._pending_entry["title"] == "Govee H7126 Air Purifier"
+    assert flow._pending_entry["data"]["profile"] == "h7126"
+
+
+@pytest.mark.asyncio
+async def test_profile_without_custom_auto_modes_skips_policy_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    address = "AA:BB:CC:DD:EE:06"
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: (
+        SimpleNamespace(name="GVH7126LIVING", address=address, rssi=-45),
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    profile = replace(
+        get_profile("h7126"),
+        fan_mode_commands={"Low": get_profile("h7126").fan_mode_commands["Low"]},
+    )
+    monkeypatch.setattr(config_flow, "get_profile", lambda key: profile)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user(
+        {
+            "discovered_device": address,
+            "polling_interval": 15,
+        }
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["data"]["profile"] == "h7126"
+    assert result["options"] == {"polling_interval": 15}
+
+
+@pytest.mark.asyncio
+async def test_options_hide_custom_auto_for_profile_without_required_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    profile = replace(
+        get_profile("h7126"),
+        fan_mode_commands={"Low": get_profile("h7126").fan_mode_commands["Low"]},
+    )
+    monkeypatch.setattr(config_flow, "get_profile", lambda key: profile)
+    options_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
+        SimpleNamespace(data={"profile": "h7126"}, options={})
+    )
+
+    result = await options_flow.async_step_init()
+
+    assert list(_schema_by_key(result["data_schema"])) == ["polling_interval"]
+    saved = await options_flow.async_step_init({"polling_interval": 30})
+    assert saved["data"] == {"polling_interval": 30}
 
 
 @pytest.mark.asyncio

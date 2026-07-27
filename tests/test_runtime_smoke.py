@@ -32,6 +32,7 @@ RUNTIME_MODULES = (
     "diagnostics",
     "entity",
     "fan",
+    "profiles",
     "sensor",
     "switch",
 )
@@ -58,6 +59,16 @@ def test_runtime_modules_import_with_real_home_assistant() -> None:
     assert issubclass(GoveeBleAirPurifierConfigFlow, ConfigFlow)
     assert issubclass(GoveeCoordinator, DataUpdateCoordinator)
     assert "options" in signature(ConfigFlow.async_create_entry).parameters
+
+
+def test_family_fallback_profile_loads_with_real_home_assistant() -> None:
+    from custom_components.govee_ble_air_purifier.profiles import get_profile
+
+    profile = get_profile("h712c")
+
+    assert profile.key == "h712c"
+    assert profile.model == "H712C"
+    assert profile.local_name_prefixes == ("GVH712C",)
 
 
 @pytest.mark.asyncio

@@ -4,10 +4,17 @@ This integration exists first and foremost to expose the purifier's PM2.5 sensor
 
 It also gives you basic control of the purifier and shows remaining filter life.
 
-## Supported Device
+## Supported Devices
 
-- Govee H7124-style BLE air purifiers
-- Devices with Bluetooth names starting with `GVH7124`
+- Govee `H712*` family BLE air purifiers
+- Devices with Bluetooth names starting with `GVH712` followed by one
+  alphanumeric model character (for example `GVH7124` for the H7124 or
+  `GVH712C` for the H712C)
+
+**Only the Govee H7124 has been physically tested and validated.** Other `H712*`
+models are recognized but run on the H7124 protocol definition, so they may
+fail to respond or expose unsupported or mismatched features. Recognition of
+the family does not mean every `H712*` model is verified.
 
 ## What You Get
 
@@ -39,17 +46,23 @@ Requires Home Assistant 2024.8.0 or newer.
 1. Go to Settings > Devices & services.
 2. Choose Add Integration.
 3. Search for Govee BLE Air Purifier.
-4. Choose your purifier if it appears, or enter its Bluetooth address manually.
+4. Choose your purifier from the recently seen Bluetooth list if it appears, or
+   enter its Bluetooth address manually.
+
+Setup is always this manual flow. The integration does not add itself through
+automatic Bluetooth discovery.
 
 ## Custom Auto
 
-Setup and the device's integration Options contain four expanded PM2.5 boundary
-groups for five air-quality levels: Excellent, Good, Fair, Bad, and Poor. Each
-group contains an increase threshold, a delayed return threshold, and the return
-delay. An increase requires two valid PM2.5 readings that both call for a higher
-speed; the second reading determines the target. Turn on the device's
+When the resolved model profile provides all required fan modes, setup and the
+device's integration Options contain four expanded PM2.5 boundary groups for
+five air-quality levels: Excellent, Good, Fair, Bad, and Poor. Each group
+contains an increase threshold, a delayed return threshold, and the return
+delay. An increase requires two valid PM2.5 readings that both call for a
+higher speed; the second reading determines the target. Turn on the device's
 `Custom Auto` switch to activate those rules. Turning the switch off keeps the
-purifier on and hands control to its built-in Auto mode.
+purifier on and hands control to its built-in Auto mode. Profiles with narrower
+fan-mode sets do not expose these controls.
 
 While Custom Auto is on, the fan's logical preset remains Auto while Home
 Assistant sends the underlying manual speeds Sleep (20%), Low (40%), Medium
@@ -78,4 +91,8 @@ uses `<=`; only a valid reading above that boundary resets its timer.
 - If setup or controls do not respond, close the Govee app and try again. The
   purifier may only allow one Bluetooth connection at a time, so the app may
   also be unable to connect while Home Assistant is actively polling.
+- The config entry remembers your exact detected model (for example H7126)
+  even while it uses the shared H7124 protocol definition, so a future
+  model-specific profile takes effect after an update and a Home Assistant
+  restart.
 - This integration works locally over Bluetooth.

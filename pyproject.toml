@@ -1,7 +1,7 @@
 [project]
 name = "govee-ble-air-purifier"
 version = "0.1.0"
-description = "Home Assistant custom integration for Govee H7124 BLE air purifiers"
+description = "Home Assistant custom integration for Govee H712-family BLE air purifiers"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

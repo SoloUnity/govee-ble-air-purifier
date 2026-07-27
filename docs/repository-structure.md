@@ -1,8 +1,11 @@
 # Repository Structure
 
 This repository contains a locally polling Home Assistant custom integration for
-Govee H7124-style BLE air purifiers. Home Assistant loads the code under
-`custom_components/`; the repository is not a standalone service.
+Govee `H712*` family BLE air purifiers. Only the H7124 is physically tested and
+validated; other recognized `H712*` models fall back to the H7124 protocol
+definition and may fail or expose unsupported or mismatched features. Home
+Assistant loads the code under `custom_components/`; the repository is not a
+standalone service.
 
 For runtime interactions and lock ownership, see
 [`architecture.md`](architecture.md). For Home Assistant and HACS standards,
@@ -50,6 +53,9 @@ configuration flows.
 models.py
 protocol.py
 profiles.py
+model_profiles/
+|-- default.json
+`-- h7124.json
 bluetooth/
 |-- __init__.py
 |-- framing.py
@@ -57,12 +63,23 @@ bluetooth/
 `-- transport.py
 ```
 
-- `models.py` defines `DecodedStatus`, the output of one decoded H7124 status
-  frame, and `PurifierState`, the application-facing snapshot shared above the
-  protocol layer.
-- Root `protocol.py` contains H7124-specific commands, response and confirmation
-  matchers, and decoders.
-- `profiles.py` binds H7124 advertisement prefixes, UUIDs, commands, matchers,
+- `models.py` defines `DecodedStatus`, the output of one decoded status frame
+  (an `aa19` frame for the tested H7124 definition), and `PurifierState`, the
+  application-facing snapshot shared above the protocol layer.
+- `model_profiles/` holds complete per-model JSON definitions. Each file owns
+  the model's GATT service and characteristic UUIDs and the exact outbound
+  20-byte power, query, and fan-mode command frames. `default.json` and
+  `h7124.json` initially contain the physically tested H7124 definition.
+  Future model files are complete definitions, not partial inheritance over
+  another file.
+- Root `protocol.py` retains shared frame validation, response and confirmation
+  matchers, and status decoding for the recognized family. Models with
+  different response semantics or framing require Python changes here; they
+  cannot be added by JSON alone.
+- `profiles.py` matches advertised names beginning `GVH712` plus one
+  alphanumeric model character, selects the exact `model_profiles/<model>.json`
+  when present and `default.json` otherwise (H7124 protocol behavior), and
+  binds the resolved advertisement prefixes, UUIDs, commands, matchers,
   decoders, and capabilities into `ModelProfile`.
 - `bluetooth/framing.py` provides generic 20-byte frame construction, checksum
   validation, and `ProtocolError`.
@@ -113,6 +130,8 @@ protocol.py -------------------> bluetooth/framing.py
        `-----------------------> models.py
 
 profiles.py -------------------> protocol.py + models.py
+       `-----------------------> model_profiles/*.json (GATT UUIDs and
+                                outbound command frames)
 
 bluetooth/client.py -----------> profiles.py + protocol.py
        |-----------------------> bluetooth/framing.py + models.py
@@ -131,8 +150,9 @@ diagnostics.py reads config entry + coordinator + controller
 ```
 
 The diagram shows important runtime dependencies, not every import. Generic
-framing is below H7124 protocol code; transport is below the transaction client;
-and pure Custom Auto config and policy are below its mutable controller.
+framing is below the shared protocol code; JSON model definitions are below the
+profile layer; transport is below the transaction client; and pure Custom Auto
+config and policy are below its mutable controller.
 
 ## Tests
 

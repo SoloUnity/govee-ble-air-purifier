@@ -1,30 +1,32 @@
 import pytest
 
+from custom_components.govee_ble_air_purifier.bluetooth.framing import (
+    ProtocolError,
+    build_frame,
+    validate_frame,
+)
 from custom_components.govee_ble_air_purifier.models import DecodedStatus
 from custom_components.govee_ble_air_purifier.profiles import (
     H7124_PROFILE,
     fan_mode_labels,
-    match_profile,
     normalize_ble_address,
+    normalize_ble_name,
 )
 from custom_components.govee_ble_air_purifier.protocol import (
-    FAN_MODE_COMMANDS,
-    FAN_MODE_LABELS,
-    POWER_OFF_COMMAND,
-    POWER_ON_COMMAND,
-    STATE_QUERY_COMMAND,
-    STATUS_QUERY_COMMAND,
-    ProtocolError,
-    build_frame,
     decode_mode_push,
     decode_power_state,
     decode_status,
     is_command_echo,
     is_fan_mode_confirmation,
     is_power_confirmation,
-    normalize_ble_name,
-    validate_frame,
 )
+
+FAN_MODE_COMMANDS = H7124_PROFILE.fan_mode_commands
+FAN_MODE_LABELS = fan_mode_labels(H7124_PROFILE)
+POWER_OFF_COMMAND = H7124_PROFILE.power_off_command
+POWER_ON_COMMAND = H7124_PROFILE.power_on_command
+STATE_QUERY_COMMAND = H7124_PROFILE.state_query_command
+STATUS_QUERY_COMMAND = H7124_PROFILE.status_query_command
 
 @pytest.mark.parametrize(
     ("constant", "expected"),
@@ -154,14 +156,6 @@ def test_ble_name_normalization_accepts_h7124_prefix() -> None:
     assert normalize_ble_name("GVH712438FE") == "H7124-38FE"
     assert normalize_ble_name("GVH7124178E") == "H7124-178E"
     assert normalize_ble_name("Other") is None
-
-
-def test_profile_lookup_matches_h7124_ble_names() -> None:
-    assert match_profile("GVH712438FE") is H7124_PROFILE
-    assert match_profile("GVH7124") is H7124_PROFILE
-    assert match_profile("Other") is None
-
-
 def test_h7124_profile_exposes_exact_protocol_frames() -> None:
     assert H7124_PROFILE.key == "h7124"
     assert H7124_PROFILE.model == "H7124"

@@ -70,6 +70,10 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     assert H7124_PROFILE.key == "h7124"
     assert get_profile(None) is H7124_PROFILE
     assert get_profile("h7124") is H7124_PROFILE
+    fallback = get_profile("h712c")
+    assert fallback.key == "h712c"
+    assert fallback.model == "H712C"
+    assert fallback.fan_mode_commands == H7124_PROFILE.fan_mode_commands
 
 
 def test_active_platform_contract_is_stable() -> None:
