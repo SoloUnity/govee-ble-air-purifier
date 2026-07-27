@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
 import json
 from pathlib import Path
@@ -27,7 +28,7 @@ H7124_PROFILE_KEY = "h7124"
 
 _BLE_MODEL_PATTERN = re.compile(r"(H712[0-9A-Z])", re.IGNORECASE | re.ASCII)
 _PROFILE_KEY_PATTERN = re.compile(r"h712[0-9a-z]\Z")
-_TOP_LEVEL_KEYS = {"schema_version", "gatt", "commands"}
+_TOP_LEVEL_KEYS = {"schema_version", "encryption", "gatt", "commands"}
 _GATT_KEYS = {"service_uuid", "notify_char_uuid", "write_char_uuid"}
 _COMMAND_KEYS = {
     "power_off",
@@ -45,6 +46,13 @@ class _DuplicateProfileKeyError(ValueError):
     """Raised when a profile JSON object repeats a key."""
 
 
+class EncryptionMode(StrEnum):
+    """Supported model-profile transport encryption modes."""
+
+    NONE = "none"
+    GOVEE_V1 = "govee_v1"
+
+
 @dataclass(frozen=True)
 class ModelProfile:
     """BLE protocol and capabilities for one purifier model."""
@@ -53,6 +61,7 @@ class ModelProfile:
     model: str
     display_name: str
     local_name_prefixes: tuple[str, ...]
+    encryption: EncryptionMode
     service_uuid: str
     notify_char_uuid: str
     write_char_uuid: str
@@ -80,6 +89,7 @@ class ModelProfile:
 
 @dataclass(frozen=True)
 class _ProfileDefinition:
+    encryption: EncryptionMode
     service_uuid: str
     notify_char_uuid: str
     write_char_uuid: str
@@ -134,11 +144,26 @@ def _parse_frame(value: Any, *, source: str) -> bytes:
     return frame
 
 
+def _parse_encryption(value: Any, *, source: str) -> EncryptionMode:
+    """Return one supported profile encryption mode."""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{source} must be a string")
+    try:
+        return EncryptionMode(value)
+    except ValueError as err:
+        supported = ", ".join(mode.value for mode in EncryptionMode)
+        raise ValueError(f"{source} must be one of {supported}") from err
+
+
 def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
     """Validate and normalize one complete profile definition."""
 
     profile = _require_object(data, _TOP_LEVEL_KEYS, source=source)
-    if type(profile["schema_version"]) is not int or profile["schema_version"] != 1:
+    if (
+        type(profile["schema_version"]) is not int
+        or profile["schema_version"] != PROFILE_SCHEMA_VERSION
+    ):
         raise ValueError(
             f"{source}.schema_version must be {PROFILE_SCHEMA_VERSION}"
         )
@@ -160,6 +185,9 @@ def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
         )
 
     return _ProfileDefinition(
+        encryption=_parse_encryption(
+            profile["encryption"], source=f"{source}.encryption"
+        ),
         service_uuid=_parse_uuid(
             gatt["service_uuid"], source=f"{source}.gatt.service_uuid"
         ),
@@ -286,6 +314,7 @@ def _build_profile(
         model=model,
         display_name=f"Govee {model} Air Purifier",
         local_name_prefixes=(f"GV{model}",),
+        encryption=definition.encryption,
         service_uuid=definition.service_uuid,
         notify_char_uuid=definition.notify_char_uuid,
         write_char_uuid=definition.write_char_uuid,

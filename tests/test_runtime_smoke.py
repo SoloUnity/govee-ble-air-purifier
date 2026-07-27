@@ -228,10 +228,26 @@ async def test_integration_setup_and_unload_lifecycle(
             self.config_entry = config_entry
 
         async def async_stop(self) -> None:
-            events.append("stop")
+            events.append("controller_stop")
+
+    class FakeAutoResume:
+        def __init__(
+            self, hass, coordinator, controller, *, config_entry
+        ) -> None:
+            self.hass = hass
+            self.coordinator = coordinator
+            self.controller = controller
+            self.config_entry = config_entry
+
+        async def async_restore_from_hass(self, unique_id: str) -> None:
+            events.append(("restore", unique_id))
+
+        async def async_stop(self) -> None:
+            events.append("auto_resume_stop")
 
     class FakeEntry:
         entry_id = "runtime-entry"
+        unique_id = "aabbccddeeff"
         data = {
             "address": "AA:BB:CC:DD:EE:FF",
             "name": "Bedroom Purifier",
@@ -266,6 +282,7 @@ async def test_integration_setup_and_unload_lifecycle(
     monkeypatch.setattr(integration, "GoveeBleClient", FakeClient)
     monkeypatch.setattr(integration, "GoveeCoordinator", FakeCoordinator)
     monkeypatch.setattr(integration, "CustomAutoController", FakeController)
+    monkeypatch.setattr(integration, "AutoResumeManager", FakeAutoResume)
     entry = FakeEntry()
     hass = SimpleNamespace(config_entries=FakeConfigEntries())
 
@@ -277,14 +294,19 @@ async def test_integration_setup_and_unload_lifecycle(
     assert entry.runtime_data.controller.coordinator is entry.runtime_data.coordinator
     assert entry.update_listener is integration._async_update_listener
     assert len(entry.unload_callbacks) == 1
-    assert events == ["first_refresh", ("forward", tuple(integration.PLATFORMS))]
+    assert events == [
+        "first_refresh",
+        ("restore", "aabbccddeeff"),
+        ("forward", tuple(integration.PLATFORMS)),
+    ]
 
     await entry.update_listener(hass, entry)
     assert events[-1] == ("reload", "runtime-entry")
 
     assert await integration.async_unload_entry(hass, entry) is True
-    assert events[-3:] == [
+    assert events[-4:] == [
         ("unload", tuple(integration.PLATFORMS)),
-        "stop",
+        "auto_resume_stop",
+        "controller_stop",
         "shutdown",
     ]

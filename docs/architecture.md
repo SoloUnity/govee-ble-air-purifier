@@ -110,11 +110,12 @@ framing differ from the tested H7124 behavior still require Python changes
 here; they cannot be added by JSON alone.
 
 `model_profiles/` holds one complete JSON definition per model. `default.json`
-and `h7124.json` initially contain the physically tested H7124 definition: its
-GATT service and characteristic UUIDs and the exact outbound 20-byte power,
-query, and fan-mode command frames. The JSON owns those GATT UUIDs and
-outbound frames; it does not own response interpretation. Future model files
-are complete definitions, not partial inheritance over another file.
+and `h7124.json` contain the physically tested H7124 definition; `h7129.json`
+contains the capture-derived H7129 definition. Each file owns its GATT service
+and characteristic UUIDs, transport encryption selection, and exact outbound
+20-byte power, query, and fan-mode command frames. The JSON does not own
+encryption mechanics or response interpretation. Future model files are
+complete definitions, not partial inheritance over another file.
 
 `profiles.py` searches advertised names case-insensitively for `H712` plus one
 ASCII letter or digit (for example `GVH7124`, `GVH712C`, or
@@ -122,9 +123,11 @@ ASCII letter or digit (for example `GVH7124`, `GVH712C`, or
 example `h7126.json`), and otherwise falls back to `default.json`, which means
 H7124 protocol behavior. It packages the resolved UUIDs, commands, matchers,
 decoders, advertised identity, and capabilities as `ModelProfile`. Higher
-layers receive a profile rather than duplicating those constants. Only the
-H7124 definition is physically tested and validated; fallback models are
-unverified and may fail or expose unsupported or mismatched features.
+layers receive a profile rather than duplicating those constants. The H7124
+integration is physically tested. H7129 is implemented and covered by captured
+encrypted-frame vectors and client simulations but has not been physically
+replayed by this integration. Fallback models are unverified and may fail or
+expose unsupported or mismatched features.
 
 Fan-mode lists may vary by exact profile. The integration creates the Custom
 Auto switch only when the profile provides Sleep, Low, Medium, High, Turbo,
@@ -132,6 +135,12 @@ and hardware Auto, preventing the H7124-specific policy from requesting a mode
 that a narrower profile does not define.
 
 ## Bluetooth Ownership
+
+`bluetooth/govee_v1.py` owns only the H7129 frame transform and handshake frame
+semantics. It applies AES-128-ECB to bytes 0-15, applies the captured
+RC4-compatible transform to bytes 16-19, builds `e7 01` and `e7 02` requests,
+and validates their plaintext responses. Application frames remain the same
+checksum-valid plaintext values used by the H7124 path.
 
 `bluetooth/client.py` owns one serialized transaction lock per configured
 purifier. A transaction deadline starts before lock acquisition and is shared
@@ -151,6 +160,13 @@ the client instance that raised it; identity checking prevents a delayed
 callback from clearing a replacement. The next poll or command reconnects
 through Home Assistant. Transaction failure invalidates the connection but does
 not replay the operation.
+
+For a profile selecting Govee V1 encryption, a newly established connection
+completes the `e7 01` / `e7 02` exchange before its first application operation.
+The client encrypts only at the GATT write boundary and decrypts before the
+shared matcher and decoder path. A healthy cached connection reuses its session
+key; disconnect, replacement, failure, idle release, and close all discard it.
+Every reconnect negotiates a new key. Plaintext profiles bypass these transforms.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
 notification subscription to issue the power and status queries in sequence.

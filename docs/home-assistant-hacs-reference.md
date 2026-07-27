@@ -22,6 +22,7 @@ reference is
 | HACS minimum | `1.34.0` | `hacs.json` |
 | Python package baseline | Python 3.12 or newer | `pyproject.toml` |
 | Recognized model family | Govee `H712*` BLE purifiers | `profiles.py` and `model_profiles/` |
+| Exact model profiles | Plaintext H7124 and encrypted H7129 | `model_profiles/h7124.json` and `model_profiles/h7129.json` |
 | Physically tested and validated model | Govee H7124 only | `model_profiles/h7124.json` and `model_profiles/default.json` |
 | Recognized BLE local name | Contains `H712` followed by one ASCII letter or digit, case-insensitively (for example `GVH7124`, `GVH712C`, or `ihoment_H7129_6A7D`) | `profiles.py` |
 | Home Assistant integration type | `device` | `manifest.json` |
@@ -33,12 +34,13 @@ reference is
 The integration communicates directly over Bluetooth Low Energy. It does not
 use the Govee cloud, YAML configuration, Matter, Zigbee, Z-Wave, or MQTT.
 
-Only the H7124 is physically tested and validated. Other recognized `H712*`
-models without an exact `model_profiles/<model>.json` file use
-`default.json`, which supplies the tested H7124 protocol behavior. Those
-models are unverified: they may fail to respond or expose unsupported or
-mismatched features. Recognition of the `H712*` family is not family-wide
-verification.
+The H7124 integration is physically tested and validated. H7129 support is
+implemented from decrypted physical-device captures and tested against fixed
+encrypted vectors and simulated connection lifecycles, but has not yet been
+physically replayed by this integration. Other recognized `H712*` models
+without an exact `model_profiles/<model>.json` file use `default.json`, which
+supplies the tested H7124 protocol behavior. Those fallback models remain
+unverified.
 
 The CI runtime matrix tests the minimum Home Assistant release and the current
 target selected by the repository. At the time of writing those targets are
@@ -409,10 +411,11 @@ must not be exposed.
 
 Bluetooth Low Energy GATT is the transport standard. The application protocol
 above GATT is Govee `H712*` family behavior encoded by this repository. The
-H7124 implementation is physically tested and validated. H7129 behavior has
-also been captured from a physical device and decrypted, but encrypted H7129
-sessions are not yet implemented or validated by the integration. This is not
-presented as an official public Govee specification.
+H7124 implementation is physically tested and validated. H7129 behavior was
+captured from a physical device and decrypted; its encrypted session is now
+implemented and covered by captured-vector and simulated-client tests, with
+physical integration replay still pending. This is not presented as an
+official public Govee specification.
 
 The detailed command, response, capture-evidence, and encrypted-transport
 reference is
@@ -446,22 +449,23 @@ validation are defined in `bluetooth/framing.py`.
 
 ### Model Profile Definitions
 
-Each file in `model_profiles/` is a complete definition of one model's GATT
-UUIDs and outbound command frames. Selection loads the exact lowercase model
-file when it exists (for example `h7126.json`); any other recognized `H712*`
-model falls back to `default.json`, which is the tested H7124 definition. A
-future model file is a complete definition, not partial inheritance over
-another file.
+Each file in `model_profiles/` is a complete schema-v1 definition of one model's
+transport encryption mode, GATT UUIDs, and outbound command frames. Selection
+loads the exact lowercase model file when it exists (including `h7129.json`);
+any other recognized `H712*` model falls back to `default.json`, which is the
+tested plaintext H7124 definition. A future model file is a complete definition,
+not partial inheritance over another file.
 
 The fan entity adapts to the modes listed in the resolved profile. The Custom
 Auto switch is created only when that list includes Sleep, Low, Medium, High,
 Turbo, and hardware Auto; profiles with narrower mode sets remain usable for
 their declared fan commands without exposing an incompatible policy switch.
 
-JSON ownership stops at outbound frames and UUIDs. Shared frame validation,
+JSON ownership stops at transport selection, outbound frames, and UUIDs. The
+Govee V1 transform stays in `bluetooth/govee_v1.py`; shared frame validation,
 response matching, command confirmation, and status decoding stay in
-`protocol.py`, so a model whose response semantics or framing differ from the
-tested H7124 behavior requires Python changes, not only a new JSON file.
+`protocol.py`. H7124 and H7129 therefore reuse the same application protocol
+after the client decrypts H7129 notifications.
 
 ## Persisted Contracts
 

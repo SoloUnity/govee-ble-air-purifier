@@ -9,13 +9,21 @@ from typing import Any
 
 from ..const import DEFAULT_POLLING_INTERVAL_SECONDS
 from ..models import PurifierState
-from ..profiles import H7124_PROFILE, ModelProfile
+from ..profiles import EncryptionMode, H7124_PROFILE, ModelProfile
 from ..protocol import (
     is_fan_mode_confirmation,
     is_power_confirmation,
 )
 from . import GoveeBleClientError, transport
 from .framing import ProtocolError, validate_frame
+from .govee_v1 import (
+    COMMUNICATION_KEY,
+    build_handshake_request,
+    decrypt_frame,
+    encrypt_frame,
+    parse_session_key,
+    validate_handshake_confirmation,
+)
 from .transport import _async_wait_until
 
 DEFAULT_TIMEOUT = 10.0
@@ -57,6 +65,7 @@ class GoveeBleClient:
         )
         self._lock = asyncio.Lock()
         self._client: Any = None
+        self._session_key: bytes | None = None
         self._idle_disconnect_handle: asyncio.TimerHandle | None = None
         self._idle_disconnect_task: asyncio.Task[Any] | None = None
         self._closed = False
@@ -144,7 +153,9 @@ class GoveeBleClient:
             for command in commands:
                 await _async_wait_until(
                     client.write_gatt_char(
-                        self._profile.write_char_uuid, command, response=False
+                        self._profile.write_char_uuid,
+                        self._encode_application_frame(command),
+                        response=False,
                     ),
                     deadline,
                 )
@@ -197,8 +208,13 @@ class GoveeBleClient:
 
             def notification_handler(_sender: Any, data: bytearray | bytes) -> None:
                 nonlocal future
-                frame = bytes(data)
                 if future is None or len(frames) >= len(requests):
+                    return
+                try:
+                    frame = self._decode_application_frame(bytes(data))
+                except ProtocolError as err:
+                    if not future.done():
+                        future.set_exception(err)
                     return
                 matcher = requests[len(frames)][1]
                 if not matcher(frame):
@@ -226,7 +242,9 @@ class GoveeBleClient:
                         future = loop.create_future()
                         await _async_wait_until(
                             client.write_gatt_char(
-                                self._profile.write_char_uuid, command, response=False
+                                self._profile.write_char_uuid,
+                                self._encode_application_frame(command),
+                                response=False,
                             ),
                             deadline,
                         )
@@ -279,6 +297,7 @@ class GoveeBleClient:
         client = self._client
         if client is None or not client.is_connected:
             self._client = None
+            self._session_key = None
             client = await transport.async_establish_connection(
                 self._hass,
                 self._address,
@@ -289,6 +308,32 @@ class GoveeBleClient:
             if not client.is_connected:
                 await self._async_drop_connection(deadline)
                 raise GoveeBleClientError("Purifier disconnected while connecting")
+            if self._profile.encryption is EncryptionMode.GOVEE_V1:
+                try:
+                    session_key = await self._async_negotiate_govee_v1_session(
+                        client, deadline
+                    )
+                    if self._client is not client or not client.is_connected:
+                        raise GoveeBleClientError(
+                            "Purifier disconnected during encrypted-session setup"
+                        )
+                    self._session_key = session_key
+                except (TimeoutError, asyncio.TimeoutError) as err:
+                    await self._async_drop_connection(deadline)
+                    raise GoveeBleClientError(
+                        "Timed out establishing encrypted purifier session"
+                    ) from err
+                except GoveeBleClientError:
+                    await self._async_drop_connection(deadline)
+                    raise
+                except Exception as err:
+                    await self._async_drop_connection(deadline)
+                    raise GoveeBleClientError(
+                        "Failed to establish encrypted purifier session"
+                    ) from err
+                except BaseException:
+                    await self._async_drop_connection(deadline)
+                    raise
 
         try:
             result = await operation(client)
@@ -309,6 +354,103 @@ class GoveeBleClient:
 
         if self._client is client:
             self._client = None
+            self._session_key = None
+
+    def _encode_application_frame(self, frame: bytes) -> bytes:
+        """Encode one plaintext profile frame for the active transport."""
+
+        if self._profile.encryption is EncryptionMode.NONE:
+            return frame
+        if self._session_key is None:
+            raise GoveeBleClientError("Encrypted purifier session is unavailable")
+        return encrypt_frame(frame, self._session_key)
+
+    def _decode_application_frame(self, frame: bytes) -> bytes:
+        """Decode one wire notification into a plaintext protocol frame."""
+
+        if self._profile.encryption is EncryptionMode.NONE:
+            return frame
+        if self._session_key is None:
+            raise ProtocolError("Encrypted purifier session is unavailable")
+        return decrypt_frame(frame, self._session_key)
+
+    async def _async_negotiate_govee_v1_session(
+        self, client: Any, deadline: float
+    ) -> bytes:
+        """Negotiate one connection-specific Govee V1 session key."""
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes] | None = None
+        expected_command = 0
+        primary_error: BaseException | None = None
+
+        def notification_handler(_sender: Any, data: bytearray | bytes) -> None:
+            if future is None or future.done():
+                return
+            try:
+                frame = decrypt_frame(bytes(data), COMMUNICATION_KEY)
+            except ProtocolError as err:
+                future.set_exception(err)
+                return
+            if frame[:2] == bytes((0xE7, expected_command)):
+                future.set_result(frame)
+
+        try:
+            await _async_wait_until(
+                client.start_notify(
+                    self._profile.notify_char_uuid, notification_handler
+                ),
+                deadline,
+            )
+
+            expected_command = 0x01
+            session_request = build_handshake_request(expected_command)
+            future = loop.create_future()
+            await _async_wait_until(
+                client.write_gatt_char(
+                    self._profile.write_char_uuid,
+                    encrypt_frame(session_request, COMMUNICATION_KEY),
+                    response=False,
+                ),
+                deadline,
+            )
+            session_response = await _async_wait_until(future, deadline)
+            session_key = parse_session_key(session_response)
+
+            expected_command = 0x02
+            confirmation_request = build_handshake_request(expected_command)
+            future = loop.create_future()
+            await _async_wait_until(
+                client.write_gatt_char(
+                    self._profile.write_char_uuid,
+                    encrypt_frame(confirmation_request, COMMUNICATION_KEY),
+                    response=False,
+                ),
+                deadline,
+            )
+            confirmation_response = await _async_wait_until(future, deadline)
+            validate_handshake_confirmation(
+                confirmation_response, confirmation_request
+            )
+            return session_key
+        except BaseException as err:
+            primary_error = err
+            raise
+        finally:
+            if future is not None and not future.done():
+                future.cancel()
+            try:
+                await _async_wait_until(
+                    client.stop_notify(self._profile.notify_char_uuid), deadline
+                )
+            except Exception:
+                _LOGGER.debug(
+                    "Suppressing encrypted-session notification cleanup failure%s",
+                    " to preserve primary error" if primary_error else "",
+                    exc_info=True,
+                )
+                if primary_error is None:
+                    raise
 
     def _cancel_idle_disconnect(self) -> None:
         """Cancel an idle timer that has not started disconnecting."""
@@ -370,6 +512,7 @@ class GoveeBleClient:
 
         client = self._client
         self._client = None
+        self._session_key = None
         if client is not None:
             await transport.async_disconnect(client, deadline=deadline)
 

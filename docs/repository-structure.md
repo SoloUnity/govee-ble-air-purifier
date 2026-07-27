@@ -1,11 +1,11 @@
 # Repository Structure
 
 This repository contains a locally polling Home Assistant custom integration for
-Govee `H712*` family BLE air purifiers. Only the H7124 is physically tested and
-validated; other recognized `H712*` models fall back to the H7124 protocol
-definition and may fail or expose unsupported or mismatched features. Home
-Assistant loads the code under `custom_components/`; the repository is not a
-standalone service.
+Govee `H712*` family BLE air purifiers. It has exact plaintext H7124 and encrypted
+H7129 profiles; only the H7124 integration has been physically replayed. Other
+recognized `H712*` models fall back to the H7124 protocol definition and may fail
+or expose unsupported or mismatched features. Home Assistant loads the code
+under `custom_components/`; the repository is not a standalone service.
 
 For runtime interactions and lock ownership, see
 [`architecture.md`](architecture.md). For Home Assistant and HACS standards,
@@ -59,10 +59,12 @@ protocol.py
 profiles.py
 model_profiles/
 |-- default.json
-`-- h7124.json
+|-- h7124.json
+`-- h7129.json
 bluetooth/
 |-- __init__.py
 |-- framing.py
+|-- govee_v1.py
 |-- client.py
 `-- transport.py
 ```
@@ -72,10 +74,11 @@ bluetooth/
   application-facing snapshot shared above the protocol layer.
 - `model_profiles/` holds complete per-model JSON definitions. Each file owns
   the model's GATT service and characteristic UUIDs and the exact outbound
-  20-byte power, query, and fan-mode command frames. `default.json` and
-  `h7124.json` initially contain the physically tested H7124 definition.
-  Future model files are complete definitions, not partial inheritance over
-  another file.
+  20-byte power, query, and fan-mode command frames plus the transport encryption
+  mode. `default.json` and `h7124.json` contain the physically tested plaintext
+  H7124 definition. `h7129.json` selects Govee V1 encryption and changes only
+  the model-specific Auto Default command. Future model files are complete
+  definitions, not partial inheritance over another file.
 - Root `protocol.py` retains shared frame validation, response and confirmation
   matchers, and status decoding for the recognized family. Models with
   different response semantics or framing require Python changes here; they
@@ -87,11 +90,14 @@ bluetooth/
   UUIDs, commands, matchers, decoders, and capabilities into `ModelProfile`.
 - `bluetooth/framing.py` provides generic 20-byte frame construction, checksum
   validation, and `ProtocolError`.
+- `bluetooth/govee_v1.py` provides the captured AES/RC4-compatible frame
+  transform and handshake frame helpers without owning model commands.
 - `bluetooth/client.py` owns the per-purifier transaction lock, writes,
   notification subscription and cleanup, response futures, matching, and shared
   deadlines. It also retains a healthy connection, handles disconnect callbacks,
-  derives adaptive idle release from the polling interval, and serializes that
-  release with explicit shutdown.
+  negotiates and clears connection-specific encrypted sessions when selected by
+  the profile, derives adaptive idle release from the polling interval, and
+  serializes that release with explicit shutdown.
 - `bluetooth/transport.py` owns Home Assistant BLE-device lookup, stale
   connection cleanup before establishment, connection establishment, and
   bounded best-effort disconnect primitives.
@@ -143,7 +149,8 @@ profiles.py -------------------> protocol.py + models.py
                                 outbound command frames)
 
 bluetooth/client.py -----------> profiles.py + protocol.py
-       |-----------------------> bluetooth/framing.py + models.py
+       |-----------------------> bluetooth/framing.py + bluetooth/govee_v1.py
+       |-----------------------> models.py
        `-----------------------> bluetooth/transport.py
 
 coordinator.py ----------------> profiles.py + models.py
@@ -168,8 +175,10 @@ config and policy are below its mutable controller.
 ```text
 tests/
 |-- bluetooth/
-|   |-- test_framing.py
 |   |-- test_client.py
+|   |-- test_encrypted_client.py
+|   |-- test_framing.py
+|   |-- test_govee_v1.py
 |   `-- test_transport.py
 |-- custom_auto/
 |   |-- test_config.py
@@ -211,6 +220,7 @@ python -m pytest tests/test_runtime_smoke.py  # requires Home Assistant
 - `.github/workflows/validate.yml` runs Ruff, the fast behavioral lane, the
   real-Home-Assistant smoke matrix, HACS validation, and hassfest.
 - `hacs.json` describes the HACS repository.
-- `pyproject.toml` defines Python compatibility, development dependencies,
-  pytest markers, and Ruff settings.
+- `pyproject.toml` defines Python compatibility, the `cryptography` runtime
+  dependency used for AES, development dependencies, pytest markers, and Ruff
+  settings.
 - `brand/icon.png` is the repository icon.

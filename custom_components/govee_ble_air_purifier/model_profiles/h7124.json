@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "encryption": "none",
   "gatt": {
     "service_uuid": "00010203-0405-0607-0809-0a0b0c0d1910",
     "notify_char_uuid": "00010203-0405-0607-0809-0a0b0c0d2b10",

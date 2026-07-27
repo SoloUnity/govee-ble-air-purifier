@@ -11,10 +11,12 @@ It also gives you basic control of the purifier and shows remaining filter life.
   or digit, matched case-insensitively (for example `GVH7124`, `GVH712C`, or
   `ihoment_H7129_6A7D`)
 
-**Only the Govee H7124 has been physically tested and validated.** Other `H712*`
-models are recognized but run on the H7124 protocol definition, so they may
-fail to respond or expose unsupported or mismatched features. Recognition of
-the family does not mean every `H712*` model is verified.
+Exact protocol profiles are included for the plaintext Govee H7124 and the
+encrypted Govee H7129. The H7124 integration has been physically tested and
+validated. H7129 support is implemented and tested against decrypted physical
+device captures, but direct control by this integration has not yet been
+physically replayed. Other recognized `H712*` models use the H7124 protocol
+fallback and may fail or expose unsupported or mismatched features.
 
 ## What You Get
 

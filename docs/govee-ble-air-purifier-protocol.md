@@ -556,9 +556,7 @@ H7129 values are consistent with the same response layout.
 
 | Feature | Status |
 |---------|--------|
-| H7129 Auto Quiet command | Not captured |
-| H7129 Auto High Efficiency command | Not captured |
-| H7129 encrypted-session replay | Decoded from the official app but not yet implemented or physically replayed by this integration |
+| H7129 integration physical replay | Encrypted sessions are implemented and tested against captured vectors; direct integration control remains to be physically replayed |
 | Night light toggle | Not decoded on H7124; H7129 not investigated |
 | Night light RGB | Not decoded on H7124; H7129 not investigated |
 | Display toggle | Not decoded on H7124; H7129 not investigated |

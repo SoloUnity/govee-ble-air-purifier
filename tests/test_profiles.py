@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from custom_components.govee_ble_air_purifier.profiles import (
+    EncryptionMode,
     H7124_PROFILE,
     PROFILE_SCHEMA_VERSION,
     _build_profile,
@@ -68,7 +69,7 @@ def test_ble_names_reject_non_family_devices(name: str | None) -> None:
     assert match_profile(name) is None
 
 
-def test_observed_ihoment_h7129_name_uses_default_protocol_profile() -> None:
+def test_observed_ihoment_h7129_name_uses_exact_encrypted_profile() -> None:
     profile = match_profile("ihoment_H7129_6B51")
 
     assert profile is not None
@@ -77,8 +78,13 @@ def test_observed_ihoment_h7129_name_uses_default_protocol_profile() -> None:
     assert profile.matches_local_name("GVH7129BEDROOM")
     assert profile.matches_local_name("ihoment_H7129_6B51")
     assert not profile.matches_local_name("GVH7124BEDROOM")
+    assert profile.encryption is EncryptionMode.GOVEE_V1
     assert profile.service_uuid == H7124_PROFILE.service_uuid
     assert profile.status_query_command == H7124_PROFILE.status_query_command
+    assert profile.fan_mode_commands["Auto"] == bytes.fromhex(
+        "3a 05 03 00 00 12 00 00 00 00 00 00 00 00 00 00 00 00 00 2e"
+    )
+    assert profile.supports_custom_auto is True
 
 
 def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> None:
@@ -89,6 +95,7 @@ def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> Non
     assert profile.model == "H7126"
     assert profile.display_name == "Govee H7126 Air Purifier"
     assert profile.local_name_prefixes == ("GVH7126",)
+    assert profile.encryption is EncryptionMode.NONE
     assert profile.service_uuid == H7124_PROFILE.service_uuid
     assert profile.notify_char_uuid == H7124_PROFILE.notify_char_uuid
     assert profile.write_char_uuid == H7124_PROFILE.write_char_uuid
@@ -178,10 +185,19 @@ def test_profile_schema_rejects_invalid_frames(frame: str) -> None:
         _parse_profile_definition(data, source="test.json")
 
 
-@pytest.mark.parametrize("schema_version", [True, 0, 2, "1"])
+@pytest.mark.parametrize("schema_version", [True, 0, 2, 3, "1"])
 def test_profile_schema_rejects_unsupported_versions(schema_version: object) -> None:
     data = _profile_data()
     data["schema_version"] = schema_version
 
     with pytest.raises(ValueError, match="schema_version must be 1"):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize("encryption", [True, "unknown"])
+def test_profile_schema_rejects_invalid_encryption(encryption: object) -> None:
+    data = _profile_data()
+    data["encryption"] = encryption
+
+    with pytest.raises(ValueError, match="test.json.encryption"):
         _parse_profile_definition(data, source="test.json")

@@ -68,14 +68,17 @@ def test_integration_provides_hacs_brand_icon() -> None:
     assert icon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
-def test_integration_packages_default_and_tested_model_profiles() -> None:
+def test_integration_packages_bundled_model_profiles() -> None:
     profiles = ROOT / "custom_components" / DOMAIN / "model_profiles"
 
     default = _read_json(profiles / "default.json")
     h7124 = _read_json(profiles / "h7124.json")
+    h7129 = _read_json(profiles / "h7129.json")
 
     assert default == h7124
-    assert default["schema_version"] == 1
+    assert default["schema_version"] == h7129["schema_version"] == 1
+    assert default["encryption"] == "none"
+    assert h7129["encryption"] == "govee_v1"
 
 
 def test_validation_workflow_runs_hacs_and_hassfest() -> None:
