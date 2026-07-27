@@ -68,7 +68,7 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
         CONF_CUSTOM_AUTO_DOWN_20: 3,
         CONF_CUSTOM_AUTO_DOWN_40: 5,
         CONF_CUSTOM_AUTO_DOWN_60: 9,
-        CONF_CUSTOM_AUTO_DOWN_80: 14,
+        CONF_CUSTOM_AUTO_DOWN_80: 15,
         CONF_CUSTOM_AUTO_DELAY_20: 7,
         CONF_CUSTOM_AUTO_DELAY_40: 5,
         CONF_CUSTOM_AUTO_DELAY_60: 5,

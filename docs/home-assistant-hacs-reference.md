@@ -209,7 +209,7 @@ Delay inputs are whole minutes from 0 through 1440. The defaults are:
 | Excellent / Good | 3 | 3 | 7 minutes | 20% / 40% |
 | Good / Fair | 5 | 5 | 5 minutes | 40% / 60% |
 | Fair / Bad | 9 | 9 | 5 minutes | 60% / 80% |
-| Bad / Poor | 15 | 14 | 5 minutes | 80% / 100% |
+| Bad / Poor | 15 | 15 | 5 minutes | 80% / 100% |
 
 The four increase values must be strictly ascending, the four return values
 must be strictly ascending, and a return value cannot exceed the corresponding

@@ -165,7 +165,7 @@ def test_custom_auto_options_default_for_existing_entries() -> None:
     config = CustomAutoConfig.from_options({})
 
     assert config.up_thresholds == (3, 5, 9, 15)
-    assert config.down_thresholds == (3, 5, 9, 14)
+    assert config.down_thresholds == (3, 5, 9, 15)
     assert config.down_delays == (7, 5, 5, 5)
 
 

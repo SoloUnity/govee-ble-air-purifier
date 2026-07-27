@@ -86,7 +86,7 @@ Good increases to 40% above 3 and returns to 20% at or below 3 after 7 minutes;
 Good to Fair increases to 60% above 5 and returns to 40% at or below 5 after 5
 minutes; Fair to Bad increases to 80% above 9 and returns to 60% at or below 9
 after 5 minutes; Bad to Poor increases to 100% above 15 and returns to 80% at
-or below 14 after 5
+or below 15 after 5
 minutes. Every threshold and return delay is independently configurable.
 Equality at a return boundary still qualifies for a downshift because the rule
 uses `<=`; only a valid reading above that boundary resets its timer.

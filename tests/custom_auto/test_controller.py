@@ -304,9 +304,7 @@ async def test_downshift_threshold_is_inclusive() -> None:
     )
     await controller.async_activate()
 
-    coordinator.set_pm25(13)
-    await settle()
-    coordinator.set_pm25(14)
+    coordinator.set_pm25(15)
     await settle()
 
     assert coordinator.commands == []
@@ -430,7 +428,7 @@ async def test_mature_timer_is_cleared_if_recovery_sample_no_longer_qualifies() 
     coordinator.set_pm25(None)
     sleep.release(300)
     await settle()
-    coordinator.set_pm25(15)
+    coordinator.set_pm25(16)
     await settle()
 
     assert coordinator.commands == []
@@ -778,7 +776,7 @@ def test_diagnostics_shape_is_complete() -> None:
         "active": False,
         "current_speed": None,
         "up_thresholds": [3, 5, 9, 15],
-        "down_thresholds": [3, 5, 9, 14],
+        "down_thresholds": [3, 5, 9, 15],
         "down_delays": [7, 5, 5, 5],
         "pending_downshifts": [],
         "mature_downshifts": [],
