@@ -65,6 +65,18 @@ def decrypt_frame(frame: bytes, key: bytes) -> bytes:
     return plaintext
 
 
+def identify_handshake_frame(frame: bytes) -> int | None:
+    """Identify a checksum-valid communication-key handshake wire frame."""
+
+    try:
+        plaintext = decrypt_frame(frame, COMMUNICATION_KEY)
+    except ProtocolError:
+        return None
+    if plaintext[:2] in (b"\xe7\x01", b"\xe7\x02"):
+        return plaintext[1]
+    return None
+
+
 def build_handshake_request(
     command: int, *, random_payload: bytes | None = None
 ) -> bytes:

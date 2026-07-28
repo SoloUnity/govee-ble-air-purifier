@@ -22,6 +22,7 @@ from .govee_v1 import (
     build_handshake_request,
     decrypt_frame,
     encrypt_frame,
+    identify_handshake_frame,
     parse_session_key,
     validate_handshake_confirmation,
 )
@@ -283,9 +284,29 @@ class GoveeBleClient:
                 nonlocal future
                 if future is None or len(frames) >= len(requests):
                     return
+                session_key_available = self._session_key is not None
                 try:
                     frame = self._decode_application_frame(bytes(data))
                 except ProtocolError as err:
+                    if (
+                        self._profile.encryption is EncryptionMode.GOVEE_V1
+                        and session_key_available
+                    ):
+                        handshake_command = identify_handshake_frame(bytes(data))
+                        if handshake_command is None:
+                            diagnostic = (
+                                "not a valid late e7 01/e7 02 handshake notification"
+                            )
+                        else:
+                            diagnostic = (
+                                f"valid late e7 {handshake_command:02x} "
+                                "handshake notification"
+                            )
+                        _LOGGER.debug(
+                            "%s Govee V1 application decryption diagnostic: %s",
+                            self._log_label,
+                            diagnostic,
+                        )
                     if not future.done():
                         future.set_exception(err)
                     return

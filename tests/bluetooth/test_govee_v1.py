@@ -9,6 +9,7 @@ from custom_components.govee_ble_air_purifier.bluetooth.govee_v1 import (
     build_handshake_request,
     decrypt_frame,
     encrypt_frame,
+    identify_handshake_frame,
     parse_session_key,
     validate_handshake_confirmation,
 )
@@ -65,6 +66,27 @@ def test_captured_session_response_exposes_negotiated_key() -> None:
     )
 
     assert parse_session_key(response) == SESSION_KEY
+
+
+@pytest.mark.parametrize("command", [0x01, 0x02])
+def test_identify_handshake_frame_accepts_valid_commands(command: int) -> None:
+    plaintext = build_frame(bytes((0xE7, command)) + bytes(range(17)))
+
+    wire_frame = encrypt_frame(plaintext, COMMUNICATION_KEY)
+
+    assert identify_handshake_frame(wire_frame) == command
+
+
+@pytest.mark.parametrize(
+    "wire_frame",
+    [
+        b"short",
+        encrypt_frame(build_frame(b"\xaa\x01"), COMMUNICATION_KEY),
+        encrypt_frame(build_frame(b"\xaa\x01"), SESSION_KEY),
+    ],
+)
+def test_identify_handshake_frame_rejects_other_frames(wire_frame: bytes) -> None:
+    assert identify_handshake_frame(wire_frame) is None
 
 
 def test_handshake_request_uses_supplied_random_payload() -> None:

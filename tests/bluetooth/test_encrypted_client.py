@@ -40,6 +40,7 @@ class EncryptedFakeBleakClient:
         withhold_application_response: int | None = None,
         respond_to_application: bool = True,
         corrupt_application_response: bool = False,
+        late_handshake_notification: int | None = None,
     ) -> None:
         self.session_key = session_key
         self.mismatch_confirmation = mismatch_confirmation
@@ -50,6 +51,7 @@ class EncryptedFakeBleakClient:
         self.withhold_application_response = withhold_application_response
         self.respond_to_application = respond_to_application
         self.corrupt_application_response = corrupt_application_response
+        self.late_handshake_notification = late_handshake_notification
         self.is_connected = True
         self.disconnected = False
         self.notify_handler: Any = None
@@ -103,6 +105,13 @@ class EncryptedFakeBleakClient:
             return
         if self.notify_handler is None or not self.respond_to_application:
             return
+        if self.late_handshake_notification is not None:
+            command = self.late_handshake_notification
+            late_frame = build_frame(bytes((0xE7, command)) + bytes(range(17)))
+            self.late_handshake_notification = None
+            self.notify_handler(
+                None, encrypt_frame(late_frame, COMMUNICATION_KEY)
+            )
         response_frame = self._response_for(plaintext)
         if response_frame is not None:
             wire_response = encrypt_frame(response_frame, self.session_key)
@@ -193,6 +202,22 @@ def _stage_event(
 
     monkeypatch.setattr(client, "_log_stage", log_stage)
     return reached
+
+
+def _assert_sensitive_bytes_not_logged(log_text: str, *values: bytes) -> None:
+    for value in values:
+        representations = {
+            value.hex(),
+            value.hex().upper(),
+            value.hex(" "),
+            value.hex(" ").upper(),
+            repr(value),
+        }
+        if all(0x20 <= byte < 0x7F for byte in value):
+            representations.add(value.decode("ascii"))
+        assert all(
+            representation not in log_text for representation in representations
+        )
 
 
 @pytest.mark.asyncio
@@ -678,6 +703,125 @@ async def test_h7129_checksum_failure_discards_session_and_next_call_recovers(
     assert client._session_key == SESSION_KEY_2
     assert len(first.handshake_frames) == len(second.handshake_frames) == 2
     await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handshake_command", [0x01, 0x02])
+async def test_h7129_classifies_late_handshake_application_notification(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    handshake_command: int,
+) -> None:
+    fake = EncryptedFakeBleakClient(
+        SESSION_KEY_1, late_handshake_notification=handshake_command
+    )
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+    late_plaintext = build_frame(
+        bytes((0xE7, handshake_command)) + bytes(range(17))
+    )
+    late_ciphertext = encrypt_frame(late_plaintext, COMMUNICATION_KEY)
+    application_plaintext = EncryptedFakeBleakClient._response_for(
+        H7129_PROFILE.power_on_command
+    )
+    assert application_plaintext is not None
+    application_ciphertext = encrypt_frame(application_plaintext, SESSION_KEY_1)
+
+    with pytest.raises(ProtocolError, match="Invalid checksum"):
+        await client.async_set_power(True)
+
+    assert (
+        f"{client._log_label} Govee V1 application decryption diagnostic: "
+        f"valid late e7 {handshake_command:02x} handshake notification"
+        in caplog.text
+    )
+    assert "aa:bb:cc:dd:ee:ff" not in caplog.text.lower()
+    _assert_sensitive_bytes_not_logged(
+        caplog.text,
+        SESSION_KEY_1,
+        COMMUNICATION_KEY,
+        late_plaintext,
+        late_ciphertext,
+        application_plaintext,
+        application_ciphertext,
+    )
+    assert disconnects == [fake]
+
+
+@pytest.mark.asyncio
+async def test_h7129_classifies_corrupt_application_notification_as_not_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = EncryptedFakeBleakClient(SESSION_KEY_1, corrupt_application_response=True)
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+    application_plaintext = EncryptedFakeBleakClient._response_for(
+        H7129_PROFILE.power_on_command
+    )
+    assert application_plaintext is not None
+    application_ciphertext = encrypt_frame(application_plaintext, SESSION_KEY_1)
+    corrupt_ciphertext = application_ciphertext[:-1] + bytes(
+        (application_ciphertext[-1] ^ 1,)
+    )
+
+    with pytest.raises(ProtocolError, match="Invalid checksum"):
+        await client.async_set_power(True)
+
+    assert (
+        f"{client._log_label} Govee V1 application decryption diagnostic: "
+        "not a valid late e7 01/e7 02 handshake notification" in caplog.text
+    )
+    assert "aa:bb:cc:dd:ee:ff" not in caplog.text.lower()
+    _assert_sensitive_bytes_not_logged(
+        caplog.text,
+        SESSION_KEY_1,
+        COMMUNICATION_KEY,
+        application_plaintext,
+        application_ciphertext,
+        corrupt_ciphertext,
+    )
+    assert disconnects == [fake]
+
+
+@pytest.mark.asyncio
+async def test_h7129_skips_diagnostic_when_session_key_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = EncryptedFakeBleakClient(SESSION_KEY_1)
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    original_write = fake.write_gatt_char
+
+    async def clear_session_before_application_notification(
+        char_uuid: str, command: bytes, *, response: bool
+    ) -> None:
+        if fake.session_established:
+            client._session_key = None
+        await original_write(char_uuid, command, response=response)
+
+    monkeypatch.setattr(
+        fake, "write_gatt_char", clear_session_before_application_notification
+    )
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+
+    with pytest.raises(ProtocolError, match="session is unavailable"):
+        await client.async_set_power(True)
+
+    assert "Govee V1 application decryption diagnostic" not in caplog.text
+    assert disconnects == [fake]
 
 
 @pytest.mark.asyncio
