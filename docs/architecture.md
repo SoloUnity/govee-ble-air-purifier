@@ -191,7 +191,11 @@ consume the shorter response timeout, and application timing begins only after
 any encrypted handshake succeeds. Ignored handshake traffic does not reset that
 deadline, so stale-only traffic still times out normally. Lifecycle logs report
 connection and session ages under a stable short hashed device label, but never
-the full Bluetooth address, packet payloads, or key material.
+the full Bluetooth address, packet payloads, or key material. Per-request debug
+summaries report write duration, matching-response latency, and counts of total,
+ignored-handshake, and nonmatching notifications. Response timeouts report
+the same counts so missing callbacks can be distinguished from unexpected
+traffic without exposing frame contents.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
 notification subscription to issue the power and status queries in sequence.

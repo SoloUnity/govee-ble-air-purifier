@@ -41,6 +41,7 @@ class EncryptedFakeBleakClient:
         respond_to_application: bool = True,
         corrupt_application_response: bool = False,
         communication_key_notification_commands: tuple[int, ...] = (),
+        application_notifications: tuple[bytes, ...] = (),
     ) -> None:
         self.session_key = session_key
         self.mismatch_confirmation = mismatch_confirmation
@@ -54,6 +55,7 @@ class EncryptedFakeBleakClient:
         self.communication_key_notification_commands = (
             communication_key_notification_commands
         )
+        self.application_notifications = application_notifications
         self.is_connected = True
         self.disconnected = False
         self.notify_handler: Any = None
@@ -107,6 +109,8 @@ class EncryptedFakeBleakClient:
             return
         if self.notify_handler is None:
             return
+        for notification in self.application_notifications:
+            self.notify_handler(None, encrypt_frame(notification, self.session_key))
         for command in self.communication_key_notification_commands:
             late_frame = build_frame(bytes((0xE7, command)) + bytes(range(17)))
             self.notify_handler(
@@ -745,6 +749,11 @@ async def test_h7129_ignores_late_handshake_application_notification(
     assert len(fake.handshake_frames) == 2
     assert client._session_key == SESSION_KEY_1
     assert disconnects == []
+    assert "BLE request 1/1 write completed in" in caplog.text
+    assert "BLE response 1/1 received" in caplog.text
+    assert (
+        "notifications: 2, stale handshakes: 1, nonmatching: 0" in caplog.text
+    )
     assert "aa:bb:cc:dd:ee:ff" not in caplog.text.lower()
     _assert_sensitive_bytes_not_logged(
         caplog.text,
@@ -787,6 +796,9 @@ async def test_h7129_ignores_duplicate_late_handshakes_for_each_poll_response(
         H7129_PROFILE.state_query_command,
         H7129_PROFILE.status_query_command,
     ]
+    assert caplog.text.count(
+        "notifications: 3, stale handshakes: 2, nonmatching: 0"
+    ) == 2
     assert len(fake.handshake_frames) == 2
     assert client._session_key == SESSION_KEY_1
     assert disconnects == []
@@ -796,13 +808,20 @@ async def test_h7129_ignores_duplicate_late_handshakes_for_each_poll_response(
 
 
 @pytest.mark.asyncio
-async def test_h7129_late_handshake_does_not_extend_response_deadline(
+@pytest.mark.parametrize(
+    ("communication_key_commands", "expected_notifications", "expected_stale"),
+    [((), 0, 0), ((0x02,), 1, 1)],
+)
+async def test_h7129_application_timeout_logs_notification_counts(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    communication_key_commands: tuple[int, ...],
+    expected_notifications: int,
+    expected_stale: int,
 ) -> None:
     fake = EncryptedFakeBleakClient(
         SESSION_KEY_1,
-        communication_key_notification_commands=(0x02,),
+        communication_key_notification_commands=communication_key_commands,
         respond_to_application=False,
     )
     _callbacks, disconnects = _install_connections(monkeypatch, [fake])
@@ -824,11 +843,50 @@ async def test_h7129_late_handshake_does_not_extend_response_deadline(
             0.1,
         )
 
-    assert "ignored valid late e7 02 handshake notification" in caplog.text
+    if communication_key_commands:
+        assert "ignored valid late e7 02 handshake notification" in caplog.text
     assert fake.application_frames == [H7129_PROFILE.power_on_command]
     assert len(fake.writes) == 3
+    assert "BLE response timeout diagnostic: request 1/1" in caplog.text
+    assert (
+        f"notifications: {expected_notifications}, "
+        f"stale handshakes: {expected_stale}, nonmatching: 0" in caplog.text
+    )
     assert disconnects == [fake]
     assert client._session_key is None
+
+
+@pytest.mark.asyncio
+async def test_h7129_response_diagnostic_counts_nonmatching_notifications(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    nonmatching = build_frame(b"\xee\x05\x03")
+    fake = EncryptedFakeBleakClient(
+        SESSION_KEY_1, application_notifications=(nonmatching,)
+    )
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+
+    assert await client.async_set_power(True) is True
+
+    assert (
+        "notifications: 2, stale handshakes: 0, nonmatching: 1" in caplog.text
+    )
+    _assert_sensitive_bytes_not_logged(
+        caplog.text,
+        nonmatching,
+        encrypt_frame(nonmatching, SESSION_KEY_1),
+    )
+    assert fake.application_frames == [H7129_PROFILE.power_on_command]
+    assert disconnects == []
+
+    await client.async_close()
+    assert disconnects == [fake]
 
 
 @pytest.mark.asyncio
