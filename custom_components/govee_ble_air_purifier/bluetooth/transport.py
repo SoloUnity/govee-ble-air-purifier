@@ -65,6 +65,24 @@ async def _async_wait_for_fresh_legacy_path(
         await asyncio.sleep(min(FRESH_ADVERTISEMENT_POLL_INTERVAL, remaining))
 
 
+async def _async_wait_for_connectable_path(
+    bluetooth: Any, hass: Any, address: str, deadline: float
+) -> int:
+    """Wait for scanner inventory to catch up with an advertisement callback."""
+
+    loop = asyncio.get_running_loop()
+    while True:
+        paths = bluetooth.async_scanner_devices_by_address(
+            hass, address, connectable=True
+        )
+        if paths:
+            return len(paths)
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError
+        await asyncio.sleep(min(FRESH_ADVERTISEMENT_POLL_INTERVAL, remaining))
+
+
 async def async_prepare_connection_path(
     hass: Any,
     address: str,
@@ -116,6 +134,7 @@ async def async_prepare_connection_path(
         return
 
     clear_advertisement_history(hass, address)
+    path_deadline = asyncio.get_running_loop().time() + FRESH_ADVERTISEMENT_TIMEOUT
     try:
         await bluetooth.async_process_advertisements(
             hass,
@@ -129,16 +148,17 @@ async def async_prepare_connection_path(
             "Timed out waiting for a fresh purifier advertisement"
         ) from err
 
-    paths = bluetooth.async_scanner_devices_by_address(
-        hass, address, connectable=True
-    )
-    if not paths:
+    try:
+        path_count = await _async_wait_for_connectable_path(
+            bluetooth, hass, address, path_deadline
+        )
+    except (TimeoutError, asyncio.TimeoutError) as err:
         raise GoveeBleClientError(
             f"No connectable Bluetooth path was found for {address} "
             "after a fresh advertisement"
-        )
+        ) from err
     _LOGGER.debug(
-        "Fresh purifier advertisement produced %d connectable path(s)", len(paths)
+        "Fresh purifier advertisement produced %d connectable path(s)", path_count
     )
 
 

@@ -232,6 +232,42 @@ async def test_connection_preparation_waits_for_a_fresh_advertisement(
 
 
 @pytest.mark.asyncio
+async def test_connection_preparation_waits_for_path_inventory_after_advertisement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    path_results = [[], [], [object()]]
+
+    def async_scanner_devices_by_address(*args: Any, **kwargs: Any) -> list[object]:
+        events.append("paths")
+        return path_results.pop(0)
+
+    async def async_process_advertisements(*args: Any, **kwargs: Any) -> Any:
+        events.append("wait")
+        return SimpleNamespace(time=42.1)
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_clear_advertisement_history": lambda *args, **kwargs: None,
+                "async_last_service_info": lambda *args, **kwargs: None,
+                "async_process_advertisements": async_process_advertisements,
+                "async_scanner_devices_by_address": async_scanner_devices_by_address,
+            },
+        },
+    )
+    monkeypatch.setattr(transport, "FRESH_ADVERTISEMENT_POLL_INTERVAL", 0)
+
+    await transport.async_prepare_connection_path(
+        object(), "AA:BB:CC:DD:EE:FF", after=42.0
+    )
+
+    assert events == ["paths", "wait", "paths", "paths"]
+
+
+@pytest.mark.asyncio
 async def test_connection_preparation_accepts_a_cached_fresh_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,6 +416,7 @@ async def test_fresh_advertisement_without_a_path_has_a_precise_error(
             },
         },
     )
+    monkeypatch.setattr(transport, "FRESH_ADVERTISEMENT_TIMEOUT", 0)
 
     with pytest.raises(
         GoveeBleClientError, match="No connectable Bluetooth path was found"
