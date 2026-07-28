@@ -179,24 +179,31 @@ replacement.
 For a profile selecting Govee V1 encryption, a newly established connection
 completes the `e7 01` / `e7 02` exchange before its first application operation.
 The client encrypts only at the GATT write boundary and decrypts before the
-shared matcher and decoder path. A healthy cached connection reuses its session
-key; disconnect, replacement, failure, idle release, and close all discard it.
-Every reconnect negotiates a new key. Plaintext profiles bypass these transforms.
-Connection, handshake, and application work use separate bounded phases: a slow
-BlueZ connection cannot consume the shorter response timeout, and application
-timing begins only after any encrypted handshake succeeds. Lifecycle logs report
+shared matcher and decoder path. If session-key decryption fails during an
+application transaction, a checksum-valid communication-key `e7 01` or `e7 02`
+notification is stale handshake traffic and is ignored without resolving the
+pending response. All other failures retain the original error path. A healthy
+cached connection reuses its session key; disconnect, replacement, failure, idle
+release, and close all discard it. Every reconnect negotiates a new key.
+Plaintext profiles bypass these transforms. Connection, handshake, and
+application work use separate bounded phases: a slow BlueZ connection cannot
+consume the shorter response timeout, and application timing begins only after
+any encrypted handshake succeeds. Ignored handshake traffic does not reset that
+deadline, so stale-only traffic still times out normally. Lifecycle logs report
 connection and session ages under a stable short hashed device label, but never
 the full Bluetooth address, packet payloads, or key material.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
 notification subscription to issue the power and status queries in sequence.
 The underlying connection may have been retained from an earlier transaction.
-The notification handler accepts only the matcher for the current request,
-validates the frame, and resolves its pending future. Commands use the same
-serialized path and publish no success merely because a write completed; they
-wait for a matching confirmation. Power-on plus mode can be sent in one locked
-transaction. Notification cleanup failure preserves an otherwise successful
-result but discards the connection before another operation can use it.
+The notification handler ignores identified stale handshake traffic, accepts
+only the matcher for the current request, validates the frame, and resolves its
+pending future. Ignored traffic neither consumes a response slot nor resends a
+request. Commands use the same serialized path and publish no success merely
+because a write completed; they wait for a matching confirmation. Power-on plus
+mode can be sent in one locked transaction. Notification cleanup failure
+preserves an otherwise successful result but discards the connection before
+another operation can use it.
 
 `bluetooth/client.py` owns transaction serialization, writes, notification
 subscription, response matching, notification cleanup, connection reuse, idle

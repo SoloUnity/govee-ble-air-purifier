@@ -293,19 +293,18 @@ class GoveeBleClient:
                         and session_key_available
                     ):
                         handshake_command = identify_handshake_frame(bytes(data))
-                        if handshake_command is None:
-                            diagnostic = (
-                                "not a valid late e7 01/e7 02 handshake notification"
+                        if handshake_command is not None:
+                            _LOGGER.debug(
+                                "%s Govee V1 application decryption diagnostic: "
+                                "ignored valid late e7 %02x handshake notification",
+                                self._log_label,
+                                handshake_command,
                             )
-                        else:
-                            diagnostic = (
-                                f"valid late e7 {handshake_command:02x} "
-                                "handshake notification"
-                            )
+                            return
                         _LOGGER.debug(
-                            "%s Govee V1 application decryption diagnostic: %s",
+                            "%s Govee V1 application decryption diagnostic: "
+                            "not a valid late e7 01/e7 02 handshake notification",
                             self._log_label,
-                            diagnostic,
                         )
                     if not future.done():
                         future.set_exception(err)

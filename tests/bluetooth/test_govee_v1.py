@@ -82,6 +82,7 @@ def test_identify_handshake_frame_accepts_valid_commands(command: int) -> None:
     [
         b"short",
         encrypt_frame(build_frame(b"\xaa\x01"), COMMUNICATION_KEY),
+        encrypt_frame(build_frame(b"\xe7\x03"), COMMUNICATION_KEY),
         encrypt_frame(build_frame(b"\xaa\x01"), SESSION_KEY),
     ],
 )

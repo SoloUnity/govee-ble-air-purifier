@@ -40,7 +40,7 @@ class EncryptedFakeBleakClient:
         withhold_application_response: int | None = None,
         respond_to_application: bool = True,
         corrupt_application_response: bool = False,
-        late_handshake_notification: int | None = None,
+        communication_key_notification_commands: tuple[int, ...] = (),
     ) -> None:
         self.session_key = session_key
         self.mismatch_confirmation = mismatch_confirmation
@@ -51,7 +51,9 @@ class EncryptedFakeBleakClient:
         self.withhold_application_response = withhold_application_response
         self.respond_to_application = respond_to_application
         self.corrupt_application_response = corrupt_application_response
-        self.late_handshake_notification = late_handshake_notification
+        self.communication_key_notification_commands = (
+            communication_key_notification_commands
+        )
         self.is_connected = True
         self.disconnected = False
         self.notify_handler: Any = None
@@ -103,15 +105,15 @@ class EncryptedFakeBleakClient:
         self.application_write_event.set()
         if self.withhold_application_response == len(self.application_frames):
             return
-        if self.notify_handler is None or not self.respond_to_application:
+        if self.notify_handler is None:
             return
-        if self.late_handshake_notification is not None:
-            command = self.late_handshake_notification
+        for command in self.communication_key_notification_commands:
             late_frame = build_frame(bytes((0xE7, command)) + bytes(range(17)))
-            self.late_handshake_notification = None
             self.notify_handler(
                 None, encrypt_frame(late_frame, COMMUNICATION_KEY)
             )
+        if not self.respond_to_application:
+            return
         response_frame = self._response_for(plaintext)
         if response_frame is not None:
             wire_response = encrypt_frame(response_frame, self.session_key)
@@ -707,13 +709,14 @@ async def test_h7129_checksum_failure_discards_session_and_next_call_recovers(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("handshake_command", [0x01, 0x02])
-async def test_h7129_classifies_late_handshake_application_notification(
+async def test_h7129_ignores_late_handshake_application_notification(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     handshake_command: int,
 ) -> None:
     fake = EncryptedFakeBleakClient(
-        SESSION_KEY_1, late_handshake_notification=handshake_command
+        SESSION_KEY_1,
+        communication_key_notification_commands=(handshake_command,),
     )
     _callbacks, disconnects = _install_connections(monkeypatch, [fake])
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
@@ -731,14 +734,17 @@ async def test_h7129_classifies_late_handshake_application_notification(
     assert application_plaintext is not None
     application_ciphertext = encrypt_frame(application_plaintext, SESSION_KEY_1)
 
-    with pytest.raises(ProtocolError, match="Invalid checksum"):
-        await client.async_set_power(True)
+    assert await client.async_set_power(True) is True
 
     assert (
         f"{client._log_label} Govee V1 application decryption diagnostic: "
-        f"valid late e7 {handshake_command:02x} handshake notification"
+        f"ignored valid late e7 {handshake_command:02x} handshake notification"
         in caplog.text
     )
+    assert fake.application_frames == [H7129_PROFILE.power_on_command]
+    assert len(fake.handshake_frames) == 2
+    assert client._session_key == SESSION_KEY_1
+    assert disconnects == []
     assert "aa:bb:cc:dd:ee:ff" not in caplog.text.lower()
     _assert_sensitive_bytes_not_logged(
         caplog.text,
@@ -749,6 +755,104 @@ async def test_h7129_classifies_late_handshake_application_notification(
         application_plaintext,
         application_ciphertext,
     )
+    await client.async_close()
+    assert disconnects == [fake]
+
+
+@pytest.mark.asyncio
+async def test_h7129_ignores_duplicate_late_handshakes_for_each_poll_response(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = EncryptedFakeBleakClient(
+        SESSION_KEY_1, communication_key_notification_commands=(0x02, 0x02)
+    )
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True, pm25=42, filter_life=85
+    )
+
+    ignored_message = (
+        f"{client._log_label} Govee V1 application decryption diagnostic: "
+        "ignored valid late e7 02 handshake notification"
+    )
+    assert caplog.text.count(ignored_message) == 4
+    assert fake.application_frames == [
+        H7129_PROFILE.state_query_command,
+        H7129_PROFILE.status_query_command,
+    ]
+    assert len(fake.handshake_frames) == 2
+    assert client._session_key == SESSION_KEY_1
+    assert disconnects == []
+
+    await client.async_close()
+    assert disconnects == [fake]
+
+
+@pytest.mark.asyncio
+async def test_h7129_late_handshake_does_not_extend_response_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = EncryptedFakeBleakClient(
+        SESSION_KEY_1,
+        communication_key_notification_commands=(0x02,),
+        respond_to_application=False,
+    )
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+
+    with pytest.raises(
+        GoveeBleClientError, match="Timed out waiting for purifier response"
+    ):
+        await asyncio.wait_for(
+            client._async_write_and_wait(
+                H7129_PROFILE.power_on_command,
+                H7129_PROFILE.is_power_state_response,
+                timeout=0.01,
+            ),
+            0.1,
+        )
+
+    assert "ignored valid late e7 02 handshake notification" in caplog.text
+    assert fake.application_frames == [H7129_PROFILE.power_on_command]
+    assert len(fake.writes) == 3
+    assert disconnects == [fake]
+    assert client._session_key is None
+
+
+@pytest.mark.asyncio
+async def test_h7129_does_not_ignore_other_communication_key_frames(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = EncryptedFakeBleakClient(
+        SESSION_KEY_1, communication_key_notification_commands=(0x03,)
+    )
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+
+    with pytest.raises(ProtocolError, match="Invalid checksum"):
+        await client.async_set_power(True)
+
+    assert (
+        "not a valid late e7 01/e7 02 handshake notification" in caplog.text
+    )
+    assert fake.application_frames == [H7129_PROFILE.power_on_command]
     assert disconnects == [fake]
 
 

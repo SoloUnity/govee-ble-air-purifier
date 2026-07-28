@@ -40,8 +40,10 @@ Usage notes:
 - Subscribe to notifications on `...2b10` to receive responses and pushes.
 - Passive notifications usually produce no data until a command is written.
 - H7124 wire frames are plaintext. Complete the H7129 encrypted-session
-  handshake before sending commands, then encrypt every command and decrypt
-  every notification with that connection's session key.
+  handshake before sending commands, then encrypt ordinary commands and decrypt
+  ordinary notifications with that connection's session key. Delayed handshake
+  notifications can still arrive under the communication key during the
+  transition to application traffic.
 - On macOS, connect with a service filter for `00010203-0405-0607-0809-0a0b0c0d1910` to avoid CoreBluetooth descriptor discovery failures (`CBErrorDomain Code=8`).
 - macOS device UUIDs can change between sessions; rescan if a saved UUID stops connecting.
 - Only one BLE central can connect to the purifier at a time.
@@ -106,6 +108,17 @@ Only after the confirmation should ordinary commands and notifications use the
 session key. The session key belongs to that BLE connection and must be
 discarded on disconnect, failed negotiation, or connection replacement.
 
+Physical integration logs captured duplicate handler deliveries of a
+checksum-valid communication-key `e7 02` notification after handshake
+completion, while the client was waiting for the first application response.
+The classification does not establish that its payload exactly matched the
+preceding confirmation request. During an application transaction, the client
+ignores communication-key `e7 01` or `e7 02` notifications and continues waiting
+under the unchanged application deadline. The `e7 01` case is defensive; only
+`e7 02` was observed. Other decryption failures still invalidate the connection.
+If only stale handshake traffic arrives, the normal response timeout still ends
+the operation.
+
 For both the communication key and session key, one 20-byte frame is
 transformed as follows:
 
@@ -116,8 +129,9 @@ transformed as follows:
 
 The RC4-compatible state is initialized for each frame. Decryption applies the
 inverse AES operation to bytes 0 through 15 and the same keystream XOR to bytes
-16 through 19. Every post-handshake frame in the captured H7129 session
-decrypted to a valid XOR-checksummed application frame.
+16 through 19. Every post-handshake frame in the original app capture decrypted
+to a valid XOR-checksummed application frame; the later integration observation
+above exposed delayed handshake traffic at the subscription transition.
 
 ## Canonical Commands
 
