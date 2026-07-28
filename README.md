@@ -13,10 +13,12 @@ It also gives you basic control of the purifier and shows remaining filter life.
 
 Exact protocol profiles are included for the plaintext Govee H7124 and the
 encrypted Govee H7129. The H7124 integration has been physically tested and
-validated. H7129 support is implemented and tested against decrypted physical
-device captures, but direct control by this integration has not yet been
-physically replayed. Other recognized `H712*` models use the H7124 protocol
-fallback and may fail or expose unsupported or mismatched features.
+validated. Physical H7129 integration evidence confirms connection, encrypted
+handshake, polling, disconnect, and recovery. State-changing H7129 commands are
+implemented from decrypted physical-device captures but have not yet been
+physically validated through this integration. Other recognized `H712*` models
+use the H7124 protocol fallback and may fail or expose unsupported or mismatched
+features.
 
 ## What You Get
 
@@ -97,12 +99,15 @@ uses `<=`; only a valid reading above that boundary resets its timer.
   the purifier for a reliable connection.
 - Use Automatic or Active scanning for reconnectable purifiers. After an
   unexpected disconnect, the integration waits for a fresh connectable
-  advertisement before opening a new GATT session; Automatic mode stays
-  temporarily Active through the bounded connection attempt without changing
-  the saved adapter mode.
-- Connection establishment and encrypted-session negotiation have their own
-  bounded timeouts. The shorter poll or command timeout starts only after those
-  phases complete.
+  advertisement before opening a new GATT session. On-demand temporary
+  Automatic-to-Active switching requires Home Assistant 2026.6 or newer, is
+  best-effort and subject to upstream duration clamping, and is requested only
+  while waiting for a new advertisement. Older Home Assistant installations
+  may require an explicitly Active scanner when active discovery is needed.
+- Fresh-advertisement recovery, connection and service discovery, encrypted
+  negotiation, application polling, command confirmation, and disconnect
+  cleanup use separate bounded timeouts. Idle cleanup also completes before a
+  poll or command begins its normal queue and response budgets.
 - The integration adapts healthy-connection reuse to the polling interval. For
   intervals up to 25 seconds, it retains the connection for the interval plus a
   5-second margin, capped at 30 seconds. Longer intervals use a 5-second grace
@@ -123,9 +128,11 @@ From the integration's page in **Settings > Devices & services**, select
 to download the log. Debug output identifies connection, encrypted-handshake,
 notification, request, response, connection-release, and Bluetooth allocator
 stages. The integration's stage messages do not include BLE addresses, packet
-payloads, or encryption keys. Disconnect and release messages include only
-connection and encrypted-session ages; supporting Home Assistant Bluetooth
-libraries may include device identifiers.
+payloads, or encryption keys. They include a stable short hashed device label
+so same-model purifiers can be distinguished without exposing a full address.
+Disconnect and release messages include only that label plus connection and
+encrypted-session ages; supporting Home Assistant Bluetooth libraries may
+include device identifiers.
 
 An interrupted state poll is retried once after a fresh advertisement and new
 encrypted session. Commands are never replayed automatically because the

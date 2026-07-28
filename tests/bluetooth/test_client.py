@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
 from custom_components.govee_ble_air_purifier.bluetooth.client import (
     GoveeBleClient,
     GoveeBleClientError,
@@ -162,6 +163,332 @@ class _RetryingStateClient(GoveeBleClient):
         )
 
 
+async def _cancellation_resistant_operation(
+    started: asyncio.Event,
+    cancellation_seen: asyncio.Event,
+    release: asyncio.Event,
+    finished: asyncio.Event,
+    *,
+    late_error: Exception | None = None,
+) -> None:
+    started.set()
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        cancellation_seen.set()
+        await release.wait()
+        if late_error is not None:
+            raise late_error
+    finally:
+        finished.set()
+
+
+async def _release_resistant_operation(
+    release: asyncio.Event,
+    finished: asyncio.Event,
+    waiter: asyncio.Task[Any],
+    *operations: asyncio.Future[Any],
+) -> None:
+    release.set()
+    await asyncio.wait_for(finished.wait(), 0.5)
+    await asyncio.gather(waiter, *operations, return_exceptions=True)
+    await asyncio.sleep(0)
+
+
+def _resistant_operation_events() -> tuple[
+    asyncio.Event, asyncio.Event, asyncio.Event, asyncio.Event
+]:
+    return asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+
+@pytest.mark.asyncio
+async def test_wait_expired_deadline_detaches_precreated_resistant_task() -> None:
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    started, cancellation_seen, release, finished = _resistant_operation_events()
+    disconnect_signal = asyncio.Event()
+    operation = asyncio.create_task(
+        _cancellation_resistant_operation(started, cancellation_seen, release, finished)
+    )
+    await asyncio.wait_for(started.wait(), 0.5)
+    waiter = asyncio.create_task(
+        client._async_wait_for_connection(
+            operation,
+            disconnect_signal,
+            asyncio.get_running_loop().time(),
+        )
+    )
+
+    try:
+        await asyncio.wait_for(cancellation_seen.wait(), 0.5)
+        done, _pending = await asyncio.wait((waiter,), timeout=0.5)
+        assert waiter in done
+        assert finished.is_set() is False
+        with pytest.raises(TimeoutError):
+            await waiter
+    finally:
+        await _release_resistant_operation(release, finished, waiter, operation)
+
+    assert not client_module._ABANDONED_OPERATION_FUTURES
+
+
+@pytest.mark.asyncio
+async def test_expired_connection_wait_does_not_start_new_operation() -> None:
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    started = asyncio.Event()
+
+    async def operation() -> None:
+        started.set()
+
+    with pytest.raises(TimeoutError):
+        await client._async_wait_for_connection(
+            operation(),
+            None,
+            asyncio.get_running_loop().time(),
+        )
+    await asyncio.gather(
+        *tuple(client_module._ABANDONED_OPERATION_FUTURES),
+        return_exceptions=True,
+    )
+    await asyncio.sleep(0)
+
+    assert started.is_set() is False
+    assert not client_module._ABANDONED_OPERATION_FUTURES
+
+
+@pytest.mark.asyncio
+async def test_connection_wait_timeout_without_disconnect_signal_is_bounded() -> None:
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    started, cancellation_seen, release, finished = _resistant_operation_events()
+    deadline = asyncio.get_running_loop().time() + 0.01
+    waiter = asyncio.create_task(
+        client._async_wait_for_connection(
+            _cancellation_resistant_operation(
+                started, cancellation_seen, release, finished
+            ),
+            None,
+            deadline,
+        )
+    )
+
+    try:
+        await asyncio.wait_for(cancellation_seen.wait(), 0.5)
+        done, _pending = await asyncio.wait((waiter,), timeout=0.5)
+        assert waiter in done
+        assert finished.is_set() is False
+        with pytest.raises(TimeoutError):
+            await waiter
+    finally:
+        await _release_resistant_operation(release, finished, waiter)
+
+    assert not client_module._ABANDONED_OPERATION_FUTURES
+
+
+@pytest.mark.asyncio
+async def test_connection_wait_disconnect_detaches_and_observes_late_failure() -> None:
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    started, cancellation_seen, release, finished = _resistant_operation_events()
+    disconnect_signal = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    unhandled: list[dict[str, Any]] = []
+    previous_exception_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    waiter = asyncio.create_task(
+        client._async_wait_for_connection(
+            _cancellation_resistant_operation(
+                started,
+                cancellation_seen,
+                release,
+                finished,
+                late_error=RuntimeError("late BLE failure"),
+            ),
+            disconnect_signal,
+            loop.time() + 10,
+        )
+    )
+
+    try:
+        await asyncio.wait_for(started.wait(), 0.5)
+        disconnect_signal.set()
+        await asyncio.wait_for(cancellation_seen.wait(), 0.5)
+        done, _pending = await asyncio.wait((waiter,), timeout=0.5)
+        assert waiter in done
+        assert finished.is_set() is False
+        with pytest.raises(GoveeBleDisconnectedError, match="disconnected"):
+            await waiter
+    finally:
+        await _release_resistant_operation(release, finished, waiter)
+        loop.set_exception_handler(previous_exception_handler)
+
+    assert not client_module._ABANDONED_OPERATION_FUTURES
+    assert unhandled == []
+
+
+@pytest.mark.asyncio
+async def test_wait_caller_cancel_propagates_before_inner_exit() -> None:
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    started, cancellation_seen, release, finished = _resistant_operation_events()
+    disconnect_signal = asyncio.Event()
+    waiter = asyncio.create_task(
+        client._async_wait_for_connection(
+            _cancellation_resistant_operation(
+                started, cancellation_seen, release, finished
+            ),
+            disconnect_signal,
+            asyncio.get_running_loop().time() + 10,
+        )
+    )
+
+    try:
+        await asyncio.wait_for(started.wait(), 0.5)
+        waiter.cancel()
+        await asyncio.wait_for(cancellation_seen.wait(), 0.5)
+        done, _pending = await asyncio.wait((waiter,), timeout=0.5)
+        assert waiter in done
+        assert finished.is_set() is False
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+    finally:
+        await _release_resistant_operation(release, finished, waiter)
+
+    assert not client_module._ABANDONED_OPERATION_FUTURES
+
+
+@pytest.mark.asyncio
+async def test_connection_wait_disconnect_wins_simultaneous_completion() -> None:
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    operation = asyncio.get_running_loop().create_future()
+    operation.set_result("completed")
+    disconnect_signal = asyncio.Event()
+    disconnect_signal.set()
+
+    with pytest.raises(GoveeBleDisconnectedError, match="disconnected"):
+        await client._async_wait_for_connection(
+            operation,
+            disconnect_signal,
+            asyncio.get_running_loop().time() + 10,
+        )
+
+
+@pytest.mark.asyncio
+async def test_connection_wait_disconnect_signal_wins_before_waiter_finishes() -> None:
+    blocked = asyncio.Event()
+
+    class DelayedDisconnectSignal(asyncio.Event):
+        async def wait(self) -> bool:
+            await super().wait()
+            await blocked.wait()
+            return True
+
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    disconnect_signal = DelayedDisconnectSignal()
+
+    async def operation() -> str:
+        disconnect_signal.set()
+        return "completed"
+
+    with pytest.raises(GoveeBleDisconnectedError, match="disconnected"):
+        await client._async_wait_for_connection(
+            operation(),
+            disconnect_signal,
+            asyncio.get_running_loop().time() + 10,
+        )
+    await asyncio.gather(
+        *tuple(client_module._ABANDONED_OPERATION_FUTURES),
+        return_exceptions=True,
+    )
+    await asyncio.sleep(0)
+
+    assert not client_module._ABANDONED_OPERATION_FUTURES
+
+
+@pytest.mark.asyncio
+async def test_failed_transaction_drops_client_and_unlocks_before_inner_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    started, cancellation_seen, release, finished = _resistant_operation_events()
+
+    class CancellationResistantClient(FakeBleakClient):
+        async def start_notify(self, char_uuid: str, handler: Any) -> None:
+            await _cancellation_resistant_operation(
+                started,
+                cancellation_seen,
+                release,
+                finished,
+                late_error=RuntimeError("late start-notify failure"),
+            )
+
+    fake = CancellationResistantClient()
+    establish_count = 0
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> CancellationResistantClient:
+        nonlocal establish_count
+        establish_count += 1
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    transaction = asyncio.create_task(
+        client._async_write_and_wait(
+            H7124_PROFILE.power_on_command,
+            H7124_PROFILE.is_power_state_response,
+            timeout=0.01,
+        )
+    )
+    close_task: asyncio.Task[Any] | None = None
+
+    try:
+        await asyncio.wait_for(cancellation_seen.wait(), 0.5)
+        done, _pending = await asyncio.wait((transaction,), timeout=0.5)
+        assert transaction in done
+        with pytest.raises(
+            GoveeBleClientError, match="Timed out starting purifier notifications"
+        ):
+            await transaction
+
+        assert finished.is_set() is False
+        assert fake.disconnected is True
+        assert fake.stopped_notify == []
+        assert client._client is None
+        assert client._disconnect_signal is None
+        assert client._lock.locked() is False
+        assert client_module._ABANDONED_OPERATION_FUTURES
+
+        async def no_op(_client: Any) -> None:
+            return None
+
+        with pytest.raises(GoveeBleClientError, match="still stopping"):
+            await client._async_with_connection(no_op)
+        assert establish_count == 1
+
+        close_task = asyncio.create_task(client.async_close())
+        close_done, _pending = await asyncio.wait((close_task,), timeout=0.5)
+        assert close_task in close_done
+        await close_task
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), 0.5)
+        await asyncio.gather(transaction, return_exceptions=True)
+        if close_task is not None:
+            await asyncio.gather(close_task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    assert not client_module._ABANDONED_OPERATION_FUTURES
+
+
 @pytest.mark.asyncio
 async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
     fake = FakeBleakClient()
@@ -231,12 +558,15 @@ async def test_stop_notify_cleanup_error_does_not_mask_timeout() -> None:
     fake = FakeBleakClient(fail_stop_notify=True, send_responses=False)
     client = _TestableGoveeBleClient(fake)
 
-    with pytest.raises(GoveeBleClientError, match="Timed out"):
+    with pytest.raises(
+        GoveeBleClientError, match="Timed out waiting for purifier response"
+    ):
         await client._async_write_and_wait(
             H7124_PROFILE.status_query_command,
             H7124_PROFILE.is_status_response,
             timeout=0.01,
         )
+    assert len(fake.writes) == 1
 
 
 @pytest.mark.asyncio
@@ -249,14 +579,19 @@ async def test_stop_notify_cleanup_error_does_not_fail_successful_command() -> N
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "stall",
-    ["stall_start_notify", "stall_write"],
+    ("stall", "message"),
+    [
+        ("stall_start_notify", "Timed out starting purifier notifications"),
+        ("stall_write", "Timed out writing purifier request"),
+    ],
 )
-async def test_notification_transaction_stages_are_bounded(stall: str) -> None:
+async def test_notification_transaction_stages_are_bounded(
+    stall: str, message: str
+) -> None:
     fake = FakeBleakClient(**{stall: True})
     client = _TestableGoveeBleClient(fake)
 
-    with pytest.raises(GoveeBleClientError, match="Timed out"):
+    with pytest.raises(GoveeBleClientError, match=message):
         await asyncio.wait_for(
             client._async_write_and_wait(
                 H7124_PROFILE.power_on_command,
@@ -382,7 +717,7 @@ async def test_idle_cleanup_finishes_before_connection_preparation(
     client = _TestableGoveeBleClient(FakeBleakClient())
     events: list[str] = []
 
-    async def async_wait_for_idle_disconnect(_deadline: float) -> None:
+    async def async_wait_for_idle_disconnect() -> None:
         events.append("idle_cleanup")
 
     async def async_prepare_connection() -> None:
@@ -399,10 +734,47 @@ async def test_idle_cleanup_finishes_before_connection_preparation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["command", "poll"])
+async def test_running_idle_cleanup_has_own_timeout_and_prevents_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import (
+        client as client_module,
+    )
+
+    fake = FakeBleakClient()
+    client = _TestableGoveeBleClient(fake)
+    release_cleanup = asyncio.Event()
+    cleanup_task = asyncio.create_task(release_cleanup.wait())
+    client._idle_disconnect_task = cleanup_task
+    monkeypatch.setattr(client_module, "DISCONNECT_TIMEOUT", 0.01)
+
+    try:
+        with pytest.raises(
+            GoveeBleClientError,
+            match="Timed out waiting for idle disconnect cleanup",
+        ):
+            if operation == "command":
+                await asyncio.wait_for(client.async_set_power(True), 0.1)
+            else:
+                await asyncio.wait_for(client.async_get_state(), 0.1)
+    finally:
+        release_cleanup.set()
+        await cleanup_task
+        client._idle_disconnect_task = None
+
+    assert fake.started_notify == []
+    assert fake.writes == []
+
+
+@pytest.mark.asyncio
 async def test_close_during_connection_drops_late_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
+    from custom_components.govee_ble_air_purifier.bluetooth import (
+        client as client_module,
+    )
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
     fake = FakeBleakClient()
@@ -445,10 +817,11 @@ async def test_close_during_connection_drops_late_client(
 
 @pytest.mark.asyncio
 async def test_notification_transaction_timeout_includes_lock_wait() -> None:
-    client = _TestableGoveeBleClient(FakeBleakClient())
+    fake = FakeBleakClient()
+    client = _TestableGoveeBleClient(fake)
     await client._lock.acquire()
     try:
-        with pytest.raises(GoveeBleClientError, match="Timed out"):
+        with pytest.raises(GoveeBleClientError, match="transaction lock"):
             await asyncio.wait_for(
                 client._async_write_and_wait(
                     H7124_PROFILE.power_on_command,
@@ -459,6 +832,7 @@ async def test_notification_transaction_timeout_includes_lock_wait() -> None:
             )
     finally:
         client._lock.release()
+    assert fake.writes == []
 
 
 @pytest.mark.asyncio
@@ -590,10 +964,39 @@ async def test_connection_is_established_once_and_reused(
 
     assert len(disconnects) == 1
     assert disconnects[0][0] is fake
-    assert "H7124 BLE idle disconnect scheduled in 15.00 seconds" in caplog.text
-    assert "H7124 BLE client closing (cached connection: True)" in caplog.text
-    assert "H7124 releasing cached BLE connection" in caplog.text
-    assert "H7124 BLE client closed" in caplog.text
+    assert (
+        f"{client._log_label} BLE idle disconnect scheduled in 15.00 seconds"
+        in caplog.text
+    )
+    assert (
+        f"{client._log_label} BLE client closing (cached connection: True)"
+        in caplog.text
+    )
+    assert f"{client._log_label} releasing cached BLE connection" in caplog.text
+    assert f"{client._log_label} BLE client closed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_same_model_log_labels_are_distinct_and_do_not_expose_addresses(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    first = GoveeBleClient(None, "AA:BB:CC:DD:EE:01")
+    second = GoveeBleClient(None, "AA:BB:CC:DD:EE:02")
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
+
+    first._schedule_idle_disconnect()
+    second._schedule_idle_disconnect()
+    first._cancel_idle_disconnect()
+    second._cancel_idle_disconnect()
+
+    assert first._log_label != second._log_label
+    assert first._log_label in caplog.text
+    assert second._log_label in caplog.text
+    assert "AA:BB:CC:DD:EE:01" not in caplog.text
+    assert "AA:BB:CC:DD:EE:02" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -718,6 +1121,8 @@ def test_unexpected_disconnect_clears_session_and_advertisement_history(
     client = GoveeBleClient(hass, "AA:BB:CC:DD:EE:FF")
     connected = FakeBleakClient()
     client._client = connected
+    disconnect_signal = asyncio.Event()
+    client._disconnect_signal = disconnect_signal
     client._session_key = b"session"
     client._connected_at = time.monotonic() - 120
     client._session_started_at = time.monotonic() - 110
@@ -735,6 +1140,8 @@ def test_unexpected_disconnect_clears_session_and_advertisement_history(
     client._handle_disconnect(connected)
 
     assert client._client is None
+    assert client._disconnect_signal is None
+    assert disconnect_signal.is_set()
     assert client._session_key is None
     assert client._connected_at is None
     assert client._session_started_at is None
@@ -829,7 +1236,10 @@ async def test_operation_failure_invalidates_connection_without_replaying(
 
     assert attempts == 1
     assert disconnects == [connected_clients[0]]
-    assert await client._async_with_connection(successful_operation) is connected_clients[1]
+    assert (
+        await client._async_with_connection(successful_operation)
+        is connected_clients[1]
+    )
 
     await client.async_close()
 
@@ -838,13 +1248,13 @@ async def test_operation_failure_invalidates_connection_without_replaying(
 async def test_idle_timeout_disconnects_and_next_operation_reconnects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
+    from custom_components.govee_ble_air_purifier.bluetooth import (
+        client as client_module,
+    )
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
     monkeypatch.setattr(client_module, "CONNECTION_IDLE_GRACE", 0.0)
-    client = GoveeBleClient(
-        None, "AA:BB:CC:DD:EE:FF", polling_interval_seconds=60
-    )
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", polling_interval_seconds=60)
     connected_clients = [FakeBleakClient(), FakeBleakClient()]
     establish_count = 0
     disconnected = asyncio.Event()

@@ -124,10 +124,11 @@ example `h7126.json`), and otherwise falls back to `default.json`, which means
 H7124 protocol behavior. It packages the resolved UUIDs, commands, matchers,
 decoders, advertised identity, and capabilities as `ModelProfile`. Higher
 layers receive a profile rather than duplicating those constants. The H7124
-integration is physically tested. H7129 is implemented and covered by captured
-encrypted-frame vectors and client simulations but has not been physically
-replayed by this integration. Fallback models are unverified and may fail or
-expose unsupported or mismatched features.
+integration is physically tested. Physical H7129 integration evidence confirms
+connection, encrypted handshake, polling, disconnect, and recovery. Its
+state-changing commands are implemented from decrypted captures but have not
+yet been physically validated through this integration. Fallback models are
+unverified and may fail or expose unsupported or mismatched features.
 
 Fan-mode lists may vary by exact profile. The integration creates the Custom
 Auto switch only when the profile provides Sleep, Low, Medium, High, Turbo,
@@ -145,11 +146,17 @@ checksum-valid plaintext values used by the H7124 path.
 `bluetooth/client.py` owns one serialized transaction lock per configured
 purifier. Before an uncached connection, it asks the transport to verify a
 connectable path. A post-disconnect connection requires an advertisement newer
-than the disconnect; this preparation is bounded separately so it does not
-consume the operation deadline. The transaction deadline then starts before
-lock acquisition and is shared by lock waiting, connection establishment,
-notification setup, writes, response waits, notification cleanup, and failure
-cleanup.
+than the disconnect. An already-running idle release gets its own 5-second
+preflight cleanup wait, and fresh-advertisement recovery gets up to 10 seconds.
+Neither consumes the subsequent lock or application budget. Connection and
+service discovery then have a separate 25-second deadline. A newly connected
+H7129 has a separate 10-second handshake deadline. Transaction-lock waiting and
+the application exchange use the operation's normal budget: 5 seconds for a
+two-response poll and 2 seconds for command confirmation. The application
+budget starts after connection and handshake complete. Explicit disconnect
+cleanup has its own 5-second bound. Timeout errors identify idle cleanup, lock
+waiting, a write/setup stage, or an actual purifier response rather than
+claiming a response timeout before a request was sent.
 
 The client caches a healthy GATT connection across transactions. Every
 successful operation resets an idle timer derived from the configured polling
@@ -164,7 +171,10 @@ the client instance that raised it; identity checking prevents a delayed
 callback from clearing a replacement. The next poll or command reconnects
 through Home Assistant. Transaction failure invalidates the connection but does
 not replay the operation. A confirmed link loss may replay one read-only state
-poll after fresh-advertisement recovery; commands are never replayed.
+poll after fresh-advertisement recovery; commands are never replayed. A
+connection-scoped disconnect signal wakes handshake and application waits for
+that exact client, while delayed callbacks from an older client cannot affect a
+replacement.
 
 For a profile selecting Govee V1 encryption, a newly established connection
 completes the `e7 01` / `e7 02` exchange before its first application operation.
@@ -175,7 +185,8 @@ Every reconnect negotiates a new key. Plaintext profiles bypass these transforms
 Connection, handshake, and application work use separate bounded phases: a slow
 BlueZ connection cannot consume the shorter response timeout, and application
 timing begins only after any encrypted handshake succeeds. Lifecycle logs report
-connection and session ages but never key material.
+connection and session ages under a stable short hashed device label, but never
+the full Bluetooth address, packet payloads, or key material.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
 notification subscription to issue the power and status queries in sequence.
@@ -197,11 +208,11 @@ fresh-advertisement and per-scanner path preparation, stale-connection cleanup
 before establishment, connection establishment, and bounded best-effort
 disconnect. On supported Home Assistant versions it clears static advertisement
 deduplication after a GATT session. Advertisement recovery uses Active callback
-semantics, which waits on an already Active scanner or requests a temporary
-window from an Automatic scanner. That window is sized to cover advertisement
-recovery and the bounded connection attempt so an Active-only device remains
-represented in BlueZ while connecting. Failed waits back off from 60 to 300
-seconds. Transport
+semantics. Home Assistant 2026.6 and newer can best-effort request a temporary
+Automatic-to-Active window, subject to upstream duration clamping; the request
+is made only while waiting for a new advertisement, never for an accepted
+cached path. Older versions may require an explicitly Active scanner when
+active discovery is needed. Failed waits back off from 60 to 300 seconds. Transport
 connection stages share a dedicated deadline and bounded upstream retry count;
 disconnect cleanup errors are suppressed.
 
@@ -332,7 +343,8 @@ The real-Home-Assistant smoke lane installs supported Home Assistant versions
 and runs only `tests/test_runtime_smoke.py`. It verifies runtime imports,
 inheritance and signatures, platform entity construction, config flow behavior,
 and setup/unload composition against actual Home Assistant APIs without using a
-physical purifier.
+physical purifier. The matrix includes 2026.5 and 2026.6 independently to cover
+the separate advertisement-history and on-demand Active-scan API boundaries.
 
 The main test boundaries are:
 

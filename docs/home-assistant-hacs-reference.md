@@ -23,7 +23,7 @@ reference is
 | Python package baseline | Python 3.12 or newer | `pyproject.toml` |
 | Recognized model family | Govee `H712*` BLE purifiers | `profiles.py` and `model_profiles/` |
 | Exact model profiles | Plaintext H7124 and encrypted H7129 | `model_profiles/h7124.json` and `model_profiles/h7129.json` |
-| Physically tested and validated model | Govee H7124 only | `model_profiles/h7124.json` and `model_profiles/default.json` |
+| Physical integration validation | H7124 commands and polling; H7129 connection, encrypted handshake, polling, disconnect, and recovery | `model_profiles/h7124.json`, `model_profiles/h7129.json`, and field evidence |
 | Recognized BLE local name | Contains `H712` followed by one ASCII letter or digit, case-insensitively (for example `GVH7124`, `GVH712C`, or `ihoment_H7129_6A7D`) | `profiles.py` |
 | Home Assistant integration type | `device` | `manifest.json` |
 | Home Assistant IoT class | `local_polling` | `manifest.json` |
@@ -36,17 +36,19 @@ use the Govee cloud, YAML configuration, Matter, Zigbee, Z-Wave, or MQTT.
 
 The H7124 integration is physically tested and validated. H7129 support is
 implemented from decrypted physical-device captures and tested against fixed
-encrypted vectors and simulated connection lifecycles, but has not yet been
-physically replayed by this integration. Other recognized `H712*` models
-without an exact `model_profiles/<model>.json` file use `default.json`, which
-supplies the tested H7124 protocol behavior. Those fallback models remain
-unverified.
+encrypted vectors and simulated connection lifecycles. Physical H7129 evidence
+confirms connection, encrypted handshake, polling, disconnect, and recovery;
+state-changing commands have not yet been physically validated through this
+integration. Other recognized `H712*` models without an exact
+`model_profiles/<model>.json` file use `default.json`, which supplies the tested
+H7124 protocol behavior. Those fallback models remain unverified.
 
-The CI runtime matrix tests the minimum Home Assistant release and the current
-target selected by the repository. At the time of writing those targets are
-Home Assistant `2024.8.0` on Python 3.12 and Home Assistant `2026.7.2` on
-Python 3.14.2. The workflow is the source of truth when the current target
-changes.
+The CI runtime matrix tests the minimum Home Assistant release, relevant API
+boundaries, and the current target selected by the repository. At the time of
+writing those targets are
+Home Assistant `2024.8.0` on Python 3.12, the 2026.5 and 2026.6 Bluetooth API
+boundaries, and Home Assistant `2026.7.2` on Python 3.14.2. The workflow is the
+source of truth when the current target changes.
 
 ## HACS And Home Assistant Responsibilities
 
@@ -386,9 +388,12 @@ must not be exposed.
   proxies to participate.
 - An uncached runtime connection verifies the per-scanner path first. After a
   disconnect, it requires a newer advertisement and clears static advertisement
-  deduplication where Home Assistant supports it. Active scanners continue
-  normally; Automatic scanners run a bounded temporary Active window through
-  advertisement recovery and connection establishment.
+  deduplication where Home Assistant supports it. Home Assistant 2026.6 and
+  newer can best-effort request a temporary Automatic-to-Active window, subject
+  to upstream duration clamping, only while waiting for a new advertisement.
+  Cached initial and fresh post-disconnect paths do not request that switch.
+  Older installations may require an explicitly Active scanner when active
+  discovery is needed.
 - Transactions are asynchronous and serialized per purifier so commands and
   polls cannot overlap.
 - A healthy GATT connection is reused. Successful activity resets an adaptive
@@ -424,9 +429,10 @@ Bluetooth Low Energy GATT is the transport standard. The application protocol
 above GATT is Govee `H712*` family behavior encoded by this repository. The
 H7124 implementation is physically tested and validated. H7129 behavior was
 captured from a physical device and decrypted; its encrypted session is now
-implemented and covered by captured-vector and simulated-client tests, with
-physical integration replay still pending. This is not presented as an
-official public Govee specification.
+implemented and covered by captured-vector and simulated-client tests. Physical
+integration evidence confirms H7129 connection, encrypted handshake, polling,
+disconnect, and recovery, while state-changing command validation remains
+pending. This is not presented as an official public Govee specification.
 
 The detailed command, response, capture-evidence, and encrypted-transport
 reference is

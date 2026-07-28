@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+import hashlib
 import logging
 from typing import Any, TypeVar
 
@@ -17,6 +18,21 @@ FRESH_ADVERTISEMENT_POLL_INTERVAL = 0.1
 CONNECTION_TIMEOUT = 25.0
 MAX_CONNECTION_ATTEMPTS = 2
 RECOVERY_ACTIVE_SCAN_DURATION = FRESH_ADVERTISEMENT_TIMEOUT + CONNECTION_TIMEOUT
+
+
+def device_log_id(address: str) -> str:
+    """Return a stable short device identifier for integration-owned logs."""
+
+    return hashlib.sha256(address.casefold().encode()).hexdigest()[:8]
+
+
+def _client_log_suffix(client: Any) -> str:
+    """Return a redacted log suffix when a transport exposes its address."""
+
+    address = getattr(client, "address", None)
+    if not isinstance(address, str):
+        return ""
+    return f" for device {device_log_id(address)}"
 
 
 async def _async_wait_until(awaitable: Awaitable[_T], deadline: float) -> _T:
@@ -51,17 +67,11 @@ async def _async_wait_for_fresh_legacy_path(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + FRESH_ADVERTISEMENT_TIMEOUT
     while True:
-        latest = bluetooth.async_last_service_info(
-            hass, address, connectable=True
-        )
+        latest = bluetooth.async_last_service_info(hass, address, connectable=True)
         paths = bluetooth.async_scanner_devices_by_address(
             hass, address, connectable=True
         )
-        if (
-            paths
-            and latest is not None
-            and getattr(latest, "time", 0.0) > threshold
-        ):
+        if paths and latest is not None and getattr(latest, "time", 0.0) > threshold:
             return
         remaining = deadline - loop.time()
         if remaining <= 0:
@@ -103,9 +113,7 @@ def _start_active_scan(bluetooth: Any, hass: Any) -> None:
             _LOGGER.debug("Unable to extend active Bluetooth scan", exc_info=True)
 
     if create_background_task := getattr(hass, "async_create_background_task", None):
-        task = create_background_task(
-            request_scan(), "Govee BLE recovery active scan"
-        )
+        task = create_background_task(request_scan(), "Govee BLE recovery active scan")
     else:
         create_task = getattr(hass, "async_create_task", asyncio.create_task)
         task = create_task(request_scan())
@@ -122,6 +130,8 @@ async def async_prepare_connection_path(
 ) -> None:
     """Ensure a fresh connectable path exists before a transaction starts."""
 
+    log_id = device_log_id(address)
+
     try:
         from homeassistant.components import bluetooth
     except ModuleNotFoundError as err:  # pragma: no cover - runtime dependency
@@ -129,9 +139,7 @@ async def async_prepare_connection_path(
             "Home Assistant BLE dependencies are unavailable"
         ) from err
 
-    paths = bluetooth.async_scanner_devices_by_address(
-        hass, address, connectable=True
-    )
+    paths = bluetooth.async_scanner_devices_by_address(hass, address, connectable=True)
     can_clear_history = hasattr(bluetooth, "async_clear_advertisement_history")
     if paths:
         if after is None:
@@ -142,22 +150,20 @@ async def async_prepare_connection_path(
 
     if not wait_for_advertisement:
         raise GoveeBleClientError(
-            f"No fresh connectable Bluetooth path is available for {address}"
+            f"No fresh connectable Bluetooth path is available for device {log_id}"
         )
 
     _start_active_scan(bluetooth, hass)
     threshold = after if after is not None else asyncio.get_running_loop().time()
     _LOGGER.debug(
-        "No fresh connectable path for %s; waiting for a new advertisement",
-        address,
+        "No fresh connectable path for device %s; waiting for a new advertisement",
+        log_id,
     )
     if not can_clear_history:
         # Home Assistant 2024.8 updates history timestamps before suppressing
         # unchanged callback payloads, so poll that public state for freshness.
         try:
-            await _async_wait_for_fresh_legacy_path(
-                bluetooth, hass, address, threshold
-            )
+            await _async_wait_for_fresh_legacy_path(bluetooth, hass, address, threshold)
         except (TimeoutError, asyncio.TimeoutError) as err:
             raise GoveeBleClientError(
                 "Timed out waiting for a fresh purifier advertisement"
@@ -185,7 +191,7 @@ async def async_prepare_connection_path(
         )
     except (TimeoutError, asyncio.TimeoutError) as err:
         raise GoveeBleClientError(
-            f"No connectable Bluetooth path was found for {address} "
+            f"No connectable Bluetooth path was found for device {log_id} "
             "after a fresh advertisement"
         ) from err
     _LOGGER.debug(
@@ -203,6 +209,7 @@ async def async_establish_connection(
     """Establish a connection through Home Assistant Bluetooth helpers."""
 
     started = asyncio.get_running_loop().time()
+    log_id = device_log_id(address)
     stage = "loading Home Assistant Bluetooth helpers"
 
     try:
@@ -219,18 +226,18 @@ async def async_establish_connection(
 
     try:
         stage = "looking up a connectable BLE device"
-        _LOGGER.debug("BLE connection stage: %s", stage)
+        _LOGGER.debug("BLE connection stage: %s (device %s)", stage, log_id)
         ble_device = bluetooth.async_ble_device_from_address(
             hass, address, connectable=True
         )
         if ble_device is None:
-            raise GoveeBleClientError(f"BLE device {address} is not available")
+            raise GoveeBleClientError(f"BLE device {log_id} is not available")
 
         stage = "closing stale connections"
-        _LOGGER.debug("BLE connection stage: %s", stage)
+        _LOGGER.debug("BLE connection stage: %s (device %s)", stage, log_id)
         await _async_wait_until(close_stale_connections(ble_device), deadline)
         stage = "establishing a new connection"
-        _LOGGER.debug("BLE connection stage: %s", stage)
+        _LOGGER.debug("BLE connection stage: %s (device %s)", stage, log_id)
         client = await _async_wait_until(
             establish_connection(
                 client_class=BleakClientWithServiceCache,
@@ -242,15 +249,17 @@ async def async_establish_connection(
             deadline,
         )
         _LOGGER.debug(
-            "BLE connection established in %.2f seconds",
+            "BLE connection established in %.2f seconds (device %s)",
             asyncio.get_running_loop().time() - started,
+            log_id,
         )
         return client
     except (TimeoutError, asyncio.TimeoutError) as err:
         _LOGGER.debug(
-            "BLE connection timed out while %s after %.2f seconds",
+            "BLE connection timed out while %s after %.2f seconds (device %s)",
             stage,
             asyncio.get_running_loop().time() - started,
+            log_id,
             exc_info=True,
         )
         raise GoveeBleClientError(
@@ -261,9 +270,10 @@ async def async_establish_connection(
 async def async_disconnect(client: Any, *, deadline: float) -> None:
     """Disconnect without allowing cleanup failure to escape."""
 
+    log_suffix = _client_log_suffix(client)
     try:
-        _LOGGER.debug("Disconnecting BLE client")
+        _LOGGER.debug("Disconnecting BLE client%s", log_suffix)
         await _async_wait_until(client.disconnect(), deadline)
-        _LOGGER.debug("BLE client disconnected")
+        _LOGGER.debug("BLE client disconnected%s", log_suffix)
     except Exception:
-        _LOGGER.debug("Suppressing BLE disconnect failure", exc_info=True)
+        _LOGGER.debug("Suppressing BLE disconnect failure%s", log_suffix, exc_info=True)

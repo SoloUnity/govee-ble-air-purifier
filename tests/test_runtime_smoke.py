@@ -87,8 +87,10 @@ def test_bluetooth_recovery_uses_supported_home_assistant_apis() -> None:
     assert callable(bluetooth.async_last_service_info)
     assert callable(bluetooth.async_scanner_devices_by_address)
     assert bluetooth.BluetoothScanningMode.ACTIVE is not None
-    if hasattr(bluetooth, "async_clear_advertisement_history"):
-        assert callable(bluetooth.async_request_active_scan)
+    clear_history = getattr(bluetooth, "async_clear_advertisement_history", None)
+    request_active_scan = getattr(bluetooth, "async_request_active_scan", None)
+    assert clear_history is None or callable(clear_history)
+    assert request_active_scan is None or callable(request_active_scan)
     assert callable(HomeAssistant.async_create_background_task)
 
 
@@ -100,7 +102,9 @@ async def test_platform_setup_uses_real_home_assistant_entities() -> None:
     from homeassistant.components.switch import SwitchEntity
 
     from custom_components.govee_ble_air_purifier.models import PurifierState
-    from custom_components.govee_ble_air_purifier.fan import async_setup_entry as setup_fan
+    from custom_components.govee_ble_air_purifier.fan import (
+        async_setup_entry as setup_fan,
+    )
     from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
     from custom_components.govee_ble_air_purifier.sensor import (
         async_setup_entry as setup_sensor,
@@ -218,9 +222,7 @@ async def test_integration_setup_and_unload_lifecycle(
     events: list[object] = []
 
     class FakeClient:
-        def __init__(
-            self, hass, address, *, profile, polling_interval_seconds
-        ) -> None:
+        def __init__(self, hass, address, *, profile, polling_interval_seconds) -> None:
             self.hass = hass
             self.address = address
             self.profile = profile
@@ -240,9 +242,7 @@ async def test_integration_setup_and_unload_lifecycle(
             events.append("shutdown")
 
     class FakeController:
-        def __init__(
-            self, hass, coordinator, config, *, config_entry
-        ) -> None:
+        def __init__(self, hass, coordinator, config, *, config_entry) -> None:
             self.hass = hass
             self.coordinator = coordinator
             self.config = config
@@ -252,9 +252,7 @@ async def test_integration_setup_and_unload_lifecycle(
             events.append("controller_stop")
 
     class FakeAutoResume:
-        def __init__(
-            self, hass, coordinator, controller, *, config_entry
-        ) -> None:
+        def __init__(self, hass, coordinator, controller, *, config_entry) -> None:
             self.hass = hass
             self.coordinator = coordinator
             self.controller = controller

@@ -2,10 +2,13 @@
 
 This repository contains a locally polling Home Assistant custom integration for
 Govee `H712*` family BLE air purifiers. It has exact plaintext H7124 and encrypted
-H7129 profiles; only the H7124 integration has been physically replayed. Other
-recognized `H712*` models fall back to the H7124 protocol definition and may fail
-or expose unsupported or mismatched features. Home Assistant loads the code
-under `custom_components/`; the repository is not a standalone service.
+H7129 profiles. H7124 commands and polling are physically validated; H7129
+connection, encrypted handshake, polling, disconnect, and recovery are
+physically observed, while H7129 state-changing command validation remains
+pending. Other recognized `H712*` models fall back to the H7124 protocol
+definition and may fail or expose unsupported or mismatched features. Home
+Assistant loads the code under `custom_components/`; the repository is not a
+standalone service.
 
 For runtime interactions and lock ownership, see
 [`architecture.md`](architecture.md). For Home Assistant and HACS standards,
@@ -94,13 +97,15 @@ bluetooth/
   transform and handshake frame helpers without owning model commands.
 - `bluetooth/client.py` owns the per-purifier transaction lock, writes,
   notification subscription and cleanup, response futures, matching, and shared
-  phase deadlines. It also retains a healthy connection, handles disconnect callbacks,
-  waits for fresh post-disconnect advertisements, retries one read-only poll,
-  negotiates and clears connection-specific encrypted sessions when selected by
-  the profile, derives adaptive idle release from the polling interval, and
-  serializes that release with explicit shutdown.
+  phase deadlines. It also retains a healthy connection, uses an exact-client
+  disconnect signal to wake pending waits, waits for fresh post-disconnect
+  advertisements, retries one read-only poll, negotiates and clears
+  connection-specific encrypted sessions when selected by the profile, derives
+  adaptive idle release from the polling interval, and serializes that release
+  with explicit shutdown. Lifecycle logs use a stable short hashed device label.
 - `bluetooth/transport.py` owns Home Assistant advertisement and per-scanner
-  path preparation, temporary Automatic-mode Active scan windows, BLE-device
+  path preparation, best-effort Home Assistant 2026.6+ temporary
+  Automatic-to-Active requests only during new-advertisement waits, BLE-device
   lookup, stale connection cleanup before establishment, bounded connection
   attempts, and bounded best-effort disconnect primitives.
 
@@ -210,7 +215,9 @@ not installed. `scan_bluetooth.py` is a manually run, passive BLE advertisement
 scanner and is not collected by pytest. The separate smoke lane installs real
 Home Assistant versions and runs only `test_runtime_smoke.py` to check imports,
 API inheritance and signatures, entity construction, config flow, and lifecycle
-composition.
+composition. Its matrix includes Home Assistant 2026.5 and 2026.6 separately
+because advertisement-history clearing and on-demand Active scan requests were
+introduced in different releases.
 
 ```bash
 python -m pytest --ignore=tests/test_runtime_smoke.py

@@ -23,6 +23,16 @@ class FakeClient:
             raise self.disconnect_error
 
 
+def test_device_log_id_is_stable_distinct_and_non_sensitive() -> None:
+    first = transport.device_log_id("AA:BB:CC:DD:EE:01")
+    second = transport.device_log_id("AA:BB:CC:DD:EE:02")
+
+    assert first == transport.device_log_id("aa:bb:cc:dd:ee:01")
+    assert first != second
+    assert len(first) == len(second) == 8
+    assert ":" not in first
+
+
 def _install_connection_modules(
     monkeypatch: pytest.MonkeyPatch,
     events: list[str],
@@ -88,12 +98,15 @@ async def test_connection_stages_run_in_order_with_one_deadline(
     monkeypatch.setattr(transport, "_async_wait_until", recording_wait_until)
     deadline = asyncio.get_running_loop().time() + 10.0
 
-    assert await transport.async_establish_connection(
-        object(),
-        "AA:BB:CC:DD:EE:FF",
-        lambda _client: None,
-        deadline=deadline,
-    ) is client
+    assert (
+        await transport.async_establish_connection(
+            object(),
+            "AA:BB:CC:DD:EE:FF",
+            lambda _client: None,
+            deadline=deadline,
+        )
+        is client
+    )
 
     assert events == ["lookup", "close_stale", "establish"]
     assert deadlines == [deadline, deadline]
@@ -108,7 +121,9 @@ async def test_unavailable_device_fails_before_connection(
     events: list[str] = []
     _install_connection_modules(monkeypatch, events, device=None)
 
-    with pytest.raises(GoveeBleClientError, match="BLE device .* is not available"):
+    with pytest.raises(
+        GoveeBleClientError, match="BLE device .* is not available"
+    ) as exc_info:
         await transport.async_establish_connection(
             object(),
             "AA:BB:CC:DD:EE:FF",
@@ -117,6 +132,8 @@ async def test_unavailable_device_fails_before_connection(
         )
 
     assert events == ["lookup"]
+    assert "AA:BB:CC:DD:EE:FF" not in str(exc_info.value)
+    assert transport.device_log_id("AA:BB:CC:DD:EE:FF") in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -401,9 +418,7 @@ async def test_connection_preparation_preserves_an_existing_legacy_path(
                 "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
                 "async_last_service_info": async_last_service_info,
                 "async_process_advertisements": async_process_advertisements,
-                "async_scanner_devices_by_address": lambda *args, **kwargs: [
-                    object()
-                ],
+                "async_scanner_devices_by_address": lambda *args, **kwargs: [object()],
             },
         },
     )
@@ -436,7 +451,8 @@ async def test_connection_preparation_timeout_has_a_precise_error(
     )
 
     with pytest.raises(
-        GoveeBleClientError, match="Timed out waiting for a fresh purifier advertisement"
+        GoveeBleClientError,
+        match="Timed out waiting for a fresh purifier advertisement",
     ):
         await transport.async_prepare_connection_path(
             object(), "AA:BB:CC:DD:EE:FF", after=42.0
@@ -462,7 +478,9 @@ async def test_connection_preparation_can_defer_another_advertisement_wait(
         },
     )
 
-    with pytest.raises(GoveeBleClientError, match="No fresh connectable Bluetooth path"):
+    with pytest.raises(
+        GoveeBleClientError, match="No fresh connectable Bluetooth path"
+    ):
         await transport.async_prepare_connection_path(
             object(),
             "AA:BB:CC:DD:EE:FF",

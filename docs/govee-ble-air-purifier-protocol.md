@@ -18,7 +18,7 @@ Physical targets and evidence:
 | Model | Evidence | BLE name | Firmware | Hardware |
 | --- | --- | --- | --- | --- |
 | `H7124` | Physically replayed and validated | `GVH712438FE` | `1.00.33` | `4.01.00` |
-| `H7129` | Official-app PacketLogger session captured and decrypted | `ihoment_H7129_*` | Not captured | Not captured |
+| `H7129` | App traffic captured and decrypted; integration connection, handshake, polling, disconnect, and recovery physically observed | `ihoment_H7129_*` | Not captured | Not captured |
 
 The H7124 target used macOS CoreBluetooth UUID
 `47663FD1-1875-BFAD-C898-D79C0B8F0A3D`. A secondary H7124 unit was observed as
@@ -551,12 +551,13 @@ H7129 values are consistent with the same response layout.
 | Frame transforms | AES-128-ECB correctly decoded bytes 0-15 and an RC4-compatible keystream correctly decoded bytes 16-19 |
 | Post-handshake traffic | Every decrypted application frame had a valid XOR checksum |
 | Session behavior | Commands and notifications used the negotiated key rather than reusable encrypted constants |
+| Integration physical session | Connected, completed the encrypted handshake, polled state, handled disconnect, and recovered with a fresh session |
 
 ## Open Questions
 
 | Feature | Status |
 |---------|--------|
-| H7129 integration physical replay | Encrypted sessions are implemented and tested against captured vectors; direct integration control remains to be physically replayed |
+| H7129 state-changing integration commands | Implemented from decrypted captures; physical command validation through this integration remains pending |
 | Night light toggle | Not decoded on H7124; H7129 not investigated |
 | Night light RGB | Not decoded on H7124; H7129 not investigated |
 | Display toggle | Not decoded on H7124; H7129 not investigated |
