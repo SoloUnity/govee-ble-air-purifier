@@ -94,15 +94,15 @@ bluetooth/
   transform and handshake frame helpers without owning model commands.
 - `bluetooth/client.py` owns the per-purifier transaction lock, writes,
   notification subscription and cleanup, response futures, matching, and shared
-  deadlines. It also retains a healthy connection, handles disconnect callbacks,
+  phase deadlines. It also retains a healthy connection, handles disconnect callbacks,
   waits for fresh post-disconnect advertisements, retries one read-only poll,
   negotiates and clears connection-specific encrypted sessions when selected by
   the profile, derives adaptive idle release from the polling interval, and
   serializes that release with explicit shutdown.
 - `bluetooth/transport.py` owns Home Assistant advertisement and per-scanner
-  path preparation, BLE-device lookup, stale connection cleanup before
-  establishment, connection establishment, and bounded best-effort disconnect
-  primitives.
+  path preparation, temporary Automatic-mode Active scan windows, BLE-device
+  lookup, stale connection cleanup before establishment, bounded connection
+  attempts, and bounded best-effort disconnect primitives.
 
 ## State And Custom Auto
 

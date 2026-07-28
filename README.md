@@ -97,8 +97,12 @@ uses `<=`; only a valid reading above that boundary resets its timer.
   the purifier for a reliable connection.
 - Use Automatic or Active scanning for reconnectable purifiers. After an
   unexpected disconnect, the integration waits for a fresh connectable
-  advertisement before opening a new GATT session; Automatic mode may briefly
-  activate scanning for that recovery without changing the saved adapter mode.
+  advertisement before opening a new GATT session; Automatic mode stays
+  temporarily Active through the bounded connection attempt without changing
+  the saved adapter mode.
+- Connection establishment and encrypted-session negotiation have their own
+  bounded timeouts. The shorter poll or command timeout starts only after those
+  phases complete.
 - The integration adapts healthy-connection reuse to the polling interval. For
   intervals up to 25 seconds, it retains the connection for the interval plus a
   5-second margin, capped at 30 seconds. Longer intervals use a 5-second grace
@@ -119,8 +123,9 @@ From the integration's page in **Settings > Devices & services**, select
 to download the log. Debug output identifies connection, encrypted-handshake,
 notification, request, response, connection-release, and Bluetooth allocator
 stages. The integration's stage messages do not include BLE addresses, packet
-payloads, or encryption keys; supporting Home Assistant Bluetooth libraries may
-include device identifiers.
+payloads, or encryption keys. Disconnect and release messages include only
+connection and encrypted-session ages; supporting Home Assistant Bluetooth
+libraries may include device identifiers.
 
 An interrupted state poll is retried once after a fresh advertisement and new
 encrypted session. Commands are never replayed automatically because the

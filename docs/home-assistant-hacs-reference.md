@@ -387,7 +387,8 @@ must not be exposed.
 - An uncached runtime connection verifies the per-scanner path first. After a
   disconnect, it requires a newer advertisement and clears static advertisement
   deduplication where Home Assistant supports it. Active scanners continue
-  normally; Automatic scanners may run a bounded temporary Active window.
+  normally; Automatic scanners run a bounded temporary Active window through
+  advertisement recovery and connection establishment.
 - Transactions are asynchronous and serialized per purifier so commands and
   polls cannot overlap.
 - A healthy GATT connection is reused. Successful activity resets an adaptive
@@ -398,6 +399,9 @@ must not be exposed.
   for only a 5-second command-and-refresh grace before release. Entry unload
   always closes it.
 - GATT notifications provide query responses and command confirmation.
+- Connection establishment, encrypted negotiation, and application responses
+  use separate bounded deadlines, so a slow BlueZ connection does not consume
+  the poll or command response budget.
 - A confirmed disconnect may retry one idempotent state poll after reconnecting
   and renegotiating encryption. Commands are not replayed automatically.
 

@@ -195,6 +195,30 @@ async def test_h7129_reuses_shared_protocol_after_one_handshake(
 
 
 @pytest.mark.asyncio
+async def test_h7129_handshake_does_not_consume_application_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = EncryptedFakeBleakClient(SESSION_KEY_1)
+    _callbacks, _disconnects = _install_connections(monkeypatch, [fake])
+    original_handle_handshake_write = fake._handle_handshake_write
+
+    async def delayed_handle_handshake_write(command: bytes) -> None:
+        await asyncio.sleep(0.02)
+        await original_handle_handshake_write(command)
+
+    monkeypatch.setattr(fake, "_handle_handshake_write", delayed_handle_handshake_write)
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+
+    assert await client._async_write_and_wait(
+        H7129_PROFILE.power_on_command,
+        H7129_PROFILE.is_power_state_response,
+        timeout=0.01,
+    )
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
 async def test_h7129_debug_logs_show_transaction_stages_without_secrets(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -350,6 +374,8 @@ async def test_h7129_handshake_timeout_discards_connection(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
+
     fake = EncryptedFakeBleakClient(SESSION_KEY_1, respond_to_handshake=False)
     _callbacks, disconnects = _install_connections(monkeypatch, [fake])
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
@@ -357,6 +383,7 @@ async def test_h7129_handshake_timeout_discards_connection(
         logging.DEBUG,
         logger="custom_components.govee_ble_air_purifier.bluetooth.client",
     )
+    monkeypatch.setattr(client_module, "HANDSHAKE_TIMEOUT", 0.01)
 
     with pytest.raises(GoveeBleClientError, match="Timed out establishing"):
         await asyncio.wait_for(

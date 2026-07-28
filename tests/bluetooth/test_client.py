@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Any
 
 import pytest
@@ -295,6 +296,86 @@ async def test_connection_preparation_does_not_consume_transaction_timeout() -> 
 
 
 @pytest.mark.asyncio
+async def test_connection_establishment_does_not_consume_transaction_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    fake = FakeBleakClient()
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        await asyncio.sleep(0.02)
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+
+    assert await client._async_write_and_wait(
+        H7124_PROFILE.power_on_command,
+        H7124_PROFILE.is_power_state_response,
+        timeout=0.01,
+    )
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_connection_establishment_uses_its_own_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    fake = FakeBleakClient()
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+    deadlines: list[float] = []
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        deadlines.append(deadline)
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    monkeypatch.setattr(transport, "CONNECTION_TIMEOUT", 7.0, raising=False)
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+
+    await client._async_write_and_wait(
+        H7124_PROFILE.power_on_command,
+        H7124_PROFILE.is_power_state_response,
+        timeout=0.01,
+    )
+
+    after = loop.time()
+    assert len(deadlines) == 1
+    assert before + 7.0 <= deadlines[0] <= after + 7.0
+
+    await client.async_close()
+
+
+@pytest.mark.asyncio
 async def test_idle_cleanup_finishes_before_connection_preparation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -315,6 +396,51 @@ async def test_idle_cleanup_finishes_before_connection_preparation(
     assert await client.async_set_power(True) is True
 
     assert events == ["idle_cleanup", "prepare"]
+
+
+@pytest.mark.asyncio
+async def test_close_during_connection_drops_late_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    fake = FakeBleakClient()
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+    connection_started = asyncio.Event()
+    allow_connection = asyncio.Event()
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        connection_started.set()
+        await allow_connection.wait()
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    monkeypatch.setattr(client_module, "DEFAULT_TIMEOUT", 0.01)
+    monkeypatch.setattr(client_module, "DISCONNECT_TIMEOUT", 0.01)
+
+    operation = asyncio.create_task(client.async_get_state())
+    await connection_started.wait()
+    await client.async_close()
+    allow_connection.set()
+    result = (await asyncio.gather(operation, return_exceptions=True))[0]
+
+    assert isinstance(result, GoveeBleClientError)
+    assert "closed" in str(result)
+    assert client._client is None
+    assert fake.disconnected is True
 
 
 @pytest.mark.asyncio
@@ -495,7 +621,6 @@ def test_connection_idle_timeout_adapts_to_polling_interval(
 async def test_connection_delegate_creates_default_deadline_when_omitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from custom_components.govee_ble_air_purifier.bluetooth import client as client_module
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
@@ -520,7 +645,7 @@ async def test_connection_delegate_creates_default_deadline_when_omitted(
         transport, "async_establish_connection", async_establish_connection
     )
     monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
-    monkeypatch.setattr(client_module, "DEFAULT_TIMEOUT", 7.0)
+    monkeypatch.setattr(transport, "CONNECTION_TIMEOUT", 7.0)
     loop = asyncio.get_running_loop()
     before = loop.time()
 
@@ -585,6 +710,7 @@ async def test_disconnected_callback_reconnects_and_ignores_stale_client(
 
 def test_unexpected_disconnect_clears_session_and_advertisement_history(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
@@ -593,7 +719,13 @@ def test_unexpected_disconnect_clears_session_and_advertisement_history(
     connected = FakeBleakClient()
     client._client = connected
     client._session_key = b"session"
+    client._connected_at = time.monotonic() - 120
+    client._session_started_at = time.monotonic() - 110
     cleared: list[tuple[Any, str]] = []
+    caplog.set_level(
+        logging.DEBUG,
+        logger="custom_components.govee_ble_air_purifier.bluetooth.client",
+    )
     monkeypatch.setattr(
         transport,
         "clear_advertisement_history",
@@ -604,9 +736,13 @@ def test_unexpected_disconnect_clears_session_and_advertisement_history(
 
     assert client._client is None
     assert client._session_key is None
+    assert client._connected_at is None
+    assert client._session_started_at is None
     assert client._fresh_advertisement_after is not None
     assert client._unexpected_disconnect_revision == 1
     assert cleared == [(hass, "AA:BB:CC:DD:EE:FF")]
+    assert "BLE connection disconnected after 120." in caplog.text
+    assert "encrypted session age: 110." in caplog.text
 
 
 @pytest.mark.asyncio

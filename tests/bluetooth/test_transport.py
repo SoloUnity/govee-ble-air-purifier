@@ -30,6 +30,7 @@ def _install_connection_modules(
     device: Any = SimpleNamespace(name="Purifier"),
     client: FakeClient | None = None,
     disconnected_callbacks: list[Any] | None = None,
+    establish_calls: list[dict[str, Any]] | None = None,
 ) -> FakeClient:
     connected_client = client or FakeClient(events)
 
@@ -42,6 +43,8 @@ def _install_connection_modules(
 
     async def establish_connection(**kwargs: Any) -> FakeClient:
         events.append("establish")
+        if establish_calls is not None:
+            establish_calls.append(kwargs)
         if disconnected_callbacks is not None:
             disconnected_callbacks.append(kwargs["disconnected_callback"])
         return connected_client
@@ -68,8 +71,12 @@ async def test_connection_stages_run_in_order_with_one_deadline(
 ) -> None:
     events: list[str] = []
     disconnected_callbacks: list[Any] = []
+    establish_calls: list[dict[str, Any]] = []
     client = _install_connection_modules(
-        monkeypatch, events, disconnected_callbacks=disconnected_callbacks
+        monkeypatch,
+        events,
+        disconnected_callbacks=disconnected_callbacks,
+        establish_calls=establish_calls,
     )
     deadlines: list[float] = []
     original_wait_until = transport._async_wait_until
@@ -91,6 +98,7 @@ async def test_connection_stages_run_in_order_with_one_deadline(
     assert events == ["lookup", "close_stale", "establish"]
     assert deadlines == [deadline, deadline]
     assert len(disconnected_callbacks) == 1
+    assert establish_calls[0]["max_attempts"] == transport.MAX_CONNECTION_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -128,7 +136,7 @@ async def test_stage_timeout_is_translated_without_extending_deadline(
     monkeypatch.setattr(transport, "_async_wait_until", timeout_wait_until)
     caplog.set_level(logging.DEBUG, logger=transport.__name__)
 
-    with pytest.raises(GoveeBleClientError, match="Timed out waiting"):
+    with pytest.raises(GoveeBleClientError, match="Timed out establishing"):
         await transport.async_establish_connection(
             object(),
             "AA:BB:CC:DD:EE:FF",
@@ -268,6 +276,68 @@ async def test_connection_preparation_waits_for_path_inventory_after_advertiseme
 
 
 @pytest.mark.asyncio
+async def test_connection_preparation_keeps_automatic_scan_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active_scan_started = asyncio.Event()
+    allow_active_scan_to_finish = asyncio.Event()
+    active_scan_finished = asyncio.Event()
+    durations: list[float] = []
+    task_names: list[str] = []
+    path_results = [[], [object()]]
+
+    class FakeHass:
+        def async_create_background_task(
+            self, target: Any, name: str
+        ) -> asyncio.Task[Any]:
+            task_names.append(name)
+            return asyncio.create_task(target)
+
+    def async_scanner_devices_by_address(*args: Any, **kwargs: Any) -> list[object]:
+        return path_results.pop(0)
+
+    async def async_request_active_scan(_hass: Any, duration: float) -> None:
+        durations.append(duration)
+        active_scan_started.set()
+        try:
+            await allow_active_scan_to_finish.wait()
+        finally:
+            active_scan_finished.set()
+
+    async def async_process_advertisements(*args: Any, **kwargs: Any) -> Any:
+        await active_scan_started.wait()
+        return SimpleNamespace(time=42.1)
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_clear_advertisement_history": lambda *args, **kwargs: None,
+                "async_last_service_info": lambda *args, **kwargs: None,
+                "async_process_advertisements": async_process_advertisements,
+                "async_request_active_scan": async_request_active_scan,
+                "async_scanner_devices_by_address": async_scanner_devices_by_address,
+            },
+        },
+    )
+
+    await transport.async_prepare_connection_path(
+        FakeHass(), "AA:BB:CC:DD:EE:FF", after=42.0
+    )
+
+    assert durations == [transport.RECOVERY_ACTIVE_SCAN_DURATION]
+    assert task_names == ["Govee BLE recovery active scan"]
+    assert active_scan_finished.is_set() is False
+    assert transport._ACTIVE_SCAN_TASKS
+
+    allow_active_scan_to_finish.set()
+    await active_scan_finished.wait()
+    await asyncio.sleep(0)
+    assert not transport._ACTIVE_SCAN_TASKS
+
+
+@pytest.mark.asyncio
 async def test_connection_preparation_accepts_a_cached_fresh_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,6 +351,9 @@ async def test_connection_preparation_accepts_a_cached_fresh_path(
         events.append("wait")
         raise AssertionError("cached fresh advertisement should be accepted")
 
+    async def async_request_active_scan(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("cached path should not require a mode transition")
+
     install_modules(
         monkeypatch,
         {
@@ -290,6 +363,7 @@ async def test_connection_preparation_accepts_a_cached_fresh_path(
                     time=42.1
                 ),
                 "async_process_advertisements": async_process_advertisements,
+                "async_request_active_scan": async_request_active_scan,
                 "async_scanner_devices_by_address": async_scanner_devices_by_address,
             },
         },

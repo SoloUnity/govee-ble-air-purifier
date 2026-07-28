@@ -11,8 +11,12 @@ from . import GoveeBleClientError
 
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
+_ACTIVE_SCAN_TASKS: set[asyncio.Task[None]] = set()
 FRESH_ADVERTISEMENT_TIMEOUT = 10
 FRESH_ADVERTISEMENT_POLL_INTERVAL = 0.1
+CONNECTION_TIMEOUT = 25.0
+MAX_CONNECTION_ATTEMPTS = 2
+RECOVERY_ACTIVE_SCAN_DURATION = FRESH_ADVERTISEMENT_TIMEOUT + CONNECTION_TIMEOUT
 
 
 async def _async_wait_until(awaitable: Awaitable[_T], deadline: float) -> _T:
@@ -83,6 +87,32 @@ async def _async_wait_for_connectable_path(
         await asyncio.sleep(min(FRESH_ADVERTISEMENT_POLL_INTERVAL, remaining))
 
 
+def _start_active_scan(bluetooth: Any, hass: Any) -> None:
+    """Start a bounded Active window that outlives advertisement discovery."""
+
+    request_active_scan = getattr(bluetooth, "async_request_active_scan", None)
+    if request_active_scan is None:
+        return
+
+    async def request_scan() -> None:
+        try:
+            await request_active_scan(hass, RECOVERY_ACTIVE_SCAN_DURATION)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.debug("Unable to extend active Bluetooth scan", exc_info=True)
+
+    if create_background_task := getattr(hass, "async_create_background_task", None):
+        task = create_background_task(
+            request_scan(), "Govee BLE recovery active scan"
+        )
+    else:
+        create_task = getattr(hass, "async_create_task", asyncio.create_task)
+        task = create_task(request_scan())
+    _ACTIVE_SCAN_TASKS.add(task)
+    task.add_done_callback(_ACTIVE_SCAN_TASKS.discard)
+
+
 async def async_prepare_connection_path(
     hass: Any,
     address: str,
@@ -115,6 +145,7 @@ async def async_prepare_connection_path(
             f"No fresh connectable Bluetooth path is available for {address}"
         )
 
+    _start_active_scan(bluetooth, hass)
     threshold = after if after is not None else asyncio.get_running_loop().time()
     _LOGGER.debug(
         "No fresh connectable path for %s; waiting for a new advertisement",
@@ -206,6 +237,7 @@ async def async_establish_connection(
                 device=ble_device,
                 name=ble_device.name or address,
                 disconnected_callback=disconnected_callback,
+                max_attempts=MAX_CONNECTION_ATTEMPTS,
             ),
             deadline,
         )
@@ -221,7 +253,9 @@ async def async_establish_connection(
             asyncio.get_running_loop().time() - started,
             exc_info=True,
         )
-        raise GoveeBleClientError("Timed out waiting for purifier response") from err
+        raise GoveeBleClientError(
+            "Timed out establishing Bluetooth connection"
+        ) from err
 
 
 async def async_disconnect(client: Any, *, deadline: float) -> None:

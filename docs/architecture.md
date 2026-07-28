@@ -172,6 +172,10 @@ The client encrypts only at the GATT write boundary and decrypts before the
 shared matcher and decoder path. A healthy cached connection reuses its session
 key; disconnect, replacement, failure, idle release, and close all discard it.
 Every reconnect negotiates a new key. Plaintext profiles bypass these transforms.
+Connection, handshake, and application work use separate bounded phases: a slow
+BlueZ connection cannot consume the shorter response timeout, and application
+timing begins only after any encrypted handshake succeeds. Lifecycle logs report
+connection and session ages but never key material.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
 notification subscription to issue the power and status queries in sequence.
@@ -194,9 +198,12 @@ before establishment, connection establishment, and bounded best-effort
 disconnect. On supported Home Assistant versions it clears static advertisement
 deduplication after a GATT session. Advertisement recovery uses Active callback
 semantics, which waits on an already Active scanner or requests a temporary
-window from an Automatic scanner. Failed waits back off from 60 to 300 seconds.
-Connection stages apply the caller's existing deadline without extending it,
-and disconnect cleanup errors are suppressed.
+window from an Automatic scanner. That window is sized to cover advertisement
+recovery and the bounded connection attempt so an Active-only device remains
+represented in BlueZ while connecting. Failed waits back off from 60 to 300
+seconds. Transport
+connection stages share a dedicated deadline and bounded upstream retry count;
+disconnect cleanup errors are suppressed.
 
 ## Coordinator Publication
 

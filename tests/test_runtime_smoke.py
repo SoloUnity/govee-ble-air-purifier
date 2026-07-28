@@ -73,6 +73,7 @@ def test_family_fallback_profile_loads_with_real_home_assistant() -> None:
 
 def test_bluetooth_recovery_uses_supported_home_assistant_apis() -> None:
     from homeassistant.components import bluetooth
+    from homeassistant.core import HomeAssistant
 
     process_parameters = signature(bluetooth.async_process_advertisements).parameters
 
@@ -86,6 +87,9 @@ def test_bluetooth_recovery_uses_supported_home_assistant_apis() -> None:
     assert callable(bluetooth.async_last_service_info)
     assert callable(bluetooth.async_scanner_devices_by_address)
     assert bluetooth.BluetoothScanningMode.ACTIVE is not None
+    if hasattr(bluetooth, "async_clear_advertisement_history"):
+        assert callable(bluetooth.async_request_active_scan)
+    assert callable(HomeAssistant.async_create_background_task)
 
 
 @pytest.mark.asyncio
