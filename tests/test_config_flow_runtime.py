@@ -32,6 +32,9 @@ class _ConfigFlow:
     def _abort_if_unique_id_configured(self, **kwargs: object) -> None:
         return None
 
+    def _async_current_ids(self, include_ignore: bool = True) -> set[str | None]:
+        return set()
+
     def async_abort(self, **kwargs: object) -> dict[str, object]:
         return {"type": "abort", **kwargs}
 
@@ -255,6 +258,65 @@ async def test_user_step_renders_without_selector_helpers(
 
     assert result["type"] == "form"
     assert result["step_id"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_user_step_orders_manual_address_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user()
+
+    assert list(_schema_by_key(result["data_schema"])) == [
+        "discovered_device",
+        "name",
+        "polling_interval",
+        "address",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_user_step_hides_configured_devices_but_preserves_duplicate_abort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_address = "AA:BB:CC:DD:EE:01"
+    available_address = "AA:BB:CC:DD:EE:02"
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: (
+        SimpleNamespace(name="GVH7124CONFIGURED", address=configured_address, rssi=-40),
+        SimpleNamespace(name="GVH7124AVAILABLE", address=available_address, rssi=-50),
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+    flow._async_current_ids = lambda include_ignore=True: {"aabbccddee01"}
+
+    result = await flow.async_step_user()
+    fields = _schema_by_key(result["data_schema"])
+    marker, selector = fields["discovered_device"]
+
+    assert marker.default == available_address
+    assert configured_address not in selector.container
+    assert available_address in selector.container
+
+    duplicate_checks: list[dict[str, object]] = []
+    flow._abort_if_unique_id_configured = lambda **kwargs: duplicate_checks.append(
+        kwargs
+    )
+    submitted = await flow.async_step_user(
+        {
+            "discovered_device": configured_address,
+            "polling_interval": 15,
+        }
+    )
+
+    assert submitted["step_id"] == "custom_auto"
+    assert duplicate_checks == [{"updates": {"address": configured_address}}]
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,12 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await request_active_scan(self.hass)
         discovered_options = _discovered_device_options(self.hass)
         discovered_by_value = {option.value: option for option in discovered_options}
+        configured_ids = self._async_current_ids(include_ignore=False)
+        discovered_options = tuple(
+            option
+            for option in discovered_options
+            if _unique_id_from_address(option.value) not in configured_ids
+        )
         if user_input is not None:
             selected_device = user_input.get(
                 CONF_DISCOVERED_DEVICE, MANUAL_DEVICE_VALUE
@@ -363,12 +369,12 @@ def _user_schema(
                 CONF_DISCOVERED_DEVICE,
                 default=default_device,
             ): vol.In(_select_options(discovered_options)),
-            vol.Optional(CONF_ADDRESS): str,
             vol.Optional(CONF_NAME): str,
             vol.Required(
                 CONF_POLLING_INTERVAL,
                 default=DEFAULT_POLLING_INTERVAL_SECONDS,
             ): _polling_interval_schema_value(),
+            vol.Optional(CONF_ADDRESS): str,
         }
     )
 

@@ -145,9 +145,9 @@ Govee BLE Air Purifier
 |-- Recently seen purifier
 |   |-- <recognized names containing H712 plus one ASCII letter or digit>
 |   `-- Enter address manually
-|-- BLE address for manual setup
 |-- Name
 |-- Polling interval in seconds
+|-- BLE address for manual setup
 `-- Submit
 ```
 
@@ -155,10 +155,10 @@ The fields behave as follows:
 
 | Field | Required behavior |
 | --- | --- |
-| Recently seen purifier | Defaults to the first compatible cached device, or **Enter address manually** when none is available. |
-| BLE address for manual setup | Required only for manual entry. Accepts a complete MAC address or platform BLE UUID. |
+| Recently seen purifier | Shows compatible cached devices that have not already been added. Defaults to the first available device, or **Enter address manually** when none is available. |
 | Name | Defaults to the matched profile's display name (`Govee H7124 Air Purifier` for the tested H7124 definition); a discovered device name is used when available unless the user supplies a name. |
 | Polling interval | Whole seconds from 5 through 300; default is 10. |
+| BLE address for manual setup | Required only for manual entry. Accepts a complete MAC address or platform BLE UUID. |
 
 Manual address entry is not blind. Home Assistant must have cached a
 connectable advertisement for that address whose name contains the recognized
