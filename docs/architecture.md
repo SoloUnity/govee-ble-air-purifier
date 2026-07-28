@@ -18,7 +18,7 @@ Home Assistant config entry ---> __init__.py ---> GoveeRuntimeData
                                                     |       |       \
                                                     |       |        diagnostics
                                                     |       |
-                          fan/sensor/switch entities |       CustomAutoController
+                    fan/light/sensor/switch entities |       CustomAutoController
                                              \       |       /
                                               AutoResumeManager
                                                      |
@@ -48,8 +48,8 @@ Home Assistant Bluetooth <---------------------------------------+
 The branches have these boundaries:
 
 - Root Home Assistant entrypoints are `__init__.py`, `config_flow.py`,
-  `diagnostics.py`, and the active `fan.py`, `sensor.py`, and `switch.py`
-  platform modules.
+  `diagnostics.py`, and the active `fan.py`, `light.py`, `sensor.py`, and
+  `switch.py` platform modules.
 - `__init__.py` is the composition root for a loaded config entry. It creates
   one client, coordinator, Custom Auto controller, and Auto resume manager,
   stores them in
@@ -88,14 +88,16 @@ use this same boundary.
 
 ## Models And Protocol
 
-`models.py` defines two deliberately different immutable values:
+`models.py` defines three deliberately different immutable values:
 
 - `DecodedStatus` is the narrow result of decoding one status frame (the
   tested H7124 definition decodes an `aa19` frame). It contains PM2.5 and
   filter life only.
 - `PurifierState` is the application-facing snapshot exchanged by the BLE
   client, coordinator, entities, diagnostics, and Custom Auto. It also carries
-  power and the integration's known fan mode.
+  power, the integration's known fan mode, and optional `NightLightState`.
+- `NightLightState` independently carries known light power, device brightness
+  percentage, and queried or command-confirmed RGB color.
 
 `bluetooth/framing.py` is generic frame infrastructure. It builds 20-byte Govee
 frames and validates frame length and XOR checksum. It does not know model
@@ -113,9 +115,11 @@ here; they cannot be added by JSON alone.
 and `h7124.json` contain the physically tested H7124 definition; `h7129.json`
 contains the capture-derived H7129 definition. Each file owns its GATT service
 and characteristic UUIDs, transport encryption selection, and exact outbound
-20-byte power, query, and fan-mode command frames. The JSON does not own
-encryption mechanics or response interpretation. Future model files are
-complete definitions, not partial inheritance over another file.
+20-byte power, query, and fan-mode command frames. Exact profiles may also own
+an optional `night_light` capability with static calls and variable
+brightness/RGB templates. The JSON does not own encryption mechanics or
+response interpretation. Future model files are complete definitions, not
+partial inheritance over another file.
 
 `profiles.py` searches advertised names case-insensitively for `H712` plus one
 ASCII letter or digit (for example `GVH7124`, `GVH712C`, or
@@ -135,6 +139,11 @@ Auto switch only when the profile provides Sleep, Low, Medium, High, Turbo,
 and hardware Auto, preventing the H7124-specific policy from requesting a mode
 that a narrower profile does not define.
 
+Night-light availability is separately gated only by the optional profile
+block. H7124 and H7129 define it; `default.json` does not, so unverified fallback
+models do not expose the light. Both exact profiles use the same plaintext
+commands, with H7129 encryption remaining a transport concern.
+
 ## Bluetooth Ownership
 
 `bluetooth/govee_v1.py` owns only the H7129 frame transform and handshake frame
@@ -152,7 +161,7 @@ Neither consumes the subsequent lock or application budget. Connection and
 service discovery then have a separate 25-second deadline. A newly connected
 H7129 has a separate 10-second handshake deadline. Transaction-lock waiting and
 the application exchange use the operation's normal budget: 5 seconds for a
-two-response poll and 2 seconds for command confirmation. The application
+two- or four-response poll and 2 seconds for command confirmation. The application
 budget starts after connection and handshake complete. Explicit disconnect
 cleanup has its own 5-second bound. Timeout errors identify idle cleanup, lock
 waiting, a write/setup stage, or an actual purifier response rather than
@@ -198,7 +207,9 @@ the same counts so missing callbacks can be distinguished from unexpected
 traffic without exposing frame contents.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
-notification subscription to issue the power and status queries in sequence.
+notification subscription to issue purifier power and status queries in
+sequence. Profiles with a night light add power/brightness and RGB state
+queries to the same transaction.
 The underlying connection may have been retained from an earlier transaction.
 The notification handler ignores identified stale handshake traffic, accepts
 only the matcher for the current request, validates the frame, and resolves its
@@ -242,6 +253,10 @@ A successful poll merges the client's `PurifierState` into coordinator data:
   `last_pm25_update_success` false, so cached data cannot drive Custom Auto.
 - The last integration-commanded fan mode is retained because the verified poll
   responses do not report all manual modes.
+- Night-light power and brightness come from the latest light report. A decoded
+  RGB report replaces cached color; an unknown discriminator such as H7129
+  `0xfc` preserves a command-confirmed runtime color instead of inventing or
+  erasing one.
 
 Poll failures become Home Assistant `UpdateFailed` failures. Entity availability
 follows coordinator health rather than the presence of cached values.
@@ -252,6 +267,12 @@ reconcile with the purifier. Command-side publication does not increment the
 PM2.5 sample revision, so it cannot masquerade as a fresh air-quality reading.
 If known power is off, setting a mode uses the client's combined power-and-mode
 transaction where available.
+
+Night-light services use the same coordinator lock. A known-off or unknown
+light is powered on before requested settings; a known-on light receives only
+the requested brightness or RGB writes. Each confirmed step is published, so a
+later failure raises to Home Assistant without discarding earlier confirmed
+state. The light does not restore RGB after restart.
 
 ## Custom Auto Control Flow
 
@@ -330,7 +351,8 @@ publication, and BLE request/notification state.
 Config entry setup resolves the profile, creates the client and coordinator,
 performs the first refresh, creates `CustomAutoController` from
 `CustomAutoConfig`, creates `AutoResumeManager`, stores `GoveeRuntimeData`, and
-forwards the active fan, sensor, and switch platforms. Any setup failure stops
+forwards the active fan, light, sensor, and switch platforms. The light platform
+adds no entity when the profile capability is absent. Any setup failure stops
 the manager and controller if they were created and shuts down the coordinator
 so a successful first refresh cannot leak its retained connection.
 

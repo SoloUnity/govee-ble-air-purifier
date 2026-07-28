@@ -29,11 +29,25 @@ async def async_get_config_entry_diagnostics(
         coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     state = None
     if coordinator is not None and coordinator.data is not None:
+        night_light = coordinator.data.night_light
         state = {
             "is_on": coordinator.data.is_on,
             "fan_mode": coordinator.data.fan_mode,
             "pm25": coordinator.data.pm25,
             "filter_life": coordinator.data.filter_life,
+            "night_light": (
+                {
+                    "is_on": night_light.is_on,
+                    "brightness_percent": night_light.brightness_percent,
+                    "rgb_color": (
+                        list(night_light.rgb_color)
+                        if night_light.rgb_color is not None
+                        else None
+                    ),
+                }
+                if night_light is not None
+                else None
+            ),
         }
     return {
         "entry": data,

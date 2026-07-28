@@ -32,10 +32,14 @@ def _write_profile(path: Path, data: dict) -> None:
 
 
 def test_bundled_h7124_definition_matches_default_fallback() -> None:
-    assert _profile_data() == json.loads(
+    h7124 = _profile_data()
+    default = json.loads(
         (PROFILE_DIRECTORY / "default.json").read_text(encoding="utf-8")
     )
-    assert _profile_data()["schema_version"] == PROFILE_SCHEMA_VERSION
+
+    assert h7124.pop("night_light") is not None
+    assert h7124 == default
+    assert h7124["schema_version"] == PROFILE_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize(
@@ -85,6 +89,8 @@ def test_observed_ihoment_h7129_name_uses_exact_encrypted_profile() -> None:
         "3a 05 03 00 00 12 00 00 00 00 00 00 00 00 00 00 00 00 00 2e"
     )
     assert profile.supports_custom_auto is True
+    assert profile.night_light is not None
+    assert profile.night_light.power_on_command == H7124_PROFILE.night_light.power_on_command
 
 
 def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> None:
@@ -104,6 +110,48 @@ def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> Non
     assert profile.state_query_command == H7124_PROFILE.state_query_command
     assert profile.status_query_command == H7124_PROFILE.status_query_command
     assert profile.fan_mode_commands == H7124_PROFILE.fan_mode_commands
+    assert profile.night_light is None
+
+
+def test_legacy_profile_resolution_keeps_h7124_night_light_capability() -> None:
+    assert get_profile(None) is H7124_PROFILE
+    assert H7124_PROFILE.night_light is not None
+
+
+def test_night_light_profile_builds_captured_dynamic_frames() -> None:
+    night_light = H7124_PROFILE.night_light
+
+    assert night_light is not None
+    assert night_light.build_brightness_command(1) == bytes.fromhex(
+        "3a 1b 01 02 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 23"
+    )
+    assert night_light.build_brightness_command(100) == bytes.fromhex(
+        "3a 1b 01 02 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 46"
+    )
+    assert night_light.build_rgb_command((255, 255, 0)) == bytes.fromhex(
+        "3a 1b 05 0d ff ff 00 00 00 00 00 00 00 00 00 00 00 00 00 29"
+    )
+
+
+@pytest.mark.parametrize("brightness", [True, 0, 101])
+def test_night_light_profile_rejects_invalid_brightness(brightness: object) -> None:
+    night_light = H7124_PROFILE.night_light
+
+    assert night_light is not None
+    with pytest.raises(ValueError, match="brightness must be from 1 to 100"):
+        night_light.build_brightness_command(brightness)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "rgb_color",
+    [(1, 2), (1, 2, 3, 4), (True, 0, 0), (-1, 0, 0), (256, 0, 0)],
+)
+def test_night_light_profile_rejects_invalid_rgb(rgb_color: tuple) -> None:
+    night_light = H7124_PROFILE.night_light
+
+    assert night_light is not None
+    with pytest.raises(ValueError, match="Night-light RGB"):
+        night_light.build_rgb_command(rgb_color)
 
 
 def test_exact_model_definition_takes_precedence_over_default(tmp_path: Path) -> None:
@@ -159,6 +207,80 @@ def test_profile_schema_rejects_unknown_keys() -> None:
     data["unexpected"] = True
 
     with pytest.raises(ValueError, match="unknown unexpected"):
+        _parse_profile_definition(data, source="test.json")
+
+
+def test_profile_schema_allows_absent_optional_night_light() -> None:
+    data = _profile_data()
+    del data["night_light"]
+
+    definition = _parse_profile_definition(data, source="test.json")
+
+    assert definition.night_light is None
+
+
+def test_profile_schema_rejects_incomplete_night_light() -> None:
+    data = _profile_data()
+    del data["night_light"]["rgb_state_query"]
+
+    with pytest.raises(ValueError, match="missing rgb_state_query"):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        (
+            "brightness_template",
+            "3a 1b 01 02 {level}",
+            "unknown placeholder",
+        ),
+        (
+            "brightness_template",
+            "3a 1b 01 02 {brightness} {brightness}",
+            "exactly once",
+        ),
+        (
+            "rgb_template",
+            "3a 1b 05 0d {red} {green}",
+            "exactly once",
+        ),
+    ],
+)
+def test_profile_schema_rejects_invalid_night_light_templates(
+    key: str, value: str, message: str
+) -> None:
+    data = _profile_data()
+    data["night_light"][key] = value
+
+    with pytest.raises(ValueError, match=message):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        (
+            "power_on",
+            "33 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33",
+        ),
+        (
+            "brightness_template",
+            "33 01 01 00 {brightness}",
+        ),
+        (
+            "rgb_template",
+            "3a 1b 05 0c {red} {green} {blue}",
+        ),
+    ],
+)
+def test_profile_schema_rejects_unexpected_night_light_layouts(
+    key: str, value: str
+) -> None:
+    data = _profile_data()
+    data["night_light"][key] = value
+
+    with pytest.raises(ValueError, match="unexpected night-light layout"):
         _parse_profile_definition(data, source="test.json")
 
 

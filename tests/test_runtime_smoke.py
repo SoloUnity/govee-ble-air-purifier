@@ -32,6 +32,7 @@ RUNTIME_MODULES = (
     "diagnostics",
     "entity",
     "fan",
+    "light",
     "profiles",
     "sensor",
     "switch",
@@ -98,12 +99,19 @@ def test_bluetooth_recovery_uses_supported_home_assistant_apis() -> None:
 async def test_platform_setup_uses_real_home_assistant_entities() -> None:
     """Construct each configured platform's entities through its setup hook."""
     from homeassistant.components.fan import FanEntity
+    from homeassistant.components.light import LightEntity
     from homeassistant.components.sensor import SensorEntity
     from homeassistant.components.switch import SwitchEntity
 
-    from custom_components.govee_ble_air_purifier.models import PurifierState
+    from custom_components.govee_ble_air_purifier.models import (
+        NightLightState,
+        PurifierState,
+    )
     from custom_components.govee_ble_air_purifier.fan import (
         async_setup_entry as setup_fan,
+    )
+    from custom_components.govee_ble_air_purifier.light import (
+        async_setup_entry as setup_light,
     )
     from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
     from custom_components.govee_ble_air_purifier.sensor import (
@@ -113,9 +121,25 @@ async def test_platform_setup_uses_real_home_assistant_entities() -> None:
         async_setup_entry as setup_switch,
     )
 
+    light_commands = []
+
+    async def async_set_night_light(**kwargs) -> None:
+        light_commands.append(kwargs)
+
     coordinator = SimpleNamespace(
+        async_set_night_light=async_set_night_light,
         async_add_listener=lambda listener: lambda: None,
-        data=PurifierState(is_on=True, pm25=7, filter_life=95, fan_mode="Low"),
+        data=PurifierState(
+            is_on=True,
+            pm25=7,
+            filter_life=95,
+            fan_mode="Low",
+            night_light=NightLightState(
+                is_on=True,
+                brightness_percent=50,
+                rgb_color=(255, 0, 0),
+            ),
+        ),
         last_update_success=True,
         profile=H7124_PROFILE,
     )
@@ -132,6 +156,7 @@ async def test_platform_setup_uses_real_home_assistant_entities() -> None:
             controller=controller,
             coordinator=coordinator,
             auto_resume=auto_resume,
+            profile=H7124_PROFILE,
         ),
         unique_id="aabbccddeeff",
     )
@@ -140,10 +165,30 @@ async def test_platform_setup_uses_real_home_assistant_entities() -> None:
     await setup_fan(None, entry, entities.extend)
     await setup_sensor(None, entry, entities.extend)
     await setup_switch(None, entry, entities.extend)
+    await setup_light(None, entry, entities.extend)
 
     assert sum(isinstance(entity, FanEntity) for entity in entities) == 1
     assert sum(isinstance(entity, SensorEntity) for entity in entities) == 2
     assert sum(isinstance(entity, SwitchEntity) for entity in entities) == 1
+    assert sum(isinstance(entity, LightEntity) for entity in entities) == 1
+
+    night_light = next(entity for entity in entities if isinstance(entity, LightEntity))
+    assert night_light.is_on is True
+    assert night_light.color_mode.value == "rgb"
+    assert night_light.brightness == 128
+    assert night_light.rgb_color == (255, 0, 0)
+
+    await night_light.async_turn_on(brightness=128, rgb_color=(255, 255, 0))
+    await night_light.async_turn_off()
+
+    assert light_commands == [
+        {
+            "is_on": True,
+            "brightness_percent": 50,
+            "rgb_color": (255, 255, 0),
+        },
+        {"is_on": False},
+    ]
 
 
 @pytest.mark.asyncio

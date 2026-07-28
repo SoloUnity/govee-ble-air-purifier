@@ -26,6 +26,7 @@ features.
 - Filter life percentage
 - Air purifier power control
 - Fan speed and mode control
+- Optional RGB and brightness night-light control on H7124 and H7129
 - Optional integration-managed Custom Auto fan control
 
 ## Installation
@@ -55,6 +56,19 @@ Requires Home Assistant 2024.8.0 or newer.
 
 Setup is always this manual flow. The integration does not add itself through
 automatic Bluetooth discovery.
+
+## Night Light
+
+The exact H7124 and H7129 model profiles expose one Home Assistant `light`
+entity with power, brightness, and RGB controls. The capability is declared by
+an optional command block in each model profile; fallback profiles without that
+block do not create a light entity.
+
+Both models use the same application commands. H7124 sends them as plaintext,
+while H7129 uses its connection-specific encrypted session. H7129 accepts the
+same RGB state query, but the captured `0xfc` response does not identify a
+color. Its color therefore remains unknown after restart until a query returns
+an RGB payload or Home Assistant receives an exact echo for a color command.
 
 ## Custom Auto
 

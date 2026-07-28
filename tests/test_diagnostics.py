@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.govee_ble_air_purifier.models import PurifierState
+from custom_components.govee_ble_air_purifier.models import (
+    NightLightState,
+    PurifierState,
+)
 from tests.helpers.ha_stubs import install_modules
 
 
@@ -28,7 +31,17 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
 ) -> None:
     diagnostics = _import_diagnostics(monkeypatch)
     runtime_coordinator = SimpleNamespace(
-        data=PurifierState(is_on=True, fan_mode="Auto", pm25=9, filter_life=91)
+        data=PurifierState(
+            is_on=True,
+            fan_mode="Auto",
+            pm25=9,
+            filter_life=91,
+            night_light=NightLightState(
+                is_on=True,
+                brightness_percent=50,
+                rgb_color=(255, 255, 0),
+            ),
+        )
     )
     legacy_coordinator = SimpleNamespace(
         data=PurifierState(is_on=False, fan_mode="Sleep", pm25=99, filter_life=1)
@@ -69,6 +82,11 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
             "fan_mode": "Auto",
             "pm25": 9,
             "filter_life": 91,
+            "night_light": {
+                "is_on": True,
+                "brightness_percent": 50,
+                "rgb_color": [255, 255, 0],
+            },
         },
         "custom_auto": {
             "active": True,

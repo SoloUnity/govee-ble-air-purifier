@@ -4,20 +4,25 @@ from datetime import timedelta
 import pytest
 
 from custom_components.govee_ble_air_purifier.coordinator import POLLING_INTERVAL
-from custom_components.govee_ble_air_purifier.models import PurifierState
-from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
+from custom_components.govee_ble_air_purifier.models import (
+    NightLightState,
+    PurifierState,
+)
+from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE, get_profile
 
 FAN_MODE_COMMANDS = H7124_PROFILE.fan_mode_commands
 
 
 class FakeClient:
     def __init__(self) -> None:
-        self.commands: list[bytes] = []
+        self.commands: list[object] = []
         self.power = False
         self.pm25 = 12
         self.filter_life = 87
         self.state_fetches = 0
         self.closed = False
+        self.night_light: NightLightState | None = None
+        self.fail_night_light_rgb = False
 
     async def async_get_state(self) -> PurifierState:
         self.state_fetches += 1
@@ -26,6 +31,7 @@ class FakeClient:
             pm25=self.pm25,
             filter_life=self.filter_life,
             fan_mode=None,
+            night_light=self.night_light,
         )
 
     async def async_set_power(self, is_on: bool) -> None:
@@ -41,6 +47,42 @@ class FakeClient:
         self.power = True
         self.commands.append(b"power_on_and_" + FAN_MODE_COMMANDS[mode])
         return PurifierState(is_on=True, fan_mode=mode)
+
+    async def async_set_night_light_power(self, is_on: bool) -> NightLightState:
+        current = self.night_light or NightLightState(brightness_percent=50)
+        self.night_light = NightLightState(
+            is_on=is_on,
+            brightness_percent=current.brightness_percent,
+            rgb_color=current.rgb_color,
+        )
+        self.commands.append(b"light_on" if is_on else b"light_off")
+        return self.night_light
+
+    async def async_set_night_light_brightness(
+        self, brightness_percent: int
+    ) -> NightLightState:
+        current = self.night_light or NightLightState()
+        self.night_light = NightLightState(
+            is_on=True,
+            brightness_percent=brightness_percent,
+            rgb_color=current.rgb_color,
+        )
+        self.commands.append(("light_brightness", brightness_percent))
+        return self.night_light
+
+    async def async_set_night_light_rgb(
+        self, rgb_color: tuple[int, int, int]
+    ) -> NightLightState:
+        if self.fail_night_light_rgb:
+            raise RuntimeError("RGB write failed")
+        current = self.night_light or NightLightState()
+        self.night_light = NightLightState(
+            is_on=current.is_on,
+            brightness_percent=current.brightness_percent,
+            rgb_color=rgb_color,
+        )
+        self.commands.append(("light_rgb", rgb_color))
+        return NightLightState(rgb_color=rgb_color)
 
     async def async_close(self) -> None:
         self.closed = True
@@ -151,7 +193,11 @@ async def test_setting_power_updates_data_without_full_refresh(
     coordinator = GoveeCoordinator(FakeHass(), client)
     monkeypatch.setattr(coordinator, "_schedule_background_refresh", lambda: None)
     coordinator.data = PurifierState(
-        is_on=False, pm25=12, filter_life=87, fan_mode="Low"
+        is_on=False,
+        pm25=12,
+        filter_life=87,
+        fan_mode="Low",
+        night_light=NightLightState(is_on=True, brightness_percent=50),
     )
 
     await coordinator.async_set_power(True)
@@ -163,6 +209,7 @@ async def test_setting_power_updates_data_without_full_refresh(
         pm25=12,
         filter_life=87,
         fan_mode="Low",
+        night_light=NightLightState(is_on=True, brightness_percent=50),
     )
 
 
@@ -192,6 +239,128 @@ async def test_setting_fan_mode_updates_data_without_full_refresh(
         filter_life=87,
         fan_mode="Turbo",
     )
+
+
+@pytest.mark.asyncio
+async def test_poll_preserves_command_confirmed_rgb_when_query_is_unknown() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = FakeClient()
+    client.night_light = NightLightState(is_on=True, brightness_percent=50)
+    coordinator = GoveeCoordinator(FakeHass(), client)
+    coordinator.data = PurifierState(
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 255, 0),
+        )
+    )
+
+    data = await coordinator._async_update_data()
+
+    assert data.night_light == NightLightState(
+        is_on=True,
+        brightness_percent=50,
+        rgb_color=(255, 255, 0),
+    )
+
+
+@pytest.mark.asyncio
+async def test_night_light_settings_power_on_first_when_known_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = FakeClient()
+    coordinator = GoveeCoordinator(FakeHass(), client)
+    monkeypatch.setattr(coordinator, "_schedule_background_refresh", lambda: None)
+    coordinator.data = PurifierState(
+        is_on=True,
+        night_light=NightLightState(
+            is_on=False,
+            brightness_percent=50,
+            rgb_color=(255, 0, 0),
+        ),
+    )
+
+    await coordinator.async_set_night_light(
+        is_on=True,
+        brightness_percent=100,
+        rgb_color=(0, 0, 255),
+    )
+
+    assert client.commands == [
+        b"light_on",
+        ("light_brightness", 100),
+        ("light_rgb", (0, 0, 255)),
+    ]
+    assert coordinator.data.night_light == NightLightState(
+        is_on=True,
+        brightness_percent=100,
+        rgb_color=(0, 0, 255),
+    )
+
+
+@pytest.mark.asyncio
+async def test_night_light_setting_skips_power_when_known_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = FakeClient()
+    client.night_light = NightLightState(is_on=True, brightness_percent=50)
+    coordinator = GoveeCoordinator(FakeHass(), client)
+    monkeypatch.setattr(coordinator, "_schedule_background_refresh", lambda: None)
+    coordinator.data = PurifierState(night_light=client.night_light)
+
+    await coordinator.async_set_night_light(is_on=True, brightness_percent=1)
+
+    assert client.commands == [("light_brightness", 1)]
+    assert coordinator.data.night_light == NightLightState(
+        is_on=True, brightness_percent=1
+    )
+
+
+@pytest.mark.asyncio
+async def test_night_light_partial_failure_keeps_confirmed_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = FakeClient()
+    client.fail_night_light_rgb = True
+    coordinator = GoveeCoordinator(FakeHass(), client)
+    scheduled: list[bool] = []
+    monkeypatch.setattr(
+        coordinator, "_schedule_background_refresh", lambda: scheduled.append(True)
+    )
+    coordinator.data = PurifierState(
+        night_light=NightLightState(is_on=False, brightness_percent=50)
+    )
+
+    with pytest.raises(RuntimeError, match="RGB write failed"):
+        await coordinator.async_set_night_light(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(0, 255, 0),
+        )
+
+    assert coordinator.data.night_light == NightLightState(
+        is_on=True, brightness_percent=100
+    )
+    assert scheduled == [True]
+
+
+@pytest.mark.asyncio
+async def test_night_light_command_rejects_profile_without_capability() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    coordinator = GoveeCoordinator(
+        FakeHass(), FakeClient(), profile=get_profile("h7126")
+    )
+
+    with pytest.raises(ValueError, match="no night-light capability"):
+        await coordinator.async_set_night_light(is_on=True)
 
 
 @pytest.mark.asyncio

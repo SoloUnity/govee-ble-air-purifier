@@ -27,7 +27,7 @@ reference is
 | Recognized BLE local name | Contains `H712` followed by one ASCII letter or digit, case-insensitively (for example `GVH7124`, `GVH712C`, or `ihoment_H7129_6A7D`) | `profiles.py` |
 | Home Assistant integration type | `device` | `manifest.json` |
 | Home Assistant IoT class | `local_polling` | `manifest.json` |
-| Active entity platforms | `fan`, `sensor`, `switch` | `const.py` |
+| Active entity platforms | `fan`, `light`, `sensor`, `switch` | `const.py` |
 | Configuration method | Home Assistant config entries and options flow | `config_flow.py` |
 | Distribution method | HACS custom integration repository | `hacs.json` and repository layout |
 
@@ -247,6 +247,7 @@ entities:
 | Purifier | `fan` | Power, percentage, and Manual or Auto preset control. |
 | PM2.5 | `sensor` | PM2.5 measurement in micrograms per cubic meter with the Home Assistant PM2.5 device class and measurement state class. |
 | Filter life | `sensor` | Remaining filter percentage with the measurement state class. |
+| Night light | `light` | Profile-gated power, brightness, and RGB control on H7124 and H7129. |
 | Custom Auto | `switch` | Gives integration-managed PM2.5 rules ownership of fan speed when the profile defines all policy modes. |
 
 The fan maps percentages to Sleep 20%, Low 40%, Medium 60%, High 80%, and
@@ -263,7 +264,7 @@ or changes the resume target to hardware Auto without powering on an off
 purifier.
 
 Entity unique IDs are derived from the stable config-entry unique ID plus
-`fan`, `pm25`, `filter_life`, or `custom_auto`. These values are persistence
+`fan`, `night_light`, `pm25`, `filter_life`, or `custom_auto`. These values are persistence
 contracts and must not be renamed casually because Home Assistant's entity
 registry and user automations depend on them.
 
@@ -367,8 +368,11 @@ must not be exposed.
 - Device registry identifiers use the integration domain and stable config
   entry unique ID.
 - Every entity has a stable unique ID and `has_entity_name = True` behavior.
-- The main fan entity uses the device name; secondary sensors and the switch use
-  translated entity names.
+- The main fan entity uses the device name; the light, secondary sensors, and
+  switch use translated entity names.
+- The night light advertises only RGB color mode, which includes separate
+  brightness support. Profiles without the optional capability block create no
+  light entity.
 - The PM2.5 sensor uses Home Assistant's PM2.5 device class, concentration unit,
   and measurement state class.
 - The fan declares only supported Home Assistant fan features: speed and preset

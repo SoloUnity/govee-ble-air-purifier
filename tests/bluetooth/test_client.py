@@ -15,8 +15,14 @@ from custom_components.govee_ble_air_purifier.bluetooth import (
     GoveeBleDisconnectedError,
 )
 from custom_components.govee_ble_air_purifier.bluetooth.framing import build_frame
-from custom_components.govee_ble_air_purifier.models import PurifierState
-from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
+from custom_components.govee_ble_air_purifier.models import (
+    NightLightState,
+    PurifierState,
+)
+from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE, get_profile
+
+NIGHT_LIGHT = H7124_PROFILE.night_light
+assert NIGHT_LIGHT is not None
 
 
 class FakeBleakClient:
@@ -94,6 +100,23 @@ class FakeBleakClient:
             self.notify_handler(
                 None, build_frame(bytes.fromhex("aa 19 81 00 2a 00 00 55"))
             )
+        if command == NIGHT_LIGHT.power_brightness_query_command:
+            self.notify_handler(None, build_frame(bytes.fromhex("aa 1b 01 01 64")))
+        if command == NIGHT_LIGHT.rgb_state_query_command:
+            self.notify_handler(
+                None, build_frame(bytes.fromhex("aa 1b 05 0d ff 00 00"))
+            )
+        if command == NIGHT_LIGHT.power_on_command:
+            self.notify_handler(None, build_frame(bytes.fromhex("3a 1b 01 01 64")))
+        if command == NIGHT_LIGHT.power_off_command:
+            self.notify_handler(None, build_frame(bytes.fromhex("3a 1b 01 00 64")))
+        if command[:4] == bytes.fromhex("3a 1b 01 02"):
+            self.notify_handler(
+                None,
+                build_frame(bytes.fromhex("3a 1b 01 01") + command[4:5]),
+            )
+        if command[:4] == bytes.fromhex("3a 1b 05 0d"):
+            self.notify_handler(None, command)
         if command == H7124_PROFILE.power_on_command:
             self.notify_handler(
                 None, build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01"))
@@ -134,6 +157,8 @@ class _RecordingTimeoutClient(GoveeBleClient):
         return (
             build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01")),
             build_frame(bytes.fromhex("aa 19 81 00 2a 00 00 55")),
+            build_frame(bytes.fromhex("aa 1b 01 01 64")),
+            build_frame(bytes.fromhex("aa 1b 05 0d ff 00 00")),
         )
 
 
@@ -160,6 +185,8 @@ class _RetryingStateClient(GoveeBleClient):
         return (
             build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01")),
             build_frame(bytes.fromhex("aa 19 81 00 2a 00 00 55")),
+            build_frame(bytes.fromhex("aa 1b 01 01 64")),
+            build_frame(bytes.fromhex("aa 1b 05 0d ff 00 00")),
         )
 
 
@@ -498,6 +525,11 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
         is_on=True,
         pm25=42,
         filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
     )
 
     assert client.connection_count == 1
@@ -506,6 +538,33 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
     assert fake.writes == [
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.state_query_command, False),
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.status_query_command, False),
+        (
+            H7124_PROFILE.write_char_uuid,
+            NIGHT_LIGHT.power_brightness_query_command,
+            False,
+        ),
+        (
+            H7124_PROFILE.write_char_uuid,
+            NIGHT_LIGHT.rgb_state_query_command,
+            False,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_state_skips_night_light_queries_without_profile_capability() -> None:
+    fake = FakeBleakClient()
+    client = _TestableGoveeBleClient(fake)
+    client._profile = get_profile("h7126")
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+    )
+    assert [write[1] for write in fake.writes] == [
+        H7124_PROFILE.state_query_command,
+        H7124_PROFILE.status_query_command,
     ]
 
 
@@ -517,6 +576,11 @@ async def test_get_state_uses_shorter_poll_timeout() -> None:
         is_on=True,
         pm25=42,
         filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
     )
     assert client.timeout == 5.0
 
@@ -529,6 +593,11 @@ async def test_get_state_retries_once_after_a_disconnect() -> None:
         is_on=True,
         pm25=42,
         filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
     )
     assert client.calls == 2
 
@@ -859,7 +928,38 @@ async def test_extra_notification_after_batch_completion_is_ignored() -> None:
         is_on=True,
         pm25=42,
         filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
     )
+
+
+@pytest.mark.asyncio
+async def test_night_light_commands_use_profile_frames_and_confirmations() -> None:
+    fake = FakeBleakClient()
+    client = _TestableGoveeBleClient(fake)
+
+    assert await client.async_set_night_light_power(True) == NightLightState(
+        is_on=True, brightness_percent=100
+    )
+    assert await client.async_set_night_light_brightness(50) == NightLightState(
+        is_on=True, brightness_percent=50
+    )
+    assert await client.async_set_night_light_rgb((255, 255, 0)) == NightLightState(
+        rgb_color=(255, 255, 0)
+    )
+    assert await client.async_set_night_light_power(False) == NightLightState(
+        is_on=False, brightness_percent=100
+    )
+
+    assert [write[1] for write in fake.writes] == [
+        NIGHT_LIGHT.power_on_command,
+        NIGHT_LIGHT.build_brightness_command(50),
+        NIGHT_LIGHT.build_rgb_command((255, 255, 0)),
+        NIGHT_LIGHT.power_off_command,
+    ]
 
 
 @pytest.mark.asyncio

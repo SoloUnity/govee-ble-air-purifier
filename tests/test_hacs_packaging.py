@@ -76,7 +76,9 @@ def test_integration_packages_bundled_model_profiles() -> None:
     h7124 = _read_json(profiles / "h7124.json")
     h7129 = _read_json(profiles / "h7129.json")
 
-    assert default == h7124
+    assert "night_light" not in default
+    assert "night_light" in h7124
+    assert "night_light" in h7129
     assert default["schema_version"] == h7129["schema_version"] == 1
     assert default["encryption"] == "none"
     assert h7129["encryption"] == "govee_v1"

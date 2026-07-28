@@ -18,12 +18,18 @@ Physical targets and evidence:
 | Model | Evidence | BLE name | Firmware | Hardware |
 | --- | --- | --- | --- | --- |
 | `H7124` | Physically replayed and validated | `GVH712438FE` | `1.00.33` | `4.01.00` |
-| `H7129` | App traffic captured and decrypted; integration connection, handshake, polling, disconnect, and recovery physically observed | `ihoment_H7129_*` | Not captured | Not captured |
+| `H7129` | App traffic captured and decrypted, including night-light control; integration connection, handshake, polling, disconnect, and recovery physically observed | `ihoment_H7129_*` | Not captured | Not captured |
 
 The H7124 target used macOS CoreBluetooth UUID
 `47663FD1-1875-BFAD-C898-D79C0B8F0A3D`. A secondary H7124 unit was observed as
 `GVH7124178E`. The H7129 capture covered connection setup, power on, Low,
 Medium, High, Sleep, Auto Default, Turbo, status polling, and power off.
+An additional H7124 capture from `GVH712438FE` covered night-light power,
+brightness, RGB control, and state queries. A further H7129 capture from
+`ihoment_H7129_6B51` (SHA-256
+`9fb7a73cebee327dd0290473aea45d7caa7317a389134379552a7308cc83a177`) covered
+night-light queries, power, brightness, and RGB control; every post-handshake
+frame decrypted to a checksum-valid plaintext frame.
 
 ## Device And GATT
 
@@ -221,6 +227,194 @@ H7124 plaintext CLI example:
 .venv/bin/govee-h7124-ble query --address 47663FD1-1875-BFAD-C898-D79C0B8F0A3D --command "3a 05 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3f" --seconds 8 --out captures/set-low.jsonl
 ```
 
+### AA 1B / 3A 1B: Night Light
+
+These frames were captured on both H7124 and H7129. The H7124 source is a
+PacketLogger session from `GVH712438FE` on 2026-07-28 while the official app
+queried the night-light state, reasserted power on, changed brightness from
+100 to 50 to 1 percent, issued green and then blue RGB control writes after
+querying a red state, and turned the light off. The H7129 source is a
+PacketLogger session from `ihoment_H7129_6B51` (public address
+`5C:E7:53:F9:6B:51`) on 2026-07-28 while the official app queried
+power/brightness and color state, reasserted light power on, set brightness to 100,
+50, 1, and 100 percent, wrote red, yellow, green, blue, and red RGB controls,
+and turned the light off. After the Govee V1 handshake, every H7129 frame
+decrypted to a checksum-valid plaintext frame, and the decrypted H7129 control
+layouts were identical to H7124. The captures prove the commands, device
+notifications, and their order; HCI traffic does not by itself verify physical
+light output.
+
+H7124 writes used ATT Write Command `0x52` on handle `0x0015`, and
+notifications used ATT Notification `0x1b` on handle `0x0012`. H7129 used the
+same GATT service and characteristic UUIDs, with notify value handle `0x0016`
+and write value handle `0x0019` (HCI connection handle `0x005b`); its writes
+also used ATT `0x52` and its notifications ATT `0x1b`, with all frames
+encrypted on the wire. All frames below are decrypted plaintext.
+
+#### Power And Brightness
+
+Observed state query on both models:
+
+```text
+aa 1b 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 b0
+```
+
+The response layout is `aa 1b 01 PP BB`, followed by zero bytes through byte 18
+and the checksum. `PP` is the reported power flag and `BB` is the reported
+brightness. Control notifications use the same state layout with prefix `3a`
+instead of `aa`. H7124's startup response reported on at 100 percent; H7129's
+startup response reported on at 50 percent:
+
+```text
+aa 1b 01 01 32 00 00 00 00 00 00 00 00 00 00 00 00 00 00 83
+```
+
+| Action | Model evidence | Control frame | Resulting `3a 1b` state notification |
+| --- | --- | --- | --- |
+| Power on | Both | `3a 1b 01 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20` | H7124: `3a 1b 01 01 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 45`; H7129: `3a 1b 01 01 32 00 00 00 00 00 00 00 00 00 00 00 00 00 00 13` |
+| Brightness 100% | H7129 | `3a 1b 01 02 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 46` | `3a 1b 01 01 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 45` |
+| Brightness 50% | Both | `3a 1b 01 02 32 00 00 00 00 00 00 00 00 00 00 00 00 00 00 10` | `3a 1b 01 01 32 00 00 00 00 00 00 00 00 00 00 00 00 00 00 13` |
+| Brightness 1% | Both | `3a 1b 01 02 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 23` | `3a 1b 01 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20` |
+| Power off | Both | `3a 1b 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 21` | H7124: `3a 1b 01 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 21`; H7129: `3a 1b 01 00 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 44` |
+
+Control byte map:
+
+| Byte | Field | Observed values |
+| --- | --- | --- |
+| 0 | Prefix | `0x3a` |
+| 1 | Night-light command | `0x1b` |
+| 2 | Power/brightness selector | `0x01` |
+| 3 | Operation | `0x01` power, `0x02` brightness |
+| 4 | Operation value | Power `0x00` off or `0x01` on; brightness `0x01` 1%, `0x32` 50%, `0x64` 100% (100% write observed only on H7129) |
+| 5-18 | Unobserved payload | `0x00` in every captured frame |
+| 19 | XOR checksum | XOR of bytes 0-18 |
+
+Power/brightness state byte map:
+
+| Byte | Field | Observed values |
+| --- | --- | --- |
+| 0 | Frame prefix | `0xaa` after a query, `0x3a` after a control write |
+| 1 | Night-light command | `0x1b` |
+| 2 | Power/brightness selector | `0x01` |
+| 3 | Reported power | `0x00` off, `0x01` on |
+| 4 | Reported brightness | `0x01` 1%, `0x32` 50%, `0x64` 100% |
+| 5-18 | Unobserved payload | `0x00` in every captured frame |
+| 19 | XOR checksum | XOR of bytes 0-18 |
+
+The power write only contains the power value; its notification reports the
+retained brightness. On H7124 the light already reported on at 100 percent
+before the captured power-on write, and turning the light off retained and
+reported the brightness value `0x01`. On H7129 the light reported on at 50
+percent at capture start, the power-on notification reported the retained 50
+percent, and after the explicit 100-percent brightness writes the power-off
+notification reported the retained 100 percent. The explicit 100-percent
+brightness write is H7129-only evidence; the H7124 100-percent states came
+from queries and notifications, not from an explicit brightness write in that
+capture.
+
+#### RGB Color
+
+Observed RGB query on both models:
+
+```text
+aa 1b 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 b4
+```
+
+On H7124 the query response layout is `aa 1b 05 0d RR GG BB`, followed by zero
+bytes through byte 18 and the checksum. Observed control writes use the same
+payload layout with prefix `3a` on both models. H7129's only observed color
+query response carried an unknown discriminator instead:
+
+```text
+aa 1b 05 fc 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 48
+```
+
+The `0xfc` value is undecoded and is not proof of an initial red state; the
+H7124 `0x0d` RGB query response layout must not be assumed for H7129.
+
+| Color | Model | Direction | Frame |
+| --- | --- | --- | --- |
+| Red | H7124 | Queried state | `aa 1b 05 0d ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 46` |
+| Red | H7129 | Control and matching notification | `3a 1b 05 0d ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 d6` |
+| Yellow | H7129 | Control and matching notification | `3a 1b 05 0d ff ff 00 00 00 00 00 00 00 00 00 00 00 00 00 29` |
+| Green | Both | Control and matching notification | `3a 1b 05 0d 00 ff 00 00 00 00 00 00 00 00 00 00 00 00 00 d6` |
+| Blue | Both | Control and matching notification | `3a 1b 05 0d 00 00 ff 00 00 00 00 00 00 00 00 00 00 00 00 d6` |
+| Blue | H7124 | Queried state after power off | `aa 1b 05 0d 00 00 ff 00 00 00 00 00 00 00 00 00 00 00 00 46` |
+
+RGB byte map:
+
+| Byte | Field | Observed values |
+| --- | --- | --- |
+| 0 | Frame prefix | `0xaa` for query responses, `0x3a` for controls and their notifications |
+| 1 | Night-light command | `0x1b` |
+| 2 | RGB selector | `0x05` |
+| 3 | RGB discriminator/subcommand | `0x0d`; its independent meaning is unknown |
+| 4 | Red component | `0x00` or `0xff` |
+| 5 | Green component | `0x00` or `0xff` |
+| 6 | Blue component | `0x00` or `0xff` |
+| 7-18 | Unobserved payload | `0x00` in every captured frame |
+| 19 | XOR checksum | XOR of bytes 0-18 |
+
+On H7124, the green and blue notifications were byte-for-byte matches of the
+writes. Blue was also independently returned by the later RGB query. Green was
+not queried before the blue write, so its matching notification should be
+treated as an echo-style acknowledgement rather than independent proof of the
+applied color. Red was reported by three explicit H7124 RGB queries but was
+not set by a control write in that capture. On H7129, every color notification
+was an exact echo of the control write in both decrypted plaintext and
+encrypted wire bytes, and no color was independently queried afterward, so all
+H7129 color notifications are echo-style acknowledgements rather than
+independent confirmation of the applied color.
+
+#### Captured Sequence
+
+Times are the query or control write timestamps; each result came from the
+following device notification.
+
+H7124 (`GVH712438FE`):
+
+| Time UTC | Operation | Result |
+| --- | --- | --- |
+| `2026-07-28T14:54:33.665` | Query power/brightness | On, 100% |
+| `2026-07-28T14:54:33.725` | Query RGB | Red `(255, 0, 0)` |
+| `2026-07-28T14:54:34.625` | Query power/brightness | On, 100% |
+| `2026-07-28T14:54:34.685` | Query RGB | Red `(255, 0, 0)` |
+| `2026-07-28T14:54:35.674` | Write power on | On, retained 100% |
+| `2026-07-28T14:54:36.635` | Query power/brightness | On, 100% |
+| `2026-07-28T14:54:36.696` | Query RGB | Red `(255, 0, 0)` |
+| `2026-07-28T14:54:41.020` | Write brightness `0x32` | On, 50% |
+| `2026-07-28T14:54:44.035` | Write brightness `0x01` | On, 1% |
+| `2026-07-28T14:54:50.940` | Write RGB `(0, 255, 0)` | Matching green notification |
+| `2026-07-28T14:54:54.121` | Write RGB `(0, 0, 255)` | Matching blue notification |
+| `2026-07-28T14:55:00.106` | Write power off | Off, retained brightness 1% |
+| `2026-07-28T14:55:00.906` | Query power/brightness | Off, 1% |
+| `2026-07-28T14:55:00.996` | Query RGB | Blue `(0, 0, 255)` |
+
+H7129 (`ihoment_H7129_6B51`):
+
+| Time UTC | Operation | Result |
+| --- | --- | --- |
+| `2026-07-28T16:07:47.533` | Query power/brightness | On, 50% |
+| `2026-07-28T16:07:47.593` | Query color state | Unknown `0xfc` response |
+| `2026-07-28T16:07:48.402` | Write power on | On, retained 50% |
+| `2026-07-28T16:07:50.805` | Write brightness `0x64` | On, 100% |
+| `2026-07-28T16:07:54.036` | Write brightness `0x32` | On, 50% |
+| `2026-07-28T16:07:55.855` | Write brightness `0x01` | On, 1% |
+| `2026-07-28T16:07:57.304` | Write brightness `0x64` | On, 100% |
+| `2026-07-28T16:08:00.674` | Write RGB `(255, 0, 0)` | Exact echo notification |
+| `2026-07-28T16:08:04.340` | Write RGB `(255, 255, 0)` | Exact echo notification |
+| `2026-07-28T16:08:05.706` | Write RGB `(0, 255, 0)` | Exact echo notification |
+| `2026-07-28T16:08:07.757` | Write RGB `(0, 0, 255)` | Exact echo notification |
+| `2026-07-28T16:08:08.540` | Write RGB `(255, 0, 0)` | Exact echo notification |
+| `2026-07-28T16:08:13.241` | Write power off | Off, retained 100% |
+
+Every listed command and notification is a checksum-valid 20-byte frame;
+H7129 frames are decrypted plaintext. Only brightness values 1, 50, and 100
+and the red, yellow, green, and blue colors were observed; broader accepted
+ranges remain unverified. General purifier `aa 01` polling also appeared in
+the H7129 capture and is purifier state, not night-light state: the purifier
+remained on after the night light was turned off.
+
 ### AA 19: Device Status / PM2.5 / Filter Life
 
 The plaintext query is identical on H7124 and H7129:
@@ -377,6 +571,10 @@ Observed H7124 frame:
 ee aa 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 44
 ```
 
+H7129 emitted the same checksum-valid plaintext in the night-light capture,
+encrypted under the communication key after notification subscription and
+before the `e7 01` handshake request.
+
 Likely connection handshake, heartbeat, or keepalive. All payload bytes are zero in current captures.
 
 ## Query Commands
@@ -458,13 +656,14 @@ This appears mode-related and mirrors parts of the `3a 05` mode layout, but the 
 
 ### Other Observed AA Queries
 
-The sweep results in this section are H7124-only evidence.
+Except for `aa 1b`, whose app observations now include H7129, the app
+observations and sweep results in this section are H7124-only evidence.
 
 | Query | Observed meaning / response |
 |-------|-----------------------------|
 | `aa 14` | Device ID / serial-like binary blob |
 | `aa 16` | Unknown, possibly timer/schedule-related |
-| `aa 1b` | Unknown app query with non-empty responses |
+| `aa 1b` | Night-light power/brightness (`0x01`) and RGB (`0x05`) state queries |
 | `aa 1e` | Unknown app query with echoed response |
 | `aa ab` | Unknown, returned `aa ab 02 ... 03` in sweep |
 | `aa b1` | Device-specific binary blob |
@@ -557,6 +756,15 @@ The H7124 fire-event series changed smoothly across `aa19` bytes 3-4 and
 matched the app-reported `720+ ug/m3` range, confirming raw PM2.5 decoding. The
 H7129 values are consistent with the same response layout.
 
+### Night-Light Evidence
+
+| Model | Evidence | Result |
+| --- | --- | --- |
+| `H7124` | Official-app PacketLogger session | Captured power on/off, brightness 50% and 1%, green and blue RGB writes, matching notifications, and power/brightness and RGB state queries |
+| `H7124` | Queried state before and after controls | Reported initial on/100%/red state and final off/1%/blue state |
+| `H7129` | Decrypted official-app PacketLogger session | Captured power/brightness and color queries, power on/off, brightness 100%, 50%, and 1% writes, and red, yellow, green, and blue RGB writes, all checksum-valid after decryption |
+| `H7129` | Notification behavior | Power/brightness notifications used the normalized state layout with retained brightness; every color notification was an exact echo and no color was independently re-queried |
+
 ### H7129 Encryption Evidence
 
 | Evidence | Result |
@@ -572,8 +780,9 @@ H7129 values are consistent with the same response layout.
 | Feature | Status |
 |---------|--------|
 | H7129 state-changing integration commands | Implemented from decrypted captures; physical command validation through this integration remains pending |
-| Night light toggle | Not decoded on H7124; H7129 not investigated |
-| Night light RGB | Not decoded on H7124; H7129 not investigated |
+| Night-light integration replay | Profile-backed H7124 and H7129 control is implemented; physical replay through this integration remains pending |
+| H7129 `0xfc` color response | Unknown; it is the only observed H7129 color-query response and does not match the H7124 `0x0d` RGB layout |
+| Night-light ranges | Power, brightness 1/50/100 percent, and the captured RGB colors are decoded on both models; broader brightness and RGB ranges and other color modes remain unverified |
 | Display toggle | Not decoded on H7124; H7129 not investigated |
 | Timer/schedule control | Not decoded on H7124; H7129 not investigated |
 | Scene selection | Not decoded on H7124; may use a multi-frame protocol; H7129 not investigated |

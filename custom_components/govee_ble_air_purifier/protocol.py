@@ -7,7 +7,7 @@ from .bluetooth.framing import (
     ProtocolError,
     validate_frame,
 )
-from .models import DecodedStatus
+from .models import DecodedStatus, NightLightState
 
 MAX_PM25_UG_M3 = 999
 
@@ -57,6 +57,81 @@ def is_command_echo(frame: bytes, command: bytes) -> bool:
     except ProtocolError:
         return False
     return True
+
+
+def is_night_light_power_brightness_response(frame: bytes) -> bool:
+    """Return whether a frame reports night-light power and brightness."""
+
+    return (
+        len(frame) == FRAME_LENGTH
+        and frame[0] in (0xAA, 0x3A)
+        and frame[1] == 0x1B
+        and frame[2] == 0x01
+        and frame[3] in (0x00, 0x01)
+        and 1 <= frame[4] <= 100
+        and not any(frame[5:19])
+    )
+
+
+def is_night_light_rgb_state_response(frame: bytes) -> bool:
+    """Return whether a frame answers a night-light color-state query."""
+
+    return (
+        len(frame) == FRAME_LENGTH
+        and frame[0] == 0xAA
+        and frame[1] == 0x1B
+        and frame[2] == 0x05
+        and (
+            (frame[3] == 0x0D and not any(frame[7:19]))
+            or (frame[3] == 0xFC and not any(frame[4:19]))
+        )
+    )
+
+
+def decode_night_light_power_brightness(frame: bytes) -> NightLightState:
+    """Decode a night-light power and brightness report."""
+
+    validate_frame(frame)
+    if not is_night_light_power_brightness_response(frame):
+        raise ProtocolError("Not a night-light power/brightness response")
+    return NightLightState(
+        is_on=frame[3] == 0x01,
+        brightness_percent=frame[4],
+    )
+
+
+def decode_night_light_rgb_state(
+    frame: bytes,
+) -> tuple[int, int, int] | None:
+    """Decode RGB state, or return None for an unknown color discriminator."""
+
+    validate_frame(frame)
+    if not is_night_light_rgb_state_response(frame):
+        raise ProtocolError("Not a night-light RGB state response")
+    if frame[3] == 0xFC:
+        return None
+    return (frame[4], frame[5], frame[6])
+
+
+def is_night_light_power_confirmation(frame: bytes, is_on: bool) -> bool:
+    """Return whether a night-light report confirms requested power."""
+
+    try:
+        return decode_night_light_power_brightness(frame).is_on is is_on
+    except ProtocolError:
+        return False
+
+
+def is_night_light_brightness_confirmation(
+    frame: bytes, brightness_percent: int
+) -> bool:
+    """Return whether a night-light report confirms requested brightness."""
+
+    try:
+        state = decode_night_light_power_brightness(frame)
+    except ProtocolError:
+        return False
+    return state.is_on is True and state.brightness_percent == brightness_percent
 
 
 def is_power_confirmation(frame: bytes, is_on: bool) -> bool:

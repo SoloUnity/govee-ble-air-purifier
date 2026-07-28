@@ -81,10 +81,11 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     assert fallback.key == "h712c"
     assert fallback.model == "H712C"
     assert fallback.fan_mode_commands == H7124_PROFILE.fan_mode_commands
+    assert fallback.night_light is None
 
 
 def test_active_platform_contract_is_stable() -> None:
-    assert PLATFORMS == ["fan", "sensor", "switch"]
+    assert PLATFORMS == ["fan", "sensor", "switch", "light"]
 
 
 def test_auto_resume_restore_values_are_stable() -> None:

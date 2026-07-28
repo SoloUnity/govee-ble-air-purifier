@@ -12,7 +12,7 @@ import re
 from typing import Any
 from uuid import UUID
 
-from .bluetooth.framing import ProtocolError, validate_frame
+from .bluetooth.framing import ProtocolError, build_frame, validate_frame
 from .models import DecodedStatus
 from .protocol import (
     decode_power_state,
@@ -29,6 +29,7 @@ H7124_PROFILE_KEY = "h7124"
 _BLE_MODEL_PATTERN = re.compile(r"(H712[0-9A-Z])", re.IGNORECASE | re.ASCII)
 _PROFILE_KEY_PATTERN = re.compile(r"h712[0-9a-z]\Z")
 _TOP_LEVEL_KEYS = {"schema_version", "encryption", "gatt", "commands"}
+_TOP_LEVEL_OPTIONAL_KEYS = {"night_light"}
 _GATT_KEYS = {"service_uuid", "notify_char_uuid", "write_char_uuid"}
 _COMMAND_KEYS = {
     "power_off",
@@ -36,6 +37,14 @@ _COMMAND_KEYS = {
     "state_query",
     "status_query",
     "fan_modes",
+}
+_NIGHT_LIGHT_KEYS = {
+    "power_off",
+    "power_on",
+    "power_brightness_query",
+    "brightness_template",
+    "rgb_template",
+    "rgb_state_query",
 }
 _CUSTOM_AUTO_REQUIRED_FAN_MODES = frozenset(
     {"Sleep", "Low", "Medium", "High", "Turbo", "Auto"}
@@ -51,6 +60,57 @@ class EncryptionMode(StrEnum):
 
     NONE = "none"
     GOVEE_V1 = "govee_v1"
+
+
+@dataclass(frozen=True)
+class _FrameTemplate:
+    """Validated variable application-frame template."""
+
+    tokens: tuple[int | str, ...]
+    placeholders: frozenset[str]
+
+    def render(self, **values: int) -> bytes:
+        """Render one checksum-valid frame from validated byte values."""
+
+        if set(values) != self.placeholders:
+            raise ValueError("Frame template values do not match its placeholders")
+        rendered: list[int] = []
+        for token in self.tokens:
+            value = values[token] if isinstance(token, str) else token
+            if type(value) is not int or not 0 <= value <= 0xFF:
+                raise ValueError(f"Frame template value {token} must be a byte")
+            rendered.append(value)
+        return build_frame(bytes(rendered))
+
+
+@dataclass(frozen=True)
+class NightLightProfile:
+    """Profile-defined commands for an optional purifier night light."""
+
+    power_off_command: bytes
+    power_on_command: bytes
+    power_brightness_query_command: bytes
+    brightness_template: _FrameTemplate
+    rgb_template: _FrameTemplate
+    rgb_state_query_command: bytes
+
+    def build_brightness_command(self, brightness_percent: int) -> bytes:
+        """Build a brightness command for one device percentage."""
+
+        if type(brightness_percent) is not int or not 1 <= brightness_percent <= 100:
+            raise ValueError("Night-light brightness must be from 1 to 100")
+        return self.brightness_template.render(brightness=brightness_percent)
+
+    def build_rgb_command(self, rgb_color: tuple[int, int, int]) -> bytes:
+        """Build an RGB command for one three-channel color."""
+
+        if not isinstance(rgb_color, tuple) or len(rgb_color) != 3:
+            raise ValueError("Night-light RGB color must contain three channels")
+        red, green, blue = rgb_color
+        for channel in rgb_color:
+            if type(channel) is not int or not 0 <= channel <= 0xFF:
+                raise ValueError("Night-light RGB channels must be bytes")
+        return self.rgb_template.render(red=red, green=green, blue=blue)
 
 
 @dataclass(frozen=True)
@@ -70,6 +130,7 @@ class ModelProfile:
     state_query_command: bytes
     status_query_command: bytes
     fan_mode_commands: dict[str, bytes]
+    night_light: NightLightProfile | None
     is_power_state_response: Callable[[bytes], bool]
     is_status_response: Callable[[bytes], bool]
     decode_power_state: Callable[[bytes], bool]
@@ -98,19 +159,25 @@ class _ProfileDefinition:
     state_query_command: bytes
     status_query_command: bytes
     fan_mode_commands: dict[str, bytes]
+    night_light: NightLightProfile | None
 
 
 def _require_object(
-    value: Any, expected_keys: set[str], *, source: str
+    value: Any,
+    expected_keys: set[str],
+    *,
+    source: str,
+    optional_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Validate one object in a bundled profile definition."""
 
     if not isinstance(value, dict):
         raise ValueError(f"{source} must be a JSON object")
+    optional_keys = optional_keys or set()
     actual_keys = set(value)
-    if actual_keys != expected_keys:
+    if not expected_keys <= actual_keys or not actual_keys <= expected_keys | optional_keys:
         missing = sorted(expected_keys - actual_keys)
-        unknown = sorted(actual_keys - expected_keys)
+        unknown = sorted(actual_keys - expected_keys - optional_keys)
         details = []
         if missing:
             details.append(f"missing {', '.join(missing)}")
@@ -144,6 +211,100 @@ def _parse_frame(value: Any, *, source: str) -> bytes:
     return frame
 
 
+def _parse_frame_template(
+    value: Any, *, placeholders: set[str], source: str
+) -> _FrameTemplate:
+    """Parse a variable command prefix rendered through the frame builder."""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{source} must be a frame template string")
+    tokens: list[int | str] = []
+    seen_placeholders: list[str] = []
+    for raw_token in value.split():
+        if raw_token.startswith("{") or raw_token.endswith("}"):
+            if not re.fullmatch(r"\{[a-z_]+\}", raw_token):
+                raise ValueError(f"{source} contains invalid placeholder {raw_token}")
+            placeholder = raw_token[1:-1]
+            if placeholder not in placeholders:
+                raise ValueError(f"{source} contains unknown placeholder {raw_token}")
+            seen_placeholders.append(placeholder)
+            tokens.append(placeholder)
+            continue
+        if re.fullmatch(r"[0-9A-Fa-f]{2}", raw_token) is None:
+            raise ValueError(f"{source} contains invalid byte {raw_token}")
+        tokens.append(int(raw_token, 16))
+    if len(tokens) > 19:
+        raise ValueError(f"{source} must fit in the first 19 frame bytes")
+    if sorted(seen_placeholders) != sorted(placeholders):
+        raise ValueError(
+            f"{source} must contain each placeholder exactly once: "
+            + ", ".join(f"{{{name}}}" for name in sorted(placeholders))
+        )
+    return _FrameTemplate(tuple(tokens), frozenset(placeholders))
+
+
+def _parse_night_light(value: Any, *, source: str) -> NightLightProfile:
+    """Parse one optional night-light capability block."""
+
+    commands = _require_object(value, _NIGHT_LIGHT_KEYS, source=source)
+    power_off = _parse_frame(commands["power_off"], source=f"{source}.power_off")
+    power_on = _parse_frame(commands["power_on"], source=f"{source}.power_on")
+    power_brightness_query = _parse_frame(
+        commands["power_brightness_query"],
+        source=f"{source}.power_brightness_query",
+    )
+    brightness_template = _parse_frame_template(
+        commands["brightness_template"],
+        placeholders={"brightness"},
+        source=f"{source}.brightness_template",
+    )
+    rgb_template = _parse_frame_template(
+        commands["rgb_template"],
+        placeholders={"red", "green", "blue"},
+        source=f"{source}.rgb_template",
+    )
+    rgb_state_query = _parse_frame(
+        commands["rgb_state_query"], source=f"{source}.rgb_state_query"
+    )
+    expected_values = {
+        "power_off": (power_off, build_frame(bytes.fromhex("3a 1b 01 01 00"))),
+        "power_on": (power_on, build_frame(bytes.fromhex("3a 1b 01 01 01"))),
+        "power_brightness_query": (
+            power_brightness_query,
+            build_frame(bytes.fromhex("aa 1b 01")),
+        ),
+        "rgb_state_query": (
+            rgb_state_query,
+            build_frame(bytes.fromhex("aa 1b 05")),
+        ),
+    }
+    for key, (actual, expected) in expected_values.items():
+        if actual != expected:
+            raise ValueError(f"{source}.{key} has an unexpected night-light layout")
+    if brightness_template.tokens != (0x3A, 0x1B, 0x01, 0x02, "brightness"):
+        raise ValueError(
+            f"{source}.brightness_template has an unexpected night-light layout"
+        )
+    if rgb_template.tokens != (
+        0x3A,
+        0x1B,
+        0x05,
+        0x0D,
+        "red",
+        "green",
+        "blue",
+    ):
+        raise ValueError(f"{source}.rgb_template has an unexpected night-light layout")
+    return NightLightProfile(
+        power_off_command=power_off,
+        power_on_command=power_on,
+        power_brightness_query_command=power_brightness_query,
+        brightness_template=brightness_template,
+        rgb_template=rgb_template,
+        rgb_state_query_command=rgb_state_query,
+    )
+
+
 def _parse_encryption(value: Any, *, source: str) -> EncryptionMode:
     """Return one supported profile encryption mode."""
 
@@ -159,7 +320,12 @@ def _parse_encryption(value: Any, *, source: str) -> EncryptionMode:
 def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
     """Validate and normalize one complete profile definition."""
 
-    profile = _require_object(data, _TOP_LEVEL_KEYS, source=source)
+    profile = _require_object(
+        data,
+        _TOP_LEVEL_KEYS,
+        source=source,
+        optional_keys=_TOP_LEVEL_OPTIONAL_KEYS,
+    )
     if (
         type(profile["schema_version"]) is not int
         or profile["schema_version"] != PROFILE_SCHEMA_VERSION
@@ -210,6 +376,13 @@ def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
             commands["status_query"], source=f"{source}.commands.status_query"
         ),
         fan_mode_commands=parsed_fan_modes,
+        night_light=(
+            _parse_night_light(
+                profile["night_light"], source=f"{source}.night_light"
+            )
+            if "night_light" in profile
+            else None
+        ),
     )
 
 
@@ -323,6 +496,7 @@ def _build_profile(
         state_query_command=definition.state_query_command,
         status_query_command=definition.status_query_command,
         fan_mode_commands=dict(definition.fan_mode_commands),
+        night_light=definition.night_light,
         is_power_state_response=is_power_state_response,
         is_status_response=is_status_response,
         decode_power_state=decode_power_state,

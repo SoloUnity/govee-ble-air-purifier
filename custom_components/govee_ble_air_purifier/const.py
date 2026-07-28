@@ -29,4 +29,4 @@ DEFAULT_POLLING_INTERVAL_SECONDS = 10
 MIN_POLLING_INTERVAL_SECONDS = 5
 MAX_POLLING_INTERVAL_SECONDS = 300
 
-PLATFORMS = ["fan", "sensor", "switch"]
+PLATFORMS = ["fan", "sensor", "switch", "light"]

@@ -5,7 +5,10 @@ from custom_components.govee_ble_air_purifier.bluetooth.framing import (
     build_frame,
     validate_frame,
 )
-from custom_components.govee_ble_air_purifier.models import DecodedStatus
+from custom_components.govee_ble_air_purifier.models import (
+    DecodedStatus,
+    NightLightState,
+)
 from custom_components.govee_ble_air_purifier.profiles import (
     H7124_PROFILE,
     fan_mode_labels,
@@ -14,10 +17,15 @@ from custom_components.govee_ble_air_purifier.profiles import (
 )
 from custom_components.govee_ble_air_purifier.protocol import (
     decode_mode_push,
+    decode_night_light_power_brightness,
+    decode_night_light_rgb_state,
     decode_power_state,
     decode_status,
     is_command_echo,
     is_fan_mode_confirmation,
+    is_night_light_brightness_confirmation,
+    is_night_light_power_confirmation,
+    is_night_light_rgb_state_response,
     is_power_confirmation,
 )
 
@@ -118,6 +126,81 @@ def test_power_confirmation_matches_requested_aa01_state() -> None:
 def test_command_echo_requires_exact_command_frame() -> None:
     assert is_command_echo(FAN_MODE_COMMANDS["Low"], FAN_MODE_COMMANDS["Low"])
     assert not is_command_echo(FAN_MODE_COMMANDS["Low"], FAN_MODE_COMMANDS["High"])
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected"),
+    [
+        (
+            "aa 1b 01 01 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 d5",
+            NightLightState(is_on=True, brightness_percent=100),
+        ),
+        (
+            "3a 1b 01 00 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 44",
+            NightLightState(is_on=False, brightness_percent=100),
+        ),
+    ],
+)
+def test_decode_night_light_power_brightness(
+    frame: str, expected: NightLightState
+) -> None:
+    assert decode_night_light_power_brightness(bytes.fromhex(frame)) == expected
+
+
+def test_night_light_power_and_brightness_confirmations() -> None:
+    on_50 = bytes.fromhex(
+        "3a 1b 01 01 32 00 00 00 00 00 00 00 00 00 00 00 00 00 00 13"
+    )
+
+    assert is_night_light_power_confirmation(on_50, True)
+    assert not is_night_light_power_confirmation(on_50, False)
+    assert is_night_light_brightness_confirmation(on_50, 50)
+    assert not is_night_light_brightness_confirmation(on_50, 1)
+
+
+def test_decode_night_light_rgb_and_unknown_h7129_discriminator() -> None:
+    red = bytes.fromhex(
+        "aa 1b 05 0d ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 46"
+    )
+    unknown = bytes.fromhex(
+        "aa 1b 05 fc 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 48"
+    )
+
+    assert is_night_light_rgb_state_response(red)
+    assert decode_night_light_rgb_state(red) == (255, 0, 0)
+    assert is_night_light_rgb_state_response(unknown)
+    assert decode_night_light_rgb_state(unknown) is None
+
+
+def test_night_light_decoders_reject_unrelated_or_invalid_frames() -> None:
+    with pytest.raises(ProtocolError, match="power/brightness"):
+        decode_night_light_power_brightness(STATE_QUERY_COMMAND)
+    with pytest.raises(ProtocolError, match="power/brightness"):
+        decode_night_light_power_brightness(build_frame(bytes.fromhex("aa 1b 01 01 00")))
+    with pytest.raises(ProtocolError, match="RGB state"):
+        decode_night_light_rgb_state(STATUS_QUERY_COMMAND)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        build_frame(bytes.fromhex("aa 1b 01 01 32 01")),
+        build_frame(bytes.fromhex("aa 1b 05 0e ff 00 00")),
+        build_frame(bytes.fromhex("aa 1b 05 fc 01")),
+        build_frame(bytes.fromhex("aa 1b 05 0d ff 00 00 01")),
+    ],
+)
+def test_night_light_decoders_reject_unsupported_payload_layouts(
+    frame: bytes,
+) -> None:
+    decoder = (
+        decode_night_light_power_brightness
+        if frame[2] == 0x01
+        else decode_night_light_rgb_state
+    )
+
+    with pytest.raises(ProtocolError):
+        decoder(frame)
 
 
 @pytest.mark.parametrize(

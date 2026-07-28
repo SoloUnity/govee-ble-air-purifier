@@ -12,7 +12,7 @@
         },
         "data_description": {
           "address": "Only required when Recently seen purifier is set to Enter address manually.",
-          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, and filter life."
+          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, filter life, and supported night-light state."
         }
       },
       "custom_auto": {
@@ -159,6 +159,11 @@
     }
   },
   "entity": {
+    "light": {
+      "night_light": {
+        "name": "Night light"
+      }
+    },
     "switch": {
       "custom_auto": {
         "name": "Custom Auto"

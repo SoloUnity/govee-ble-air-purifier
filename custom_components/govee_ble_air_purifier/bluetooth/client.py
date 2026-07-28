@@ -9,10 +9,17 @@ import time
 from typing import Any
 
 from ..const import DEFAULT_POLLING_INTERVAL_SECONDS
-from ..models import PurifierState
-from ..profiles import EncryptionMode, H7124_PROFILE, ModelProfile
+from ..models import NightLightState, PurifierState
+from ..profiles import EncryptionMode, H7124_PROFILE, ModelProfile, NightLightProfile
 from ..protocol import (
+    decode_night_light_power_brightness,
+    decode_night_light_rgb_state,
+    is_command_echo,
     is_fan_mode_confirmation,
+    is_night_light_brightness_confirmation,
+    is_night_light_power_brightness_response,
+    is_night_light_power_confirmation,
+    is_night_light_rgb_state_response,
     is_power_confirmation,
 )
 from . import GoveeBleClientError, GoveeBleDisconnectedError, transport
@@ -114,24 +121,48 @@ class GoveeBleClient:
         attempt = 0
         while True:
             try:
-                power_frame, status_frame = await self._async_write_and_wait_many(
+                requests: list[tuple[bytes, Callable[[bytes], bool]]] = [
                     (
-                        (
-                            self._profile.state_query_command,
-                            self._profile.is_power_state_response,
-                        ),
-                        (
-                            self._profile.status_query_command,
-                            self._profile.is_status_response,
-                        ),
+                        self._profile.state_query_command,
+                        self._profile.is_power_state_response,
                     ),
+                    (
+                        self._profile.status_query_command,
+                        self._profile.is_status_response,
+                    ),
+                ]
+                if (night_light := self._profile.night_light) is not None:
+                    requests.extend(
+                        (
+                            (
+                                night_light.power_brightness_query_command,
+                                is_night_light_power_brightness_response,
+                            ),
+                            (
+                                night_light.rgb_state_query_command,
+                                is_night_light_rgb_state_response,
+                            ),
+                        )
+                    )
+                frames = await self._async_write_and_wait_many(
+                    tuple(requests),
                     timeout=POLL_TIMEOUT,
                 )
+                power_frame, status_frame = frames[:2]
                 status = self._profile.decode_status(status_frame)
+                night_light_state = None
+                if night_light is not None:
+                    power_brightness = decode_night_light_power_brightness(frames[2])
+                    night_light_state = NightLightState(
+                        is_on=power_brightness.is_on,
+                        brightness_percent=power_brightness.brightness_percent,
+                        rgb_color=decode_night_light_rgb_state(frames[3]),
+                    )
                 return PurifierState(
                     is_on=self._profile.decode_power_state(power_frame),
                     pm25=status.pm25,
                     filter_life=status.filter_life,
+                    night_light=night_light_state,
                 )
             except GoveeBleDisconnectedError:
                 if attempt:
@@ -169,6 +200,48 @@ class GoveeBleClient:
         )
         return mode
 
+    async def async_set_night_light_power(self, is_on: bool) -> NightLightState:
+        """Set night-light power and return its normalized state report."""
+
+        profile = self._require_night_light_profile()
+        command = profile.power_on_command if is_on else profile.power_off_command
+        frame = await self._async_write_and_wait(
+            command,
+            lambda frame: is_night_light_power_confirmation(frame, is_on),
+            timeout=COMMAND_CONFIRMATION_TIMEOUT,
+        )
+        return decode_night_light_power_brightness(frame)
+
+    async def async_set_night_light_brightness(
+        self, brightness_percent: int
+    ) -> NightLightState:
+        """Set night-light brightness and return its normalized state report."""
+
+        command = self._require_night_light_profile().build_brightness_command(
+            brightness_percent
+        )
+        frame = await self._async_write_and_wait(
+            command,
+            lambda frame: is_night_light_brightness_confirmation(
+                frame, brightness_percent
+            ),
+            timeout=COMMAND_CONFIRMATION_TIMEOUT,
+        )
+        return decode_night_light_power_brightness(frame)
+
+    async def async_set_night_light_rgb(
+        self, rgb_color: tuple[int, int, int]
+    ) -> NightLightState:
+        """Set night-light RGB and return its command-confirmed color."""
+
+        command = self._require_night_light_profile().build_rgb_command(rgb_color)
+        await self._async_write_and_wait(
+            command,
+            lambda frame: is_command_echo(frame, command),
+            timeout=COMMAND_CONFIRMATION_TIMEOUT,
+        )
+        return NightLightState(rgb_color=rgb_color)
+
     async def async_set_power_and_fan_mode(self, mode: str) -> PurifierState:
         """Power on and set fan mode in one serialized BLE connection."""
 
@@ -193,6 +266,13 @@ class GoveeBleClient:
             is_on=self._profile.decode_power_state(power_frame),
             fan_mode=mode,
         )
+
+    def _require_night_light_profile(self) -> NightLightProfile:
+        """Return the configured night-light capability or reject the command."""
+
+        if self._profile.night_light is None:
+            raise ValueError("This purifier profile has no night-light capability")
+        return self._profile.night_light
 
     async def _async_write_without_response(self, command: bytes) -> None:
         await self._async_write_commands_without_response((command,))

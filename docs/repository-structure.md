@@ -40,12 +40,13 @@ The integration package's root Home Assistant entrypoints are:
 - `auto_resume.py`: persisted hardware-Auto and Custom-Auto selection,
   suspension, and power-on reconciliation.
 - `fan.py`: power, manual speeds, and Manual or hardware Auto presets.
+- `light.py`: profile-gated night-light power, brightness, and RGB control.
 - `sensor.py`: PM2.5 and filter-life sensors.
 - `switch.py`: selected and active state for integration-managed Custom Auto.
 - `diagnostics.py`: redacted config, coordinator, and controller diagnostics.
 
 `entity.py` supplies common coordinator subscription, device information, and
-unique IDs. `const.py` declares only `fan`, `sensor`, and `switch` as active
+unique IDs. `const.py` declares `fan`, `light`, `sensor`, and `switch` as active
 platforms. The former `select` platform has been removed; fan mode belongs to
 the fan entity.
 
@@ -73,15 +74,17 @@ bluetooth/
 ```
 
 - `models.py` defines `DecodedStatus`, the output of one decoded status frame
-  (an `aa19` frame for the tested H7124 definition), and `PurifierState`, the
-  application-facing snapshot shared above the protocol layer.
+  (an `aa19` frame for the tested H7124 definition), `NightLightState`, and
+  `PurifierState`, the application-facing snapshot shared above the protocol
+  layer.
 - `model_profiles/` holds complete per-model JSON definitions. Each file owns
   the model's GATT service and characteristic UUIDs and the exact outbound
   20-byte power, query, and fan-mode command frames plus the transport encryption
-  mode. `default.json` and `h7124.json` contain the physically tested plaintext
-  H7124 definition. `h7129.json` selects Govee V1 encryption and changes only
-  the model-specific Auto Default command. Future model files are complete
-  definitions, not partial inheritance over another file.
+  mode. H7124 and H7129 additionally contain an optional `night_light` block
+  with static calls and variable brightness/RGB templates. `default.json` omits
+  that block, preventing unverified fallback models from exposing a light.
+  Future model files are complete definitions, not partial inheritance over
+  another file.
 - Root `protocol.py` retains shared frame validation, response and confirmation
   matchers, and status decoding for the recognized family. Models with
   different response semantics or framing require Python changes here; they
@@ -164,7 +167,7 @@ coordinator.py ----------------> profiles.py + models.py
 custom_auto/controller.py -----> custom_auto/config.py + custom_auto/policy.py
        `-- runtime calls ------> coordinator.py
 
-fan.py / sensor.py / switch.py -> entity.py + shared runtime objects
+fan.py / light.py / sensor.py / switch.py -> entity.py + shared runtime objects
 config_flow.py ----------------> profiles.py + setup_helpers.py
        `-----------------------> custom_auto/config.py
 
@@ -198,6 +201,7 @@ tests/
 |-- test_protocol.py
 |-- test_coordinator_logic.py
 |-- test_fan_entity.py
+|-- test_light_entity.py
 |-- test_sensor_entities.py
 |-- test_switch_entity.py
 |-- test_config_flow_logic.py

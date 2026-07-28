@@ -19,10 +19,15 @@ from custom_components.govee_ble_air_purifier.bluetooth.govee_v1 import (
     decrypt_frame,
     encrypt_frame,
 )
-from custom_components.govee_ble_air_purifier.models import PurifierState
+from custom_components.govee_ble_air_purifier.models import (
+    NightLightState,
+    PurifierState,
+)
 from custom_components.govee_ble_air_purifier.profiles import get_profile
 
 H7129_PROFILE = get_profile("h7129")
+NIGHT_LIGHT = H7129_PROFILE.night_light
+assert NIGHT_LIGHT is not None
 SESSION_KEY_1 = bytes.fromhex("46 73 a0 ce fb 28 56 83 b0 dd 0b 38 65 93 c0 ed")
 SESSION_KEY_2 = bytes.fromhex("10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f")
 
@@ -150,6 +155,18 @@ class EncryptedFakeBleakClient:
             return build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01"))
         if command == H7129_PROFILE.status_query_command:
             return build_frame(bytes.fromhex("aa 19 81 00 2a 00 00 55"))
+        if command == NIGHT_LIGHT.power_brightness_query_command:
+            return build_frame(bytes.fromhex("aa 1b 01 01 32"))
+        if command == NIGHT_LIGHT.rgb_state_query_command:
+            return build_frame(bytes.fromhex("aa 1b 05 fc"))
+        if command == NIGHT_LIGHT.power_on_command:
+            return build_frame(bytes.fromhex("3a 1b 01 01 32"))
+        if command == NIGHT_LIGHT.power_off_command:
+            return build_frame(bytes.fromhex("3a 1b 01 00 64"))
+        if command[:4] == bytes.fromhex("3a 1b 01 02"):
+            return build_frame(bytes.fromhex("3a 1b 01 01") + command[4:5])
+        if command[:4] == bytes.fromhex("3a 1b 05 0d"):
+            return command
         if command == H7129_PROFILE.power_on_command:
             return build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01"))
         if command == H7129_PROFILE.power_off_command:
@@ -297,18 +314,31 @@ async def test_h7129_reuses_shared_protocol_after_one_handshake(
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
 
     assert await client.async_get_state() == PurifierState(
-        is_on=True, pm25=42, filter_life=85
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+        night_light=NightLightState(is_on=True, brightness_percent=50),
     )
     for mode in H7129_PROFILE.fan_mode_commands:
         assert await client.async_set_fan_mode(mode) == mode
+    assert await client.async_set_night_light_brightness(100) == NightLightState(
+        is_on=True, brightness_percent=100
+    )
+    assert await client.async_set_night_light_rgb((255, 255, 0)) == NightLightState(
+        rgb_color=(255, 255, 0)
+    )
 
     assert [frame[:2] for frame in fake.handshake_frames] == [b"\xe7\x01", b"\xe7\x02"]
     assert fake.application_frames == [
         H7129_PROFILE.state_query_command,
         H7129_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
         *H7129_PROFILE.fan_mode_commands.values(),
+        NIGHT_LIGHT.build_brightness_command(100),
+        NIGHT_LIGHT.build_rgb_command((255, 255, 0)),
     ]
-    assert fake.application_frames[-2] == H7129_PROFILE.fan_mode_commands["Auto"]
+    assert fake.application_frames[-4] == H7129_PROFILE.fan_mode_commands["Auto"]
     assert all(
         wire != plaintext
         for (_uuid, wire, _response), plaintext in zip(
@@ -438,7 +468,7 @@ async def test_h7129_debug_logs_show_transaction_stages_without_secrets(
 
     await client.async_get_state()
 
-    assert f"{client._log_label} BLE transaction started with 2 requests" in caplog.text
+    assert f"{client._log_label} BLE transaction started with 4 requests" in caplog.text
     assert (
         f"{client._log_label} Govee V1 handshake stage: waiting for e7 01 response"
     ) in caplog.text
@@ -508,14 +538,17 @@ async def test_h7129_poll_retries_with_fresh_session_after_response_disconnect(
         transport, "async_prepare_connection_path", async_prepare_connection_path
     )
     client = GoveeBleClient(object(), "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
-    waiting = _stage_event(monkeypatch, client, "waiting for response 2/2")
+    waiting = _stage_event(monkeypatch, client, "waiting for response 2/4")
 
     operation = asyncio.create_task(client.async_get_state())
     await asyncio.wait_for(waiting.wait(), 0.1)
     first.is_connected = False
     callbacks[0](first)
     assert await asyncio.wait_for(operation, 0.1) == PurifierState(
-        is_on=True, pm25=42, filter_life=85
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+        night_light=NightLightState(is_on=True, brightness_percent=50),
     )
 
     assert len(callbacks) == 2
@@ -531,6 +564,8 @@ async def test_h7129_poll_retries_with_fresh_session_after_response_disconnect(
     assert second.application_frames == [
         H7129_PROFILE.state_query_command,
         H7129_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
     ]
     assert prepare_after[0] is None
     assert prepare_after[1] is not None
@@ -572,7 +607,10 @@ async def test_h7129_poll_recovers_from_disconnect_during_start_notify(
     client = GoveeBleClient(object(), "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
 
     assert await client.async_get_state() == PurifierState(
-        is_on=True, pm25=42, filter_life=85
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+        night_light=NightLightState(is_on=True, brightness_percent=50),
     )
 
     assert len(callbacks) == 2
@@ -581,6 +619,8 @@ async def test_h7129_poll_recovers_from_disconnect_during_start_notify(
     assert second.application_frames == [
         H7129_PROFILE.state_query_command,
         H7129_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
     ]
     assert prepare_calls[0] is None
     assert prepare_calls[1] is not None
@@ -784,21 +824,26 @@ async def test_h7129_ignores_duplicate_late_handshakes_for_each_poll_response(
     )
 
     assert await client.async_get_state() == PurifierState(
-        is_on=True, pm25=42, filter_life=85
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+        night_light=NightLightState(is_on=True, brightness_percent=50),
     )
 
     ignored_message = (
         f"{client._log_label} Govee V1 application decryption diagnostic: "
         "ignored valid late e7 02 handshake notification"
     )
-    assert caplog.text.count(ignored_message) == 4
+    assert caplog.text.count(ignored_message) == 8
     assert fake.application_frames == [
         H7129_PROFILE.state_query_command,
         H7129_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
     ]
     assert caplog.text.count(
         "notifications: 3, stale handshakes: 2, nonmatching: 0"
-    ) == 2
+    ) == 4
     assert len(fake.handshake_frames) == 2
     assert client._session_key == SESSION_KEY_1
     assert disconnects == []

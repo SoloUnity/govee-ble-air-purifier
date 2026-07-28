@@ -14,6 +14,15 @@ class DecodedStatus:
 
 
 @dataclass(frozen=True)
+class NightLightState:
+    """Application-facing snapshot of night-light state."""
+
+    is_on: bool | None = None
+    brightness_percent: int | None = None
+    rgb_color: tuple[int, int, int] | None = None
+
+
+@dataclass(frozen=True)
 class PurifierState:
     """Application-facing snapshot of purifier state."""
 
@@ -21,3 +30,4 @@ class PurifierState:
     pm25: int | None = None
     filter_life: int | None = None
     fan_mode: str | None = None
+    night_light: NightLightState | None = None

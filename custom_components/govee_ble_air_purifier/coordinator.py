@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 import logging
 from typing import Any
@@ -11,11 +11,32 @@ from typing import Any
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DEFAULT_POLLING_INTERVAL_SECONDS
-from .models import PurifierState
+from .models import NightLightState, PurifierState
 from .profiles import H7124_PROFILE, ModelProfile
 
 POLLING_INTERVAL = timedelta(seconds=DEFAULT_POLLING_INTERVAL_SECONDS)
 LOGGER = logging.getLogger(__name__)
+
+
+def _merge_night_light_state(
+    current: NightLightState | None, update: NightLightState | None
+) -> NightLightState | None:
+    """Merge known night-light fields without erasing command-confirmed state."""
+
+    if update is None:
+        return current
+    current = current or NightLightState()
+    return NightLightState(
+        is_on=update.is_on if update.is_on is not None else current.is_on,
+        brightness_percent=(
+            update.brightness_percent
+            if update.brightness_percent is not None
+            else current.brightness_percent
+        ),
+        rgb_color=(
+            update.rgb_color if update.rgb_color is not None else current.rgb_color
+        ),
+    )
 
 @dataclass
 class GoveeRuntimeData:
@@ -124,6 +145,13 @@ class GoveeCoordinator(DataUpdateCoordinator):
                 ),
                 filter_life=client_data.filter_life,
                 fan_mode=self._last_fan_mode or client_data.fan_mode,
+                night_light=(
+                    _merge_night_light_state(
+                        current.night_light, client_data.night_light
+                    )
+                    if self.profile.night_light is not None
+                    else None
+                ),
             )
             self.data = data
             return data
@@ -144,10 +172,9 @@ class GoveeCoordinator(DataUpdateCoordinator):
                 self._last_fan_mode = None
             current = self.data or PurifierState()
             self._publish_data(
-                PurifierState(
+                replace(
+                    current,
                     is_on=confirmed_is_on,
-                    pm25=current.pm25,
-                    filter_life=current.filter_life,
                     fan_mode=current.fan_mode if confirmed_is_on else None,
                 )
             )
@@ -189,11 +216,64 @@ class GoveeCoordinator(DataUpdateCoordinator):
             self._last_fan_mode = confirmed_mode
             current = self.data or PurifierState()
             self._publish_data(
-                PurifierState(
+                replace(
+                    current,
                     is_on=confirmed_is_on,
-                    pm25=current.pm25,
-                    filter_life=current.filter_life,
                     fan_mode=confirmed_mode,
                 )
             )
         self._schedule_background_refresh()
+
+    async def async_set_night_light(
+        self,
+        *,
+        is_on: bool,
+        brightness_percent: int | None = None,
+        rgb_color: tuple[int, int, int] | None = None,
+    ) -> None:
+        """Set night-light power and optional settings in confirmed order."""
+
+        if self.profile.night_light is None:
+            raise ValueError("This purifier profile has no night-light capability")
+        if not is_on and (brightness_percent is not None or rgb_color is not None):
+            raise ValueError("Night-light settings cannot accompany power off")
+
+        self._cancel_background_refresh()
+        if self.data is None:
+            await self.async_request_refresh()
+
+        confirmed_any = False
+        try:
+            async with self._state_lock:
+                current = self.data or PurifierState(
+                    night_light=NightLightState()
+                )
+                night_light = current.night_light or NightLightState()
+                has_settings = brightness_percent is not None or rgb_color is not None
+                should_set_power = not is_on or not has_settings or night_light.is_on is not True
+
+                if should_set_power:
+                    update = await self.client.async_set_night_light_power(is_on)
+                    night_light = _merge_night_light_state(night_light, update)
+                    current = replace(current, night_light=night_light)
+                    self._publish_data(current)
+                    confirmed_any = True
+
+                if is_on and brightness_percent is not None:
+                    update = await self.client.async_set_night_light_brightness(
+                        brightness_percent
+                    )
+                    night_light = _merge_night_light_state(night_light, update)
+                    current = replace(current, night_light=night_light)
+                    self._publish_data(current)
+                    confirmed_any = True
+
+                if is_on and rgb_color is not None:
+                    update = await self.client.async_set_night_light_rgb(rgb_color)
+                    night_light = _merge_night_light_state(night_light, update)
+                    current = replace(current, night_light=night_light)
+                    self._publish_data(current)
+                    confirmed_any = True
+        finally:
+            if confirmed_any:
+                self._schedule_background_refresh()
