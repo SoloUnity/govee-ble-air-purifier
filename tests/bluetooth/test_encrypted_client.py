@@ -4,7 +4,10 @@ from typing import Any
 
 import pytest
 
-from custom_components.govee_ble_air_purifier.bluetooth import GoveeBleClientError
+from custom_components.govee_ble_air_purifier.bluetooth import (
+    GoveeBleClientError,
+    GoveeBleDisconnectedError,
+)
 from custom_components.govee_ble_air_purifier.bluetooth.client import GoveeBleClient
 from custom_components.govee_ble_air_purifier.bluetooth.framing import build_frame
 from custom_components.govee_ble_air_purifier.bluetooth.govee_v1 import (
@@ -27,10 +30,14 @@ class EncryptedFakeBleakClient:
         *,
         mismatch_confirmation: bool = False,
         respond_to_handshake: bool = True,
+        disconnect_on_application_notify: bool = False,
+        delay_disconnect_callback: bool = False,
     ) -> None:
         self.session_key = session_key
         self.mismatch_confirmation = mismatch_confirmation
         self.respond_to_handshake = respond_to_handshake
+        self.disconnect_on_application_notify = disconnect_on_application_notify
+        self.delay_disconnect_callback = delay_disconnect_callback
         self.is_connected = True
         self.disconnected = False
         self.notify_handler: Any = None
@@ -40,8 +47,23 @@ class EncryptedFakeBleakClient:
         self.handshake_frames: list[bytes] = []
         self.application_frames: list[bytes] = []
         self.session_established = False
+        self.disconnected_callback: Any = None
 
     async def start_notify(self, char_uuid: str, handler: Any) -> None:
+        if self.session_established and self.disconnect_on_application_notify:
+            assert self.disconnected_callback is not None
+            if self.delay_disconnect_callback:
+                callback = self.disconnected_callback
+
+                def disconnect_later() -> None:
+                    self.is_connected = False
+                    callback(self)
+
+                asyncio.get_running_loop().call_soon(disconnect_later)
+            else:
+                self.is_connected = False
+                self.disconnected_callback(self)
+            raise RuntimeError("link disconnected")
         self.started_notify.append(char_uuid)
         self.notify_handler = handler
 
@@ -121,6 +143,7 @@ def _install_connections(
         client = clients[connection_index]
         connection_index += 1
         callbacks.append(disconnected_callback)
+        client.disconnected_callback = disconnected_callback
         return client
 
     async def async_disconnect(
@@ -221,6 +244,88 @@ async def test_h7129_reconnect_negotiates_a_new_session(
 
     await client.async_close()
     assert disconnects == [second]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delay_disconnect_callback", [False, True])
+async def test_h7129_poll_recovers_from_disconnect_during_start_notify(
+    monkeypatch: pytest.MonkeyPatch,
+    delay_disconnect_callback: bool,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    first = EncryptedFakeBleakClient(
+        SESSION_KEY_1,
+        disconnect_on_application_notify=True,
+        delay_disconnect_callback=delay_disconnect_callback,
+    )
+    second = EncryptedFakeBleakClient(SESSION_KEY_2)
+    callbacks, disconnects = _install_connections(monkeypatch, [first, second])
+    prepare_calls: list[float | None] = []
+
+    async def async_prepare_connection_path(
+        _hass: Any,
+        _address: str,
+        *,
+        after: float | None,
+        wait_for_advertisement: bool = True,
+    ) -> None:
+        prepare_calls.append(after)
+
+    monkeypatch.setattr(
+        transport, "async_prepare_connection_path", async_prepare_connection_path
+    )
+    client = GoveeBleClient(object(), "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True, pm25=42, filter_life=85
+    )
+
+    assert len(callbacks) == 2
+    assert len(first.handshake_frames) == len(second.handshake_frames) == 2
+    assert first.application_frames == []
+    assert second.application_frames == [
+        H7129_PROFILE.state_query_command,
+        H7129_PROFILE.status_query_command,
+    ]
+    assert prepare_calls[0] is None
+    assert prepare_calls[1] is not None
+    assert client._session_key == SESSION_KEY_2
+
+    await client.async_close()
+    assert disconnects == [second]
+
+
+@pytest.mark.asyncio
+async def test_h7129_command_does_not_replay_after_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    first = EncryptedFakeBleakClient(
+        SESSION_KEY_1, disconnect_on_application_notify=True
+    )
+    callbacks, _disconnects = _install_connections(monkeypatch, [first])
+
+    async def async_prepare_connection_path(
+        _hass: Any,
+        _address: str,
+        *,
+        after: float | None,
+        wait_for_advertisement: bool = True,
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(
+        transport, "async_prepare_connection_path", async_prepare_connection_path
+    )
+    client = GoveeBleClient(object(), "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+
+    with pytest.raises(GoveeBleDisconnectedError, match="disconnected"):
+        await client.async_set_power(True)
+
+    assert len(callbacks) == 1
+    assert first.application_frames == []
 
 
 @pytest.mark.asyncio

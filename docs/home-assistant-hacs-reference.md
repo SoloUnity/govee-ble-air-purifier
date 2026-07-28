@@ -379,10 +379,15 @@ must not be exposed.
 
 - Device selection uses Home Assistant's central Bluetooth cache rather than
   starting a private scanner.
-- Setup requests Home Assistant's one-shot active scan API when available.
+- Config flow discovery requests Home Assistant's one-shot active scan API when
+  available.
 - Runtime connections resolve a connectable `BLEDevice` through Home Assistant
   for the configured address, allowing local adapters and compatible Bluetooth
   proxies to participate.
+- An uncached runtime connection verifies the per-scanner path first. After a
+  disconnect, it requires a newer advertisement and clears static advertisement
+  deduplication where Home Assistant supports it. Active scanners continue
+  normally; Automatic scanners may run a bounded temporary Active window.
 - Transactions are asynchronous and serialized per purifier so commands and
   polls cannot overlap.
 - A healthy GATT connection is reused. Successful activity resets an adaptive
@@ -393,6 +398,8 @@ must not be exposed.
   for only a 5-second command-and-refresh grace before release. Entry unload
   always closes it.
 - GATT notifications provide query responses and command confirmation.
+- A confirmed disconnect may retry one idempotent state poll after reconnecting
+  and renegotiating encryption. Commands are not replayed automatically.
 
 ### Diagnostics, Localization, And Quality
 

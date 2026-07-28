@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import logging
+import time
 from typing import Any
 
 from ..const import DEFAULT_POLLING_INTERVAL_SECONDS
@@ -14,7 +15,7 @@ from ..protocol import (
     is_fan_mode_confirmation,
     is_power_confirmation,
 )
-from . import GoveeBleClientError, transport
+from . import GoveeBleClientError, GoveeBleDisconnectedError, transport
 from .framing import ProtocolError, validate_frame
 from .govee_v1 import (
     COMMUNICATION_KEY,
@@ -32,6 +33,7 @@ COMMAND_CONFIRMATION_TIMEOUT = 2.0
 CONNECTION_IDLE_GRACE = 5.0
 MAX_CONNECTION_IDLE_TIMEOUT = 30.0
 DISCONNECT_TIMEOUT = 5.0
+ADVERTISEMENT_RETRY_DELAYS = (60.0, 120.0, 300.0)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -68,24 +70,45 @@ class GoveeBleClient:
         self._session_key: bytes | None = None
         self._idle_disconnect_handle: asyncio.TimerHandle | None = None
         self._idle_disconnect_task: asyncio.Task[Any] | None = None
+        self._fresh_advertisement_after: float | None = None
+        self._advertisement_retry_at = 0.0
+        self._advertisement_failure_count = 0
+        self._unexpected_disconnect_revision = 0
         self._closed = False
 
     async def async_get_state(self) -> PurifierState:
         """Poll power, PM2.5, and filter-life state."""
 
-        power_frame, status_frame = await self._async_write_and_wait_many(
-            (
-                (self._profile.state_query_command, self._profile.is_power_state_response),
-                (self._profile.status_query_command, self._profile.is_status_response),
-            ),
-            timeout=POLL_TIMEOUT,
-        )
-        status = self._profile.decode_status(status_frame)
-        return PurifierState(
-            is_on=self._profile.decode_power_state(power_frame),
-            pm25=status.pm25,
-            filter_life=status.filter_life,
-        )
+        attempt = 0
+        while True:
+            try:
+                power_frame, status_frame = await self._async_write_and_wait_many(
+                    (
+                        (
+                            self._profile.state_query_command,
+                            self._profile.is_power_state_response,
+                        ),
+                        (
+                            self._profile.status_query_command,
+                            self._profile.is_status_response,
+                        ),
+                    ),
+                    timeout=POLL_TIMEOUT,
+                )
+                status = self._profile.decode_status(status_frame)
+                return PurifierState(
+                    is_on=self._profile.decode_power_state(power_frame),
+                    pm25=status.pm25,
+                    filter_life=status.filter_life,
+                )
+            except GoveeBleDisconnectedError:
+                if attempt:
+                    raise
+                attempt += 1
+                _LOGGER.debug(
+                    "%s retrying read-only poll after BLE disconnection",
+                    self._profile.model,
+                )
 
     async def async_set_power(self, is_on: bool) -> bool:
         """Set purifier power."""
@@ -147,7 +170,8 @@ class GoveeBleClient:
     async def _async_write_commands_without_response(
         self, commands: tuple[bytes, ...]
     ) -> None:
-        deadline = asyncio.get_running_loop().time() + DEFAULT_TIMEOUT
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + DEFAULT_TIMEOUT
 
         async def operation(client: Any) -> None:
             for command in commands:
@@ -162,6 +186,9 @@ class GoveeBleClient:
 
         self._cancel_idle_disconnect()
         await self._async_wait_for_idle_disconnect(deadline)
+        preparation_started = loop.time()
+        await self._async_prepare_connection()
+        deadline += loop.time() - preparation_started
         try:
             await _async_wait_until(self._lock.acquire(), deadline)
         except (TimeoutError, asyncio.TimeoutError) as err:
@@ -204,6 +231,11 @@ class GoveeBleClient:
         self._log_stage("BLE transaction", stage, started, deadline)
         self._cancel_idle_disconnect()
         await self._async_wait_for_idle_disconnect(deadline)
+        preparation_started = loop.time()
+        await self._async_prepare_connection()
+        preparation_elapsed = loop.time() - preparation_started
+        started += preparation_elapsed
+        deadline += preparation_elapsed
         stage = "waiting for transaction lock"
         self._log_stage("BLE transaction", stage, started, deadline)
         try:
@@ -327,6 +359,7 @@ class GoveeBleClient:
         client = self._client
         if client is None or not client.is_connected:
             started = asyncio.get_running_loop().time()
+            connection_revision = self._unexpected_disconnect_revision
             self._log_stage(
                 "BLE connection", "establishing transport", started, deadline
             )
@@ -344,7 +377,9 @@ class GoveeBleClient:
             )
             if not client.is_connected:
                 await self._async_drop_connection(deadline)
-                raise GoveeBleClientError("Purifier disconnected while connecting")
+                raise GoveeBleDisconnectedError(
+                    "Purifier disconnected while connecting"
+                )
             if self._profile.encryption is EncryptionMode.GOVEE_V1:
                 try:
                     session_key = await self._async_negotiate_govee_v1_session(
@@ -359,15 +394,35 @@ class GoveeBleClient:
                         "BLE connection", "encrypted session ready", started, deadline
                     )
                 except (TimeoutError, asyncio.TimeoutError) as err:
-                    await self._async_drop_connection(deadline)
+                    disconnected = await self._async_drop_after_error(
+                        client, connection_revision, deadline
+                    )
+                    if disconnected:
+                        raise GoveeBleDisconnectedError(
+                            "Purifier disconnected during encrypted-session setup"
+                        ) from err
                     raise GoveeBleClientError(
                         "Timed out establishing encrypted purifier session"
                     ) from err
-                except GoveeBleClientError:
-                    await self._async_drop_connection(deadline)
+                except GoveeBleClientError as err:
+                    disconnected = await self._async_drop_after_error(
+                        client, connection_revision, deadline
+                    )
+                    if disconnected and not isinstance(
+                        err, GoveeBleDisconnectedError
+                    ):
+                        raise GoveeBleDisconnectedError(
+                            "Purifier disconnected during encrypted-session setup"
+                        ) from err
                     raise
                 except Exception as err:
-                    await self._async_drop_connection(deadline)
+                    disconnected = await self._async_drop_after_error(
+                        client, connection_revision, deadline
+                    )
+                    if disconnected:
+                        raise GoveeBleDisconnectedError(
+                            "Purifier disconnected during encrypted-session setup"
+                        ) from err
                     raise GoveeBleClientError(
                         "Failed to establish encrypted purifier session"
                     ) from err
@@ -379,19 +434,54 @@ class GoveeBleClient:
                 "%s reusing active BLE connection", self._profile.model
             )
 
+        operation_revision = self._unexpected_disconnect_revision
         try:
             result = await operation(client)
         except (TimeoutError, asyncio.TimeoutError) as err:
-            await self._async_drop_connection(deadline)
+            disconnected = await self._async_drop_after_error(
+                client, operation_revision, deadline
+            )
+            if disconnected:
+                raise GoveeBleDisconnectedError(
+                    "Purifier disconnected during BLE transaction"
+                ) from err
             raise GoveeBleClientError(
                 "Timed out waiting for purifier response"
             ) from err
+        except Exception as err:
+            disconnected = await self._async_drop_after_error(
+                client, operation_revision, deadline
+            )
+            if disconnected:
+                raise GoveeBleDisconnectedError(
+                    "Purifier disconnected during BLE transaction"
+                ) from err
+            raise
         except BaseException:
             await self._async_drop_connection(deadline)
             raise
 
         self._schedule_idle_disconnect()
         return result
+
+    async def _async_drop_after_error(
+        self, client: Any, disconnect_revision: int, deadline: float
+    ) -> bool:
+        """Drop a failed connection after allowing its callback to run."""
+
+        try:
+            if (
+                self._unexpected_disconnect_revision != disconnect_revision
+                or not client.is_connected
+            ):
+                return True
+            await asyncio.sleep(0)
+            return (
+                self._unexpected_disconnect_revision != disconnect_revision
+                or not client.is_connected
+            )
+        finally:
+            await self._async_drop_connection(deadline)
 
     def _handle_disconnect(self, client: Any) -> None:
         """Forget only the connection that actually disconnected."""
@@ -400,6 +490,57 @@ class GoveeBleClient:
             _LOGGER.debug("%s BLE connection disconnected", self._profile.model)
             self._client = None
             self._session_key = None
+            self._unexpected_disconnect_revision += 1
+            self._mark_connection_stale()
+
+    def _mark_connection_stale(self) -> None:
+        """Require a post-disconnect advertisement before reconnecting."""
+
+        self._fresh_advertisement_after = time.monotonic()
+        if self._hass is not None:
+            transport.clear_advertisement_history(self._hass, self._address)
+
+    async def _async_prepare_connection(self) -> None:
+        """Prepare an uncached connection before its transaction deadline."""
+
+        if self._closed:
+            raise GoveeBleClientError("BLE client is closed")
+        client = self._client
+        if client is not None and client.is_connected:
+            return
+        if self._hass is None:
+            self._fresh_advertisement_after = None
+            return
+
+        loop = asyncio.get_running_loop()
+        can_wait = loop.time() >= self._advertisement_retry_at
+        try:
+            await transport.async_prepare_connection_path(
+                self._hass,
+                self._address,
+                after=self._fresh_advertisement_after,
+                wait_for_advertisement=can_wait,
+            )
+        except GoveeBleClientError:
+            if can_wait:
+                retry_delay = ADVERTISEMENT_RETRY_DELAYS[
+                    min(
+                        self._advertisement_failure_count,
+                        len(ADVERTISEMENT_RETRY_DELAYS) - 1,
+                    )
+                ]
+                self._advertisement_failure_count += 1
+                self._advertisement_retry_at = loop.time() + retry_delay
+                _LOGGER.debug(
+                    "%s fresh-advertisement recovery will retry in %.0f seconds",
+                    self._profile.model,
+                    retry_delay,
+                )
+            raise
+
+        self._fresh_advertisement_after = None
+        self._advertisement_failure_count = 0
+        self._advertisement_retry_at = 0.0
 
     def _encode_application_frame(self, frame: bytes) -> bytes:
         """Encode one plaintext profile frame for the active transport."""
@@ -633,7 +774,9 @@ class GoveeBleClient:
             task = asyncio.create_task(disconnect_idle_client())
         self._idle_disconnect_task = task
 
-    async def _async_drop_connection(self, deadline: float) -> None:
+    async def _async_drop_connection(
+        self, deadline: float, *, prepare_reconnect: bool = True
+    ) -> None:
         """Forget and best-effort disconnect the cached connection."""
 
         client = self._client
@@ -644,6 +787,8 @@ class GoveeBleClient:
                 "%s releasing cached BLE connection", self._profile.model
             )
             await transport.async_disconnect(client, deadline=deadline)
+            if prepare_reconnect:
+                self._mark_connection_stale()
 
     async def async_close(self) -> None:
         """Cancel idle cleanup and close the cached connection."""
@@ -672,7 +817,7 @@ class GoveeBleClient:
             )
             return
         try:
-            await self._async_drop_connection(deadline)
+            await self._async_drop_connection(deadline, prepare_reconnect=False)
         finally:
             self._lock.release()
         _LOGGER.debug("%s BLE client closed", self._profile.model)

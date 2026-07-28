@@ -142,6 +142,254 @@ async def test_stage_timeout_is_translated_without_extending_deadline(
 
 
 @pytest.mark.asyncio
+async def test_connection_preparation_skips_wait_for_an_existing_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def async_scanner_devices_by_address(*args: Any, **kwargs: Any) -> list[object]:
+        events.append("paths")
+        return [object()]
+
+    async def async_process_advertisements(*args: Any, **kwargs: Any) -> Any:
+        events.append("wait")
+        raise AssertionError("fresh advertisement wait should be skipped")
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_clear_advertisement_history": lambda *args, **kwargs: None,
+                "async_last_service_info": lambda *args, **kwargs: None,
+                "async_process_advertisements": async_process_advertisements,
+                "async_scanner_devices_by_address": async_scanner_devices_by_address,
+            },
+        },
+    )
+
+    await transport.async_prepare_connection_path(
+        object(), "AA:BB:CC:DD:EE:FF", after=None
+    )
+
+    assert events == ["paths"]
+
+
+@pytest.mark.asyncio
+async def test_connection_preparation_waits_for_a_fresh_advertisement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    path_results = [[], [object()]]
+    process_calls: list[tuple[dict[str, Any], Any, int]] = []
+    service_info = SimpleNamespace(time=42.1)
+
+    def async_scanner_devices_by_address(*args: Any, **kwargs: Any) -> list[object]:
+        events.append("paths")
+        return path_results.pop(0)
+
+    def async_clear_advertisement_history(*args: Any, **kwargs: Any) -> None:
+        events.append("clear")
+
+    async def async_process_advertisements(
+        _hass: Any,
+        callback: Any,
+        match_dict: dict[str, Any],
+        mode: Any,
+        timeout: int,
+    ) -> Any:
+        events.append("wait")
+        process_calls.append((match_dict, mode, timeout))
+        assert callback(SimpleNamespace(time=41.9)) is False
+        assert callback(service_info) is True
+        return service_info
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_clear_advertisement_history": async_clear_advertisement_history,
+                "async_last_service_info": lambda *args, **kwargs: None,
+                "async_process_advertisements": async_process_advertisements,
+                "async_scanner_devices_by_address": async_scanner_devices_by_address,
+            },
+        },
+    )
+
+    await transport.async_prepare_connection_path(
+        object(), "AA:BB:CC:DD:EE:FF", after=42.0
+    )
+
+    assert events == ["paths", "clear", "wait", "paths"]
+    assert process_calls == [
+        (
+            {"address": "AA:BB:CC:DD:EE:FF", "connectable": True},
+            "active",
+            transport.FRESH_ADVERTISEMENT_TIMEOUT,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connection_preparation_accepts_a_cached_fresh_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def async_scanner_devices_by_address(*args: Any, **kwargs: Any) -> list[object]:
+        events.append("paths")
+        return [object()]
+
+    async def async_process_advertisements(*args: Any, **kwargs: Any) -> Any:
+        events.append("wait")
+        raise AssertionError("cached fresh advertisement should be accepted")
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_last_service_info": lambda *args, **kwargs: SimpleNamespace(
+                    time=42.1
+                ),
+                "async_process_advertisements": async_process_advertisements,
+                "async_scanner_devices_by_address": async_scanner_devices_by_address,
+            },
+        },
+    )
+
+    await transport.async_prepare_connection_path(
+        object(), "AA:BB:CC:DD:EE:FF", after=42.0
+    )
+
+    assert events == ["paths"]
+
+
+@pytest.mark.asyncio
+async def test_connection_preparation_preserves_an_existing_legacy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    latest_results = [
+        SimpleNamespace(time=41.9),
+        SimpleNamespace(time=42.1),
+    ]
+
+    async def async_process_advertisements(*args: Any, **kwargs: Any) -> Any:
+        events.append("wait")
+        raise AssertionError("legacy Home Assistant path should remain usable")
+
+    def async_last_service_info(*args: Any, **kwargs: Any) -> Any:
+        events.append("latest")
+        return latest_results.pop(0)
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_last_service_info": async_last_service_info,
+                "async_process_advertisements": async_process_advertisements,
+                "async_scanner_devices_by_address": lambda *args, **kwargs: [
+                    object()
+                ],
+            },
+        },
+    )
+
+    await transport.async_prepare_connection_path(
+        object(), "AA:BB:CC:DD:EE:FF", after=42.0
+    )
+
+    assert events == ["latest", "latest"]
+
+
+@pytest.mark.asyncio
+async def test_connection_preparation_timeout_has_a_precise_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def async_process_advertisements(*args: Any, **kwargs: Any) -> Any:
+        raise TimeoutError
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_clear_advertisement_history": lambda *args, **kwargs: None,
+                "async_last_service_info": lambda *args, **kwargs: None,
+                "async_process_advertisements": async_process_advertisements,
+                "async_scanner_devices_by_address": lambda *args, **kwargs: [],
+            },
+        },
+    )
+
+    with pytest.raises(
+        GoveeBleClientError, match="Timed out waiting for a fresh purifier advertisement"
+    ):
+        await transport.async_prepare_connection_path(
+            object(), "AA:BB:CC:DD:EE:FF", after=42.0
+        )
+
+
+@pytest.mark.asyncio
+async def test_connection_preparation_can_defer_another_advertisement_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def async_process_advertisements(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("advertisement wait should be backed off")
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_last_service_info": lambda *args, **kwargs: None,
+                "async_process_advertisements": async_process_advertisements,
+                "async_scanner_devices_by_address": lambda *args, **kwargs: [],
+            },
+        },
+    )
+
+    with pytest.raises(GoveeBleClientError, match="No fresh connectable Bluetooth path"):
+        await transport.async_prepare_connection_path(
+            object(),
+            "AA:BB:CC:DD:EE:FF",
+            after=42.0,
+            wait_for_advertisement=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_fresh_advertisement_without_a_path_has_a_precise_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def async_process_advertisements(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(time=42.1)
+
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "BluetoothScanningMode": SimpleNamespace(ACTIVE="active"),
+                "async_clear_advertisement_history": lambda *args, **kwargs: None,
+                "async_last_service_info": lambda *args, **kwargs: None,
+                "async_process_advertisements": async_process_advertisements,
+                "async_scanner_devices_by_address": lambda *args, **kwargs: [],
+            },
+        },
+    )
+
+    with pytest.raises(
+        GoveeBleClientError, match="No connectable Bluetooth path was found"
+    ):
+        await transport.async_prepare_connection_path(
+            object(), "AA:BB:CC:DD:EE:FF", after=42.0
+        )
+
+
+@pytest.mark.asyncio
 async def test_explicit_disconnect_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

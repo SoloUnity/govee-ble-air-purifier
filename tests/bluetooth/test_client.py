@@ -9,6 +9,9 @@ from custom_components.govee_ble_air_purifier.bluetooth.client import (
     GoveeBleClientError,
     connection_idle_timeout_for_polling_interval,
 )
+from custom_components.govee_ble_air_purifier.bluetooth import (
+    GoveeBleDisconnectedError,
+)
 from custom_components.govee_ble_air_purifier.bluetooth.framing import build_frame
 from custom_components.govee_ble_air_purifier.models import PurifierState
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE
@@ -132,6 +135,32 @@ class _RecordingTimeoutClient(GoveeBleClient):
         )
 
 
+class _SlowPreparationClient(_TestableGoveeBleClient):
+    async def _async_prepare_connection(self) -> None:
+        await asyncio.sleep(0.02)
+
+
+class _RetryingStateClient(GoveeBleClient):
+    def __init__(self, *, always_disconnect: bool = False) -> None:
+        super().__init__(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+        self.always_disconnect = always_disconnect
+        self.calls = 0
+
+    async def _async_write_and_wait_many(
+        self,
+        requests: tuple[tuple[bytes, Any], ...],
+        *,
+        timeout: float = 10.0,
+    ) -> tuple[bytes, ...]:
+        self.calls += 1
+        if self.always_disconnect or self.calls == 1:
+            raise GoveeBleDisconnectedError("Purifier disconnected")
+        return (
+            build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01")),
+            build_frame(bytes.fromhex("aa 19 81 00 2a 00 00 55")),
+        )
+
+
 @pytest.mark.asyncio
 async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
     fake = FakeBleakClient()
@@ -162,6 +191,38 @@ async def test_get_state_uses_shorter_poll_timeout() -> None:
         filter_life=85,
     )
     assert client.timeout == 5.0
+
+
+@pytest.mark.asyncio
+async def test_get_state_retries_once_after_a_disconnect() -> None:
+    client = _RetryingStateClient()
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+    )
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_get_state_does_not_retry_a_second_disconnect() -> None:
+    client = _RetryingStateClient(always_disconnect=True)
+
+    with pytest.raises(GoveeBleDisconnectedError, match="disconnected"):
+        await client.async_get_state()
+
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_commands_do_not_replay_after_a_disconnect() -> None:
+    client = _RetryingStateClient(always_disconnect=True)
+
+    with pytest.raises(GoveeBleDisconnectedError, match="disconnected"):
+        await client.async_set_power(True)
+
+    assert client.calls == 1
 
 
 @pytest.mark.asyncio
@@ -220,6 +281,40 @@ async def test_notification_transaction_uses_one_timeout_budget() -> None:
         )
 
     assert loop.time() - started < 0.05
+
+
+@pytest.mark.asyncio
+async def test_connection_preparation_does_not_consume_transaction_timeout() -> None:
+    client = _SlowPreparationClient(FakeBleakClient())
+
+    assert await client._async_write_and_wait(
+        H7124_PROFILE.power_on_command,
+        H7124_PROFILE.is_power_state_response,
+        timeout=0.01,
+    )
+
+
+@pytest.mark.asyncio
+async def test_idle_cleanup_finishes_before_connection_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _TestableGoveeBleClient(FakeBleakClient())
+    events: list[str] = []
+
+    async def async_wait_for_idle_disconnect(_deadline: float) -> None:
+        events.append("idle_cleanup")
+
+    async def async_prepare_connection() -> None:
+        events.append("prepare")
+
+    monkeypatch.setattr(
+        client, "_async_wait_for_idle_disconnect", async_wait_for_idle_disconnect
+    )
+    monkeypatch.setattr(client, "_async_prepare_connection", async_prepare_connection)
+
+    assert await client.async_set_power(True) is True
+
+    assert events == ["idle_cleanup", "prepare"]
 
 
 @pytest.mark.asyncio
@@ -486,6 +581,69 @@ async def test_disconnected_callback_reconnects_and_ignores_stale_client(
     assert establish_count == 2
 
     await client.async_close()
+
+
+def test_unexpected_disconnect_clears_session_and_advertisement_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    hass = object()
+    client = GoveeBleClient(hass, "AA:BB:CC:DD:EE:FF")
+    connected = FakeBleakClient()
+    client._client = connected
+    client._session_key = b"session"
+    cleared: list[tuple[Any, str]] = []
+    monkeypatch.setattr(
+        transport,
+        "clear_advertisement_history",
+        lambda passed_hass, address: cleared.append((passed_hass, address)),
+    )
+
+    client._handle_disconnect(connected)
+
+    assert client._client is None
+    assert client._session_key is None
+    assert client._fresh_advertisement_after is not None
+    assert client._unexpected_disconnect_revision == 1
+    assert cleared == [(hass, "AA:BB:CC:DD:EE:FF")]
+
+
+@pytest.mark.asyncio
+async def test_failed_advertisement_recovery_is_backed_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    client = GoveeBleClient(object(), "AA:BB:CC:DD:EE:FF")
+    wait_flags: list[bool] = []
+
+    async def async_prepare_connection_path(
+        _hass: Any,
+        _address: str,
+        *,
+        after: float | None,
+        wait_for_advertisement: bool = True,
+    ) -> None:
+        wait_flags.append(wait_for_advertisement)
+        raise GoveeBleClientError("not found")
+
+    monkeypatch.setattr(
+        transport, "async_prepare_connection_path", async_prepare_connection_path
+    )
+
+    with pytest.raises(GoveeBleClientError, match="not found"):
+        await client._async_prepare_connection()
+    with pytest.raises(GoveeBleClientError, match="not found"):
+        await client._async_prepare_connection()
+
+    client._advertisement_retry_at = 0.0
+    with pytest.raises(GoveeBleClientError, match="not found"):
+        await client._async_prepare_connection()
+
+    assert wait_flags == [True, False, True]
+    assert client._advertisement_failure_count == 2
+    assert client._advertisement_retry_at > asyncio.get_running_loop().time() + 119
 
 
 @pytest.mark.asyncio

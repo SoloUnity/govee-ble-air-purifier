@@ -71,6 +71,23 @@ def test_family_fallback_profile_loads_with_real_home_assistant() -> None:
     assert profile.local_name_prefixes == ("GVH712C",)
 
 
+def test_bluetooth_recovery_uses_supported_home_assistant_apis() -> None:
+    from homeassistant.components import bluetooth
+
+    process_parameters = signature(bluetooth.async_process_advertisements).parameters
+
+    assert tuple(process_parameters) == (
+        "hass",
+        "callback",
+        "match_dict",
+        "mode",
+        "timeout",
+    )
+    assert callable(bluetooth.async_last_service_info)
+    assert callable(bluetooth.async_scanner_devices_by_address)
+    assert bluetooth.BluetoothScanningMode.ACTIVE is not None
+
+
 @pytest.mark.asyncio
 async def test_platform_setup_uses_real_home_assistant_entities() -> None:
     """Construct each configured platform's entities through its setup hook."""

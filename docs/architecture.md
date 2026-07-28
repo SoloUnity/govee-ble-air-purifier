@@ -143,9 +143,13 @@ and validates their plaintext responses. Application frames remain the same
 checksum-valid plaintext values used by the H7124 path.
 
 `bluetooth/client.py` owns one serialized transaction lock per configured
-purifier. A transaction deadline starts before lock acquisition and is shared
-by lock waiting, connection establishment when needed, notification setup,
-writes, response waits, notification cleanup, and failure cleanup.
+purifier. Before an uncached connection, it asks the transport to verify a
+connectable path. A post-disconnect connection requires an advertisement newer
+than the disconnect; this preparation is bounded separately so it does not
+consume the operation deadline. The transaction deadline then starts before
+lock acquisition and is shared by lock waiting, connection establishment,
+notification setup, writes, response waits, notification cleanup, and failure
+cleanup.
 
 The client caches a healthy GATT connection across transactions. Every
 successful operation resets an idle timer derived from the configured polling
@@ -159,7 +163,8 @@ before closing the connection. An unexpected-disconnect callback clears only
 the client instance that raised it; identity checking prevents a delayed
 callback from clearing a replacement. The next poll or command reconnects
 through Home Assistant. Transaction failure invalidates the connection but does
-not replay the operation.
+not replay the operation. A confirmed link loss may replay one read-only state
+poll after fresh-advertisement recovery; commands are never replayed.
 
 For a profile selecting Govee V1 encryption, a newly established connection
 completes the `e7 01` / `e7 02` exchange before its first application operation.
@@ -184,9 +189,14 @@ release, and disconnect-callback state. It delegates Home Assistant connection
 mechanics to `bluetooth/transport.py`.
 
 `bluetooth/transport.py` owns Home Assistant's connectable BLE-device lookup,
-stale-connection cleanup before establishment, connection establishment, and
-bounded best-effort disconnect. It applies the caller's existing deadline
-without extending it and suppresses disconnect cleanup errors.
+fresh-advertisement and per-scanner path preparation, stale-connection cleanup
+before establishment, connection establishment, and bounded best-effort
+disconnect. On supported Home Assistant versions it clears static advertisement
+deduplication after a GATT session. Advertisement recovery uses Active callback
+semantics, which waits on an already Active scanner or requests a temporary
+window from an Automatic scanner. Failed waits back off from 60 to 300 seconds.
+Connection stages apply the caller's existing deadline without extending it,
+and disconnect cleanup errors are suppressed.
 
 ## Coordinator Publication
 
