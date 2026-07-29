@@ -277,13 +277,14 @@ state. The light does not restore RGB after restart.
 ## Custom Auto Control Flow
 
 `custom_auto/policy.py` is pure policy. It defines the five percentages and
-mode mappings, the two-sample upshift requirement, and `speed_for_pm()`. Upward
-thresholds use strict `>` comparisons.
+mode mappings, the maximum two-sample upshift requirement, and `speed_for_pm()`.
+Upward thresholds use strict `>` comparisons.
 
 `custom_auto/controller.py` owns mutable behavior: activation and restored
-speed, coordinator subscription, queued sample revisions, upshift confirmation,
-downshift timer tasks, mature targets, command retry gating, ownership handoff,
-and controller-state listeners. It never communicates with BLE directly.
+speed, coordinator subscription, queued sample revisions, one-shot upshift
+confirmation polls, downshift timer tasks, mature targets, command retry gating,
+ownership handoff, and controller-state listeners. It never communicates with
+BLE directly.
 
 The publication path is:
 
@@ -298,9 +299,17 @@ BLE poll
   -> command publication has no new PM2.5 revision and is not counted as a sample
 ```
 
-An upshift requires two distinct valid revisions that both require a speed above
-the current speed; the second reading determines the target. A reading that does
-not require an increase clears pending upward confirmation.
+With a positive confirmation delay, an upshift requires two distinct valid
+revisions that both require a speed above the current speed; the second reading
+determines the target. A reading that does not require an increase clears
+pending upward confirmation. Initial detection therefore remains bounded by the
+configured polling interval. After the first upward reading, the controller
+schedules one full-state confirmation poll after the configured delay. A newer
+valid reading can confirm sooner and makes that dedicated attempt unnecessary.
+If the dedicated poll fails or returns invalid PM2.5, the first reading remains
+pending and confirmation waits for the next normal poll; the dedicated attempt
+is not retried. A zero confirmation delay bypasses this state and upshifts from
+the first valid reading.
 
 Each lower speed has an independent timer. A valid reading at or below its
 downward threshold qualifies because the controller checks `pm25 <= threshold`.

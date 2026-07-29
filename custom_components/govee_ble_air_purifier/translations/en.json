@@ -17,8 +17,9 @@
       },
       "custom_auto": {
         "title": "Five Air Quality Steps",
-        "description": "Configure the four boundaries between Excellent, Good, Fair, Bad, and Poor. Increases happen immediately; returns to cleaner levels happen only after the configured delay. Activate these rules with the device's Custom Auto switch.",
+        "description": "Configure increase confirmation and the four boundaries between Excellent, Good, Fair, Bad, and Poor. Positive confirmation delays require a second valid reading; 0 seconds reacts to the first reading. Returns to cleaner levels happen only after the configured delay. Activate these rules with the device's Custom Auto switch.",
         "data": {
+          "custom_auto_confirmation_delay": "Increase confirmation delay",
           "custom_auto_up_40": "Excellent to Good: increase above",
           "custom_auto_down_20": "Good to Excellent: return at or below",
           "custom_auto_delay_20": "Good to Excellent: time at or below",
@@ -31,6 +32,9 @@
           "custom_auto_up_100": "Bad to Poor: increase above",
           "custom_auto_down_80": "Poor to Bad: return at or below",
           "custom_auto_delay_80": "Poor to Bad: time at or below"
+        },
+        "data_description": {
+          "custom_auto_confirmation_delay": "Wait this many seconds before requesting a confirming PM2.5 reading. Set to 0 to increase immediately from the first valid reading."
         },
         "sections": {
           "excellent_good": {
@@ -92,9 +96,10 @@
     "step": {
       "init": {
         "title": "Purifier Options",
-        "description": "Configure polling and, when supported by the model profile, the Custom Auto air-quality boundaries.",
+        "description": "Configure polling and, when supported by the model profile, Custom Auto increase confirmation and air-quality boundaries.",
         "data": {
           "polling_interval": "Polling interval in seconds",
+          "custom_auto_confirmation_delay": "Increase confirmation delay",
           "custom_auto_up_40": "Excellent to Good: increase above",
           "custom_auto_down_20": "Good to Excellent: return at or below",
           "custom_auto_delay_20": "Good to Excellent: time at or below",
@@ -109,7 +114,8 @@
           "custom_auto_delay_80": "Poor to Bad: time at or below"
         },
         "data_description": {
-          "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices."
+          "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices.",
+          "custom_auto_confirmation_delay": "Wait this many seconds before requesting a confirming PM2.5 reading. Set to 0 to increase immediately from the first valid reading."
         },
         "sections": {
           "excellent_good": {
@@ -161,7 +167,7 @@
   "entity": {
     "light": {
       "night_light": {
-        "name": "Night light"
+        "name": "Air Purifier Light"
       }
     },
     "switch": {

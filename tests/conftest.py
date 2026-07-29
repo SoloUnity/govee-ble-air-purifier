@@ -35,13 +35,16 @@ if importlib.util.find_spec("homeassistant") is None:
             self.data = data
             self.last_update_success = True
 
-        async def async_request_refresh(self) -> None:
+        async def async_refresh(self) -> None:
             try:
                 data = await self._async_update_data()
             except Exception:
                 self.last_update_success = False
                 raise
             self.async_set_updated_data(data)
+
+        async def async_request_refresh(self) -> None:
+            await self.async_refresh()
 
         async def async_config_entry_first_refresh(self) -> None:
             await self.async_request_refresh()

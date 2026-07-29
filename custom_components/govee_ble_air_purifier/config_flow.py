@@ -18,6 +18,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
     CONF_CUSTOM_AUTO_DELAY_20,
     CONF_CUSTOM_AUTO_DELAY_40,
     CONF_CUSTOM_AUTO_DELAY_60,
@@ -42,6 +43,7 @@ from .const import (
 from .custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
     CUSTOM_AUTO_OPTION_KEYS,
+    MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
     CustomAutoConfig,
     parse_custom_auto_values,
     validate_custom_auto_values,
@@ -434,24 +436,45 @@ def _custom_auto_sections(defaults: Mapping[str, Any]) -> dict[Any, Any]:
         )
     )
     return {
-        vol.Required(section_key): data_entry_section(
-            vol.Schema(
-                {
-                    vol.Required(up_key, default=values[up_key]): pm_selector,
-                    vol.Required(down_key, default=values[down_key]): pm_selector,
-                    vol.Required(delay_key, default=values[delay_key]): delay_selector,
-                }
-            ),
-            {"collapsed": False},
-        )
-        for section_key, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS
+        vol.Required(
+            CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
+            default=values[CONF_CUSTOM_AUTO_CONFIRMATION_DELAY],
+        ): NumberSelector(
+            NumberSelectorConfig(
+                min=0,
+                max=MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement="s",
+            )
+        ),
+        **{
+            vol.Required(section_key): data_entry_section(
+                vol.Schema(
+                    {
+                        vol.Required(up_key, default=values[up_key]): pm_selector,
+                        vol.Required(down_key, default=values[down_key]): pm_selector,
+                        vol.Required(
+                            delay_key, default=values[delay_key]
+                        ): delay_selector,
+                    }
+                ),
+                {"collapsed": False},
+            )
+            for section_key, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS
+        },
     }
 
 
 def _parse_custom_auto_form(values: Mapping[str, Any]) -> dict[str, int]:
     """Flatten sectioned form input into the existing config-entry option keys."""
 
-    flattened: dict[str, Any] = {}
+    flattened: dict[str, Any] = {
+        CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: values.get(
+            CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
+            CUSTOM_AUTO_DEFAULTS[CONF_CUSTOM_AUTO_CONFIRMATION_DELAY],
+        )
+    }
     has_sections = False
     for section_key, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS:
         section_values = values.get(section_key)

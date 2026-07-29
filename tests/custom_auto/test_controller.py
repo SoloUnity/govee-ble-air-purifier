@@ -3,8 +3,12 @@ from collections.abc import Callable
 
 import pytest
 
+from custom_components.govee_ble_air_purifier.const import (
+    CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
+)
 from custom_components.govee_ble_air_purifier.custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
+    DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
     CustomAutoConfig,
 )
 from custom_components.govee_ble_air_purifier.custom_auto.controller import (
@@ -26,6 +30,8 @@ class FakeCoordinator:
         self.commands: list[str] = []
         self.command_attempts: list[str] = []
         self.command_errors: list[Exception] = []
+        self.refresh_attempts = 0
+        self.refresh_results: list[int | None | Exception] = []
         self.listeners: list[Callable[[], None]] = []
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -48,6 +54,17 @@ class FakeCoordinator:
             fan_mode=mode,
         )
         self._notify()
+
+    async def async_refresh(self) -> None:
+        self.refresh_attempts += 1
+        result = self.refresh_results.pop(0) if self.refresh_results else self.data.pm25
+        if isinstance(result, Exception):
+            self.last_update_success = False
+            self.last_pm25_update_success = False
+            self._notify()
+            raise result
+        self.last_update_success = True
+        self.set_pm25(result)
 
     def set_is_on(self, is_on: bool) -> None:
         self.data = PurifierState(
@@ -246,6 +263,244 @@ async def test_valid_non_upward_reading_resets_upshift_confirmation() -> None:
 
     assert coordinator.commands == ["High"]
     await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_first_upward_reading_requests_confirmation_after_configured_delay() -> (
+    None
+):
+    coordinator = FakeCoordinator(pm25=0)
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None,
+        coordinator,
+        custom_auto_config(custom_auto_confirmation_delay=7),
+        sleep=sleep,
+    )
+    await controller.async_activate()
+
+    coordinator.set_pm25(16)
+    await settle()
+
+    assert coordinator.refresh_attempts == 0
+    confirmation_waiter = next(future for delay, future in sleep.waiters if delay == 7)
+
+    sleep.release(7)
+    await settle()
+
+    assert confirmation_waiter.done()
+    assert coordinator.refresh_attempts == 1
+    assert coordinator.commands == ["Turbo"]
+    assert controller.current_speed == 100
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_zero_confirmation_delay_upshifts_on_first_fresh_reading() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    controller = CustomAutoController(
+        None,
+        coordinator,
+        custom_auto_config(**{CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: 0}),
+    )
+    await controller.async_activate()
+
+    coordinator.set_pm25(16)
+    await settle()
+
+    assert coordinator.refresh_attempts == 0
+    assert coordinator.commands == ["Turbo"]
+    assert controller.current_speed == 100
+    assert controller.diagnostics()["pending_upshift_readings"] == 0
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_zero_confirmation_delay_uses_activation_reading_immediately() -> None:
+    coordinator = FakeCoordinator(pm25=16)
+    controller = CustomAutoController(
+        None,
+        coordinator,
+        custom_auto_config(**{CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: 0}),
+    )
+
+    await controller.async_activate()
+
+    assert coordinator.commands == ["Turbo"]
+    assert controller.current_speed == 100
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_natural_second_reading_cancels_confirmation_refresh() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(16)
+    await settle()
+    confirmation_waiter = next(
+        future
+        for delay, future in sleep.waiters
+        if delay == DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS
+    )
+
+    coordinator.set_pm25(10)
+    await settle()
+
+    assert confirmation_waiter.cancelled()
+    assert coordinator.refresh_attempts == 0
+    assert coordinator.commands == ["High"]
+    assert controller.current_speed == 80
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "confirmation_result",
+    [None, RuntimeError("confirmation failed")],
+    ids=["invalid-pm25", "failed-refresh"],
+)
+async def test_unsuccessful_confirmation_waits_for_next_normal_reading(
+    confirmation_result: int | None | Exception,
+) -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    coordinator.refresh_results.append(confirmation_result)
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(16)
+    await settle()
+
+    sleep.release(DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS)
+    await settle()
+
+    assert coordinator.refresh_attempts == 1
+    assert coordinator.commands == []
+    assert controller.diagnostics()["pending_upshift_readings"] == 1
+
+    coordinator.set_pm25(16)
+    await settle()
+
+    assert coordinator.refresh_attempts == 1
+    assert coordinator.commands == ["Turbo"]
+    await controller.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_deactivation_cancels_confirmation_refresh() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(16)
+    await settle()
+    confirmation_waiter = next(
+        future
+        for delay, future in sleep.waiters
+        if delay == DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS
+    )
+
+    await controller.async_deactivate()
+
+    assert confirmation_waiter.cancelled()
+    assert coordinator.refresh_attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_handoff_cancels_confirmation_refresh() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(16)
+    await settle()
+    confirmation_waiter = next(
+        future
+        for delay, future in sleep.waiters
+        if delay == DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS
+    )
+
+    await controller.async_handoff(lambda: coordinator.async_set_fan_mode("Auto"))
+    await settle()
+
+    assert confirmation_waiter.cancelled()
+    assert coordinator.refresh_attempts == 0
+    assert controller.active is False
+    assert coordinator.commands == ["Auto"]
+
+
+@pytest.mark.asyncio
+async def test_observed_power_off_cancels_confirmation_refresh() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    sleep = ControlledSleep()
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(16)
+    await settle()
+    confirmation_waiter = next(
+        future
+        for delay, future in sleep.waiters
+        if delay == DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS
+    )
+
+    coordinator.set_is_on(False)
+    await settle()
+
+    assert confirmation_waiter.cancelled()
+    assert coordinator.refresh_attempts == 0
+    assert controller.active is False
+
+
+@pytest.mark.asyncio
+async def test_stop_awaits_in_flight_confirmation_refresh_without_cancelling() -> None:
+    coordinator = FakeCoordinator(pm25=0)
+    sleep = ControlledSleep()
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+    refresh_cancelled = asyncio.Event()
+
+    async def blocking_refresh() -> None:
+        coordinator.refresh_attempts += 1
+        refresh_started.set()
+        try:
+            await release_refresh.wait()
+        except asyncio.CancelledError:
+            refresh_cancelled.set()
+            raise
+
+    coordinator.async_refresh = blocking_refresh  # type: ignore[method-assign]
+    controller = CustomAutoController(
+        None, coordinator, custom_auto_config(), sleep=sleep
+    )
+    await controller.async_activate()
+    coordinator.set_pm25(16)
+    await settle()
+
+    sleep.release(DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS)
+    await refresh_started.wait()
+    stop_task = asyncio.create_task(controller.async_stop())
+    await settle()
+
+    assert not stop_task.done()
+    assert not refresh_cancelled.is_set()
+
+    release_refresh.set()
+    await stop_task
+
+    assert not refresh_cancelled.is_set()
+    assert coordinator.refresh_attempts == 1
+    assert coordinator.listeners == []
 
 
 @pytest.mark.asyncio
@@ -775,6 +1030,7 @@ def test_diagnostics_shape_is_complete() -> None:
     assert controller.diagnostics() == {
         "active": False,
         "current_speed": None,
+        "confirmation_delay_seconds": 3,
         "up_thresholds": [3, 5, 9, 15],
         "down_thresholds": [3, 5, 9, 15],
         "down_delays": [7, 5, 5, 5],

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from custom_components.govee_ble_air_purifier.const import (
+    CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
     CONF_POLLING_INTERVAL,
     DEFAULT_POLLING_INTERVAL_SECONDS,
     MAX_POLLING_INTERVAL_SECONDS,
@@ -164,6 +165,7 @@ def test_polling_interval_from_options_defaults_when_missing_or_invalid() -> Non
 def test_custom_auto_options_default_for_existing_entries() -> None:
     config = CustomAutoConfig.from_options({})
 
+    assert config.confirmation_delay_seconds == 3
     assert config.up_thresholds == (3, 5, 9, 15)
     assert config.down_thresholds == (3, 5, 9, 15)
     assert config.down_delays == (7, 5, 5, 5)
@@ -211,6 +213,7 @@ def test_custom_auto_cross_validation_returns_stable_error_keys(
         ("custom_auto_up_100", 1000),
         ("custom_auto_delay_20", -1),
         ("custom_auto_delay_80", 1441),
+        (CONF_CUSTOM_AUTO_CONFIRMATION_DELAY, 301),
         ("custom_auto_up_40", 3.5),
     ],
 )

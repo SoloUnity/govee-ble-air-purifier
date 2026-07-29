@@ -49,6 +49,9 @@ class CustomAutoController:
         self._pending_pm25_samples: deque[tuple[int, int]] = deque()
         self._pending_upshift_readings = 0
         self._pending_upshift_speed: int | None = None
+        self._upshift_confirmation_task: asyncio.Task[Any] | None = None
+        self._upshift_confirmation_revision: int | None = None
+        self._upshift_confirmation_refreshing = False
         self._state_listeners: set[Callable[[], None]] = set()
         self._lock = asyncio.Lock()
 
@@ -118,11 +121,16 @@ class CustomAutoController:
                 if pm25 is None:
                     await self._async_set_speed(self._current_speed, force=force)
                 else:
-                    self._observe_upshift_sample(
+                    confirmed_upshift = self._observe_upshift_sample(
                         self._speed_for_pm(pm25),
                         self.coordinator.pm25_sample_revision,
                     )
-                    await self._async_set_speed(self._current_speed, force=force)
+                    await self._async_set_speed(
+                        confirmed_upshift or self._current_speed,
+                        force=force,
+                    )
+                    if confirmed_upshift is not None:
+                        self._clear_upshift_confirmation()
                     if update_succeeded:
                         self._update_downshift_timers(pm25)
                 self._notify_state_listeners()
@@ -183,6 +191,7 @@ class CustomAutoController:
         return {
             "active": self.active,
             "current_speed": self.current_speed,
+            "confirmation_delay_seconds": self.config.confirmation_delay_seconds,
             "up_thresholds": list(self.config.up_thresholds),
             "down_thresholds": list(self.config.down_thresholds),
             "down_delays": list(self.config.down_delays),
@@ -282,7 +291,7 @@ class CustomAutoController:
     def _observe_upshift_sample(
         self, required_speed: int, revision: int
     ) -> int | None:
-        """Return an upshift after two distinct valid samples require an increase."""
+        """Return a confirmed upshift or schedule its delayed confirmation."""
 
         if revision == self._last_pm25_sample_revision:
             return None
@@ -292,17 +301,73 @@ class CustomAutoController:
             self._clear_upshift_confirmation()
             return None
 
+        if self.config.confirmation_delay_seconds == 0:
+            self._clear_upshift_confirmation()
+            return required_speed
+
         self._pending_upshift_readings = min(
             self._pending_upshift_readings + 1, UPSHIFT_CONFIRMATION_SAMPLES
         )
         self._pending_upshift_speed = required_speed
+        if self._pending_upshift_readings == 1:
+            self._schedule_upshift_confirmation(revision)
         if self._pending_upshift_readings < UPSHIFT_CONFIRMATION_SAMPLES:
             return None
         return required_speed
 
-    def _clear_upshift_confirmation(self) -> None:
+    def _clear_upshift_confirmation(self) -> asyncio.Task[Any] | None:
         self._pending_upshift_readings = 0
         self._pending_upshift_speed = None
+        task = self._upshift_confirmation_task
+        refreshing = self._upshift_confirmation_refreshing
+        self._upshift_confirmation_task = None
+        self._upshift_confirmation_revision = None
+        self._upshift_confirmation_refreshing = False
+        if (
+            task is not None
+            and not task.done()
+            and task is not asyncio.current_task()
+            and not refreshing
+        ):
+            task.cancel()
+        return task
+
+    def _schedule_upshift_confirmation(self, revision: int) -> None:
+        task = self._upshift_confirmation_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._upshift_confirmation_revision = revision
+        self._upshift_confirmation_refreshing = False
+        self._upshift_confirmation_task = self._create_task(
+            self._async_request_upshift_confirmation(revision)
+        )
+
+    async def _async_request_upshift_confirmation(self, revision: int) -> None:
+        task = asyncio.current_task()
+        try:
+            await self._sleep(self.config.confirmation_delay_seconds)
+            async with self._lock:
+                if (
+                    not self._active
+                    or getattr(self.coordinator.data, "is_on", None) is False
+                    or self._waiting_for_successful_update
+                    or self._pending_upshift_readings != 1
+                    or self._upshift_confirmation_revision != revision
+                    or self._last_pm25_sample_revision != revision
+                    or self.coordinator.pm25_sample_revision != revision
+                ):
+                    return
+                self._upshift_confirmation_refreshing = True
+            await self.coordinator.async_refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("Custom Auto confirmation refresh failed")
+        finally:
+            if self._upshift_confirmation_task is task:
+                self._upshift_confirmation_task = None
+                self._upshift_confirmation_revision = None
+                self._upshift_confirmation_refreshing = False
 
     def _speed_for_pm(self, pm25: int) -> int:
         return speed_for_pm(pm25, self.config.up_thresholds)
@@ -366,7 +431,7 @@ class CustomAutoController:
         self._evaluation_pending = False
         self._last_pm25_sample_revision = None
         self._pending_pm25_samples.clear()
-        self._clear_upshift_confirmation()
+        upshift_task = self._clear_upshift_confirmation()
         if self._remove_listener is not None:
             self._remove_listener()
             self._remove_listener = None
@@ -374,7 +439,9 @@ class CustomAutoController:
         self._mature_downshifts.clear()
         if was_active:
             self._notify_state_listeners()
-        return timer_tasks
+        if upshift_task is None:
+            return timer_tasks
+        return (*timer_tasks, upshift_task)
 
     def _coordinator_update_succeeded(self) -> bool:
         """Treat lightweight coordinators without availability state as successful."""

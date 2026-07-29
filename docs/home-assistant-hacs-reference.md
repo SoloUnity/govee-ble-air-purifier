@@ -184,6 +184,7 @@ validation:
 
 ```text
 Five Air Quality Steps
+|-- Increase confirmation delay
 |-- Excellent to Good (20% / 40%)
 |   |-- Increase to Good above
 |   |-- Return to Excellent at or below
@@ -204,7 +205,9 @@ Five Air Quality Steps
 ```
 
 PM2.5 inputs are whole numbers from 0 through 999 micrograms per cubic meter.
-Delay inputs are whole minutes from 0 through 1440. The defaults are:
+The increase confirmation delay is a whole number from 0 through 300 seconds
+and defaults to 3 seconds. Return delay inputs are whole minutes from 0 through
+1440. The boundary defaults are:
 
 | Boundary | Increase above | Return at or below | Return delay | Speeds |
 | --- | ---: | ---: | ---: | --- |
@@ -215,9 +218,14 @@ Delay inputs are whole minutes from 0 through 1440. The defaults are:
 
 The four increase values must be strictly ascending, the four return values
 must be strictly ascending, and a return value cannot exceed the corresponding
-increase value. An increase has no time delay but requires two distinct valid
-PM2.5 samples that both require an upshift. A return qualifies at equality and
-occurs only after its configured delay.
+increase value. With a positive confirmation delay, an increase requires two
+distinct valid PM2.5 samples that both require an upshift. The first is detected
+on the configured polling interval and schedules one full-state confirmation
+poll after the configured delay unless a newer valid sample confirms sooner. A
+failed or PM-invalid dedicated poll preserves the first sample and waits for the
+next normal poll without another dedicated attempt. A zero confirmation delay
+increases from the first valid sample. A return qualifies at equality and occurs
+only after its configured delay.
 
 Submitting this step creates and loads the config entry. Profiles with narrower
 fan-mode sets skip this step and create the entry directly from the device form.
@@ -286,6 +294,7 @@ button on the entry or in its overflow menu. It opens one form:
 ```text
 Purifier Options
 |-- Polling interval in seconds
+|-- Increase confirmation delay [when Custom Auto is supported]
 |-- Excellent to Good (20% / 40%) [when Custom Auto is supported]
 |-- Good to Fair (40% / 60%) [when Custom Auto is supported]
 |-- Fair to Bad (60% / 80%) [when Custom Auto is supported]
@@ -293,11 +302,11 @@ Purifier Options
 `-- Submit
 ```
 
-For profiles that support Custom Auto, each air-quality section contains the
-same increase, return, and delay fields shown during setup. Existing values are
-prefilled and the same ranges and ordering rules apply. Narrower profiles show
-only polling. Saving options reloads the config entry so the polling interval
-and any Custom Auto controller use the new settings consistently.
+For profiles that support Custom Auto, the confirmation delay and each
+air-quality section contain the same fields shown during setup. Existing values
+are prefilled and the same ranges and ordering rules apply. Narrower profiles
+show only polling. Saving options reloads the config entry so the polling
+interval and any Custom Auto controller use the new settings consistently.
 
 The BLE address, stored device name, and model profile are setup data and are
 not edited by this options form. To replace the physical device, remove the

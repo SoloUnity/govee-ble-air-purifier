@@ -76,11 +76,19 @@ When the resolved model profile provides all required fan modes, setup and the
 device's integration Options contain four expanded PM2.5 boundary groups for
 five air-quality levels: Excellent, Good, Fair, Bad, and Poor. Each group
 contains an increase threshold, a delayed return threshold, and the return
-delay. An increase requires two valid PM2.5 readings that both call for a
-higher speed; the second reading determines the target. Turn on the device's
-`Custom Auto` switch to activate those rules. Turning the switch off keeps the
-purifier on and hands control to its built-in Auto mode. Profiles with narrower
-fan-mode sets do not expose these controls.
+delay. The increase confirmation delay appears above those groups and defaults
+to 3 seconds. A positive delay requires two valid PM2.5 readings that both call
+for a higher speed; the second reading determines the target. After the first
+upward reading, Custom Auto schedules one full-state confirmation poll after
+the configured delay unless a newer valid reading arrives first and can confirm
+sooner. A failed or PM-invalid dedicated poll preserves the first reading and
+leaves confirmation to the next normal poll; it is not retried. Setting the
+confirmation delay to 0 disables the second-reading requirement and increases
+speed from the first valid reading. Initial detection still follows the
+configured polling interval. Turn on the device's `Custom Auto` switch to
+activate those rules. Turning the switch off keeps the purifier on and hands
+control to its built-in Auto mode. Profiles with narrower fan-mode sets do not
+expose these controls.
 
 While Custom Auto is on, the fan's logical preset remains Auto while Home
 Assistant sends the underlying manual speeds Sleep (20%), Low (40%), Medium

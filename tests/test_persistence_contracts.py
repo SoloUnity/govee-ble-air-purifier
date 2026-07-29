@@ -9,6 +9,7 @@ from custom_components.govee_ble_air_purifier.auto_resume import (
 )
 from custom_components.govee_ble_air_purifier.const import (
     CONF_ADDRESS,
+    CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
     CONF_CUSTOM_AUTO_DELAY_20,
     CONF_CUSTOM_AUTO_DELAY_40,
     CONF_CUSTOM_AUTO_DELAY_60,
@@ -43,6 +44,7 @@ def test_config_entry_and_option_storage_keys_are_stable() -> None:
     assert LEGACY_CONF_USE_CUSTOM_AUTO == "use_custom_auto"
     assert (CONF_POLLING_INTERVAL, *CUSTOM_AUTO_OPTION_KEYS) == (
         "polling_interval",
+        "custom_auto_confirmation_delay",
         "custom_auto_up_40",
         "custom_auto_up_60",
         "custom_auto_up_80",
@@ -61,6 +63,7 @@ def test_config_entry_and_option_storage_keys_are_stable() -> None:
 def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     assert DEFAULT_POLLING_INTERVAL_SECONDS == 10
     assert CUSTOM_AUTO_DEFAULTS == {
+        CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: 3,
         CONF_CUSTOM_AUTO_UP_40: 3,
         CONF_CUSTOM_AUTO_UP_60: 5,
         CONF_CUSTOM_AUTO_UP_80: 9,

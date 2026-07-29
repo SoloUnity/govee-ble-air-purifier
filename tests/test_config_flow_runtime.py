@@ -6,8 +6,12 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from custom_components.govee_ble_air_purifier.const import (
+    CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
+)
 from custom_components.govee_ble_air_purifier.custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
+    MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
 )
 from custom_components.govee_ble_air_purifier.profiles import get_profile
 from tests.helpers.ha_stubs import install_modules
@@ -210,12 +214,17 @@ def _schema_by_key(schema: _VoluptuousSchema) -> dict[str, tuple[object, object]
 
 def _sectioned_values(config_flow, values: dict[str, int]) -> dict[str, object]:
     return {
-        section_key: {
-            up_key: values[up_key],
-            down_key: values[down_key],
-            delay_key: values[delay_key],
-        }
-        for section_key, up_key, down_key, delay_key in config_flow.CUSTOM_AUTO_SECTIONS
+        CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: values[
+            CONF_CUSTOM_AUTO_CONFIRMATION_DELAY
+        ],
+        **{
+            section_key: {
+                up_key: values[up_key],
+                down_key: values[down_key],
+                delay_key: values[delay_key],
+            }
+            for section_key, up_key, down_key, delay_key in config_flow.CUSTOM_AUTO_SECTIONS
+        },
     }
 
 
@@ -383,12 +392,21 @@ async def test_custom_auto_form_uses_bounded_box_number_selectors(
 
     assert result["step_id"] == "custom_auto"
     assert list(fields) == [
+        CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
         "excellent_good",
         "good_fair",
         "fair_bad",
         "bad_poor",
     ]
-    for _, section_value in fields.values():
+    _, confirmation_selector = fields[CONF_CUSTOM_AUTO_CONFIRMATION_DELAY]
+    assert isinstance(confirmation_selector, _NumberSelector)
+    assert confirmation_selector.config.mode is _NumberSelectorMode.BOX
+    assert confirmation_selector.config.min == 0
+    assert confirmation_selector.config.max == MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS
+    assert confirmation_selector.config.step == 1
+    assert confirmation_selector.config.unit_of_measurement == "s"
+    for key in list(fields)[1:]:
+        section_value = fields[key][1]
         assert isinstance(section_value, _Section)
         assert section_value.options == {"collapsed": False}
         section_fields = _schema_by_key(section_value.schema)
@@ -402,7 +420,7 @@ async def test_custom_auto_form_uses_bounded_box_number_selectors(
 
 
 @pytest.mark.asyncio
-async def test_setup_stores_defaults_and_reports_cross_field_errors(
+async def test_setup_stores_custom_confirmation_delay_and_reports_cross_field_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bluetooth_module = ModuleType("homeassistant.components.bluetooth")
@@ -430,13 +448,17 @@ async def test_setup_stores_defaults_and_reports_cross_field_errors(
     error_result = await flow.async_step_custom_auto(invalid)
     assert error_result["errors"] == {"base": "up_thresholds_not_ascending"}
 
+    submitted = {
+        **CUSTOM_AUTO_DEFAULTS,
+        CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: 7,
+    }
     result = await flow.async_step_custom_auto(
-        _sectioned_values(config_flow, CUSTOM_AUTO_DEFAULTS)
+        _sectioned_values(config_flow, submitted)
     )
     assert result["type"] == "create_entry"
     assert result["options"] == {
         "polling_interval": 15,
-        **CUSTOM_AUTO_DEFAULTS,
+        **submitted,
     }
 
 
@@ -666,6 +688,7 @@ async def test_options_always_edit_rules_and_remove_legacy_toggle(
 
     changed = {
         **CUSTOM_AUTO_DEFAULTS,
+        CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: 0,
         "custom_auto_delay_20": 12,
     }
     saved = await options_flow.async_step_init(
@@ -674,6 +697,7 @@ async def test_options_always_edit_rules_and_remove_legacy_toggle(
             **_sectioned_values(config_flow, changed),
         }
     )
+    assert saved["data"][CONF_CUSTOM_AUTO_CONFIRMATION_DELAY] == 0
     assert saved["data"]["custom_auto_delay_20"] == 12
     assert saved["data"]["polling_interval"] == 60
     assert "use_custom_auto" not in saved["data"]
@@ -696,13 +720,18 @@ async def test_options_show_all_custom_auto_sections_on_initial_page(
     assert form["step_id"] == "init"
     assert list(fields) == [
         "polling_interval",
+        CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
         "excellent_good",
         "good_fair",
         "fair_bad",
         "bad_poor",
     ]
-    displayed_defaults = {}
-    for section_key in list(fields)[1:]:
+    displayed_defaults = {
+        CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: fields[
+            CONF_CUSTOM_AUTO_CONFIRMATION_DELAY
+        ][0].default
+    }
+    for section_key in list(fields)[2:]:
         section_value = fields[section_key][1]
         displayed_defaults.update(
             {

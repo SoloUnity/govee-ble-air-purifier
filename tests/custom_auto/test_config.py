@@ -2,9 +2,14 @@
 
 import pytest
 
+from custom_components.govee_ble_air_purifier.const import (
+    CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
+)
 from custom_components.govee_ble_air_purifier.custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
     CUSTOM_AUTO_OPTION_KEYS,
+    DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
+    MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
     CustomAutoConfig,
     parse_custom_auto_values,
     validate_custom_auto_values,
@@ -13,6 +18,7 @@ from custom_components.govee_ble_air_purifier.custom_auto.config import (
 
 def test_option_order_is_stable() -> None:
     assert CUSTOM_AUTO_OPTION_KEYS == (
+        "custom_auto_confirmation_delay",
         "custom_auto_up_40",
         "custom_auto_up_60",
         "custom_auto_up_80",
@@ -30,6 +36,7 @@ def test_option_order_is_stable() -> None:
 
 def test_default_key_order_is_stable() -> None:
     assert tuple(CUSTOM_AUTO_DEFAULTS) == (
+        "custom_auto_confirmation_delay",
         "custom_auto_up_40",
         "custom_auto_up_60",
         "custom_auto_up_80",
@@ -49,6 +56,31 @@ def test_parser_applies_defaults_and_preserves_option_order() -> None:
     assert parse_custom_auto_values({}) == {
         key: CUSTOM_AUTO_DEFAULTS[key] for key in CUSTOM_AUTO_OPTION_KEYS
     }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        0,
+        DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
+        MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
+    ],
+)
+def test_confirmation_delay_accepts_configured_bounds(value: int) -> None:
+    parsed = parse_custom_auto_values({CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: value})
+
+    assert parsed[CONF_CUSTOM_AUTO_CONFIRMATION_DELAY] == value
+
+
+def test_confirmation_delay_rejects_value_above_configured_range() -> None:
+    with pytest.raises(ValueError, match="outside its allowed range"):
+        parse_custom_auto_values(
+            {
+                CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: (
+                    MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS + 1
+                )
+            }
+        )
 
 
 @pytest.mark.parametrize("value", [0, 3, 3.0, "3", 999])

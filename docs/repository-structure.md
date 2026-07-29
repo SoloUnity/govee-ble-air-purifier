@@ -132,13 +132,14 @@ custom_auto/
   coordinator polls, serializes state-changing work, merges `PurifierState`,
   publishes confirmed commands immediately, tracks fresh poll revisions, and
   schedules reconciliation refreshes.
-- `custom_auto/config.py` owns defaults, option parsing and validation, and the
-  immutable `CustomAutoConfig`.
-- `custom_auto/policy.py` owns pure speed constants, mode mappings, and upward
-  PM2.5 speed selection.
+- `custom_auto/config.py` owns confirmation and boundary defaults, option
+  parsing and validation, and the immutable `CustomAutoConfig`.
+- `custom_auto/policy.py` owns pure speed and confirmation constants, mode
+  mappings, and upward PM2.5 speed selection.
 - `custom_auto/controller.py` owns activation, restored speed, fresh-sample
-  tracking, upshift confirmation, downshift timers, retries, coordinator calls,
-  and transactional ownership handoff.
+  tracking, upshift confirmation and its one-shot delayed full-state poll,
+  downshift timers, retries, coordinator calls, and transactional ownership
+  handoff.
 
 Coordinator publication fans out to entities, the Auto resume manager, and,
 while active, the Custom Auto controller. Both runtime controllers call through

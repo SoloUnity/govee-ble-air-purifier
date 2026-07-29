@@ -12,6 +12,7 @@ CONF_POLLING_INTERVAL = "polling_interval"
 CONF_PROFILE = "profile"
 # Retained only to remove the former settings toggle from existing options.
 LEGACY_CONF_USE_CUSTOM_AUTO = "use_custom_auto"
+CONF_CUSTOM_AUTO_CONFIRMATION_DELAY = "custom_auto_confirmation_delay"
 CONF_CUSTOM_AUTO_UP_40 = "custom_auto_up_40"
 CONF_CUSTOM_AUTO_UP_60 = "custom_auto_up_60"
 CONF_CUSTOM_AUTO_UP_80 = "custom_auto_up_80"
