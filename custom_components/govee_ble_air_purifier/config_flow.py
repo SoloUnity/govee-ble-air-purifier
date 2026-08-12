@@ -30,7 +30,6 @@ from .const import (
     CONF_DISCOVERED_DEVICE,
     CONF_POLLING_INTERVAL,
     CONF_PROFILE,
-    DEFAULT_POLLING_INTERVAL_SECONDS,
     DOMAIN,
     LEGACY_CONF_USE_CUSTOM_AUTO,
     MAX_POLLING_INTERVAL_SECONDS,
@@ -49,6 +48,7 @@ from .profiles import (
     canonicalize_ble_address,
     get_profile,
     match_profile,
+    ModelProfile,
     normalize_ble_address,
 )
 from .setup_helpers import (
@@ -97,6 +97,7 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         super().__init__()
         self._pending_entry: dict[str, Any] | None = None
         self._pending_options: dict[str, Any] | None = None
+        self._pending_profile: ModelProfile | None = None
         self._custom_auto_defaults: Mapping[str, int] = CUSTOM_AUTO_DEFAULTS
 
     async def async_step_user(
@@ -170,9 +171,6 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 profile = get_profile(option.profile_key)
                 name = user_input.get(CONF_NAME) or option.name
 
-            polling_interval = validate_polling_interval_seconds(
-                user_input.get(CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL_SECONDS)
-            )
             unique_id = _unique_id_from_address(address)
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured(updates={CONF_ADDRESS: address})
@@ -184,9 +182,26 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_PROFILE: profile.key,
                 },
             }
-            self._pending_options = {
-                CONF_POLLING_INTERVAL: polling_interval,
-            }
+            self._pending_profile = profile
+            return await self.async_step_polling()
+
+        return self.async_show_form(
+            step_id="user", data_schema=_user_schema(discovered_options), errors=errors
+        )
+
+    async def async_step_polling(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure polling after resolving the purifier profile."""
+
+        profile = self._pending_profile
+        if self._pending_entry is None or profile is None:
+            return self.async_abort(reason="unknown")
+        if user_input is not None:
+            polling_interval = validate_polling_interval_seconds(
+                user_input[CONF_POLLING_INTERVAL]
+            )
+            self._pending_options = {CONF_POLLING_INTERVAL: polling_interval}
             if not profile.supports_custom_auto:
                 return self._create_pending_entry()
             self._custom_auto_defaults = custom_auto_defaults(
@@ -195,7 +210,8 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_custom_auto()
 
         return self.async_show_form(
-            step_id="user", data_schema=_user_schema(discovered_options), errors=errors
+            step_id="polling",
+            data_schema=_polling_schema(profile.polling_interval_seconds),
         )
 
     async def async_step_custom_auto(
@@ -272,7 +288,9 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
             self._config_entry.options, profile_defaults
         ).as_options()
         supports_custom_auto = profile.supports_custom_auto
-        polling_default = polling_interval_from_options(self._config_entry.options)
+        polling_default = polling_interval_from_options(
+            self._config_entry.options, profile.polling_interval_seconds
+        )
         submitted_values: dict[str, int] | None = None
         if user_input is not None:
             polling_default = validate_polling_interval_seconds(
@@ -364,18 +382,27 @@ def _user_schema(
                 default=default_device,
             ): vol.In(_select_options(discovered_options)),
             vol.Optional(CONF_NAME): str,
+            vol.Optional(CONF_ADDRESS): str,
+        }
+    )
+
+
+def _polling_schema(polling_default: int) -> vol.Schema:
+    """Build the profile-aware polling form."""
+
+    return vol.Schema(
+        {
             vol.Required(
                 CONF_POLLING_INTERVAL,
-                default=DEFAULT_POLLING_INTERVAL_SECONDS,
-            ): _polling_interval_schema_value(),
-            vol.Optional(CONF_ADDRESS): str,
+                default=polling_default,
+            ): _polling_interval_schema_value()
         }
     )
 
 
 def _options_schema(
     *,
-    polling_default: int = DEFAULT_POLLING_INTERVAL_SECONDS,
+    polling_default: int,
     custom_auto_defaults: Mapping[str, Any],
     supports_custom_auto: bool = True,
 ) -> vol.Schema:

@@ -146,7 +146,6 @@ Govee BLE Air Purifier
 |   |-- <recognized names containing H712 plus one ASCII letter or digit>
 |   `-- Enter address manually
 |-- Name
-|-- Polling interval in seconds
 |-- BLE address for manual setup
 `-- Submit
 ```
@@ -157,7 +156,6 @@ The fields behave as follows:
 | --- | --- |
 | Recently seen purifier | Shows compatible cached devices that have not already been added. Defaults to the first available device, or **Enter address manually** when none is available. |
 | Name | Defaults to the matched profile's display name (`Govee H7124 Air Purifier` for the tested H7124 definition); a discovered device name is used when available unless the user supplies a name. |
-| Polling interval | Whole seconds from 5 through 300; default is 10. |
 | BLE address for manual setup | Required only for manual entry. Accepts a complete MAC address or platform BLE UUID. |
 
 Manual address entry is not blind. Home Assistant must have cached a
@@ -165,7 +163,18 @@ connectable advertisement for that address whose name contains the recognized
 family token: `H712` followed by one ASCII letter or digit,
 case-insensitively. The purifier does not have to remain visible at the instant
 the form is submitted if Home Assistant still has compatible advertisement
-history.
+history. After the model is identified, setup displays a polling form. The
+interval accepts whole seconds from 3 through 300 and defaults to the value in
+the model profile: 10 seconds for H7124 and fallback models, and 3 seconds for
+H7129.
+
+### Step 2: Polling
+
+```text
+Polling
+|-- Polling interval in seconds
+`-- Submit
+```
 
 The normalized BLE address is the config entry's unique ID, which prevents the
 same purifier from being configured twice. Address, name, and model profile are
@@ -176,7 +185,7 @@ Existing entries that predate the profile key and existing `h7124` entries
 resolve to H7124. Polling and, when supported, Custom Auto values are mutable
 options.
 
-### Step 2: Five Air Quality Steps
+### Step 3: Five Air Quality Steps
 
 When the resolved profile defines PM2.5 boundaries plus Sleep, Low, Medium,
 High, Turbo, and hardware Auto, setup displays four expanded sections after the

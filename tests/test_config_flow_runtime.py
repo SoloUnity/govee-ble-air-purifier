@@ -281,7 +281,6 @@ async def test_user_step_orders_manual_address_last(
     assert list(_schema_by_key(result["data_schema"])) == [
         "discovered_device",
         "name",
-        "polling_interval",
         "address",
     ]
 
@@ -317,10 +316,11 @@ async def test_user_step_hides_configured_devices_but_preserves_duplicate_abort(
     submitted = await flow.async_step_user(
         {
             "discovered_device": configured_address,
-            "polling_interval": 15,
         }
     )
 
+    assert submitted["step_id"] == "polling"
+    submitted = await flow.async_step_polling({"polling_interval": 15})
     assert submitted["step_id"] == "custom_auto"
     assert duplicate_checks == [{"updates": {"address": configured_address}}]
 
@@ -337,6 +337,7 @@ async def test_config_flow_schemas_do_not_expose_custom_callable_validators(
     flow.hass = object()
     user_result = await flow.async_step_user()
     _assert_schema_values_are_serializable(user_result["data_schema"])
+    _assert_schema_values_are_serializable(config_flow._polling_schema(10))
 
     options_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
         SimpleNamespace(options={})
@@ -382,9 +383,14 @@ async def test_custom_auto_form_uses_bounded_box_number_selectors(
             "discovered_device": "__manual__",
             "address": "AA:BB:CC:DD:EE:FF",
             "name": "Bedroom",
-            "polling_interval": 15,
         }
     )
+    polling_fields = _schema_by_key(result["data_schema"])
+
+    assert result["step_id"] == "polling"
+    assert polling_fields["polling_interval"][0].default == 10
+
+    result = await flow.async_step_polling({"polling_interval": 15})
     fields = _schema_by_key(result["data_schema"])
 
     assert result["step_id"] == "custom_auto"
@@ -433,9 +439,9 @@ async def test_setup_stores_custom_confirmation_delay_and_reports_cross_field_er
             "discovered_device": "__manual__",
             "address": "AA:BB:CC:DD:EE:FF",
             "name": "Bedroom",
-            "polling_interval": 15,
         }
     )
+    await flow.async_step_polling({"polling_interval": 15})
     invalid_flat = {
         **CUSTOM_AUTO_DEFAULTS,
         "custom_auto_threshold_60": 3,
@@ -475,10 +481,13 @@ async def test_discovered_family_model_persists_exact_profile_key(
     result = await flow.async_step_user(
         {
             "discovered_device": address,
-            "polling_interval": 15,
         }
     )
 
+    assert result["step_id"] == "polling"
+    fields = _schema_by_key(result["data_schema"])
+    assert fields["polling_interval"][0].default == 3
+    result = await flow.async_step_polling({"polling_interval": 15})
     assert result["step_id"] == "custom_auto"
     assert flow._pending_entry == {
         "title": "ihoment_H7129_6A7D",
@@ -515,10 +524,12 @@ async def test_manual_family_model_uses_model_specific_default_name(
         {
             "discovered_device": "__manual__",
             "address": address,
-            "polling_interval": 15,
         }
     )
 
+    assert result["step_id"] == "polling"
+    assert _schema_by_key(result["data_schema"])["polling_interval"][0].default == 3
+    result = await flow.async_step_polling({"polling_interval": 15})
     assert result["step_id"] == "custom_auto"
     assert flow._pending_entry["title"] == "Govee H7129 Air Purifier"
     assert flow._pending_entry["data"]["profile"] == "h7129"
@@ -545,10 +556,11 @@ async def test_profile_without_custom_auto_modes_skips_policy_setup(
     result = await flow.async_step_user(
         {
             "discovered_device": address,
-            "polling_interval": 15,
         }
     )
 
+    assert result["step_id"] == "polling"
+    result = await flow.async_step_polling({"polling_interval": 15})
     assert result["type"] == "create_entry"
     assert result["data"]["profile"] == "h7126"
     assert result["options"] == {"polling_interval": 15}
@@ -591,7 +603,6 @@ async def test_manual_setup_rejects_malformed_address_before_unique_id_update(
         {
             "discovered_device": "__manual__",
             "address": "AA:BB:CC:DD:EE:FFG",
-            "polling_interval": 15,
         }
     )
 
@@ -614,7 +625,6 @@ async def test_manual_setup_requires_cached_profile_evidence(
         {
             "discovered_device": "__manual__",
             "address": "AA:BB:CC:DD:EE:FF",
-            "polling_interval": 15,
         }
     )
 
@@ -639,7 +649,6 @@ async def test_manual_setup_rejects_cached_unsupported_device(
         {
             "discovered_device": "__manual__",
             "address": "AA:BB:CC:DD:EE:FF",
-            "polling_interval": 15,
         }
     )
 
@@ -665,11 +674,10 @@ async def test_manual_setup_accepts_historical_h7124_with_uuid_address(
             "discovered_device": "__manual__",
             "address": address,
             "name": "Bedroom",
-            "polling_interval": 15,
         }
     )
 
-    assert result["step_id"] == "custom_auto"
+    assert result["step_id"] == "polling"
     assert flow._unique_id == "a1b2c3d4e5f647a89012123456789abc"
     assert flow._pending_entry["data"]["address"] == address
 
@@ -766,6 +774,7 @@ async def test_h7129_options_use_profile_threshold_defaults(
         displayed_thresholds.append(section_fields[threshold_key][0].default)
 
     assert displayed_thresholds == [7, 9, 13, 19]
+    assert fields["polling_interval"][0].default == 3
 
 
 @pytest.mark.asyncio

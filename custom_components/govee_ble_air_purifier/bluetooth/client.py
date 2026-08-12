@@ -8,7 +8,6 @@ import logging
 import time
 from typing import Any
 
-from ..const import DEFAULT_POLLING_INTERVAL_SECONDS
 from ..models import NightLightState, PurifierState
 from ..profiles import EncryptionMode, H7124_PROFILE, ModelProfile, NightLightProfile
 from ..protocol import (
@@ -90,11 +89,13 @@ class GoveeBleClient:
         address: str,
         *,
         profile: ModelProfile = H7124_PROFILE,
-        polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
+        polling_interval_seconds: float | None = None,
     ) -> None:
         self._hass = hass
         self._address = address
         self._profile = profile
+        if polling_interval_seconds is None:
+            polling_interval_seconds = profile.polling_interval_seconds
         device_id = transport.device_log_id(address)
         self._log_label = f"{profile.model} [{device_id}]"
         self._connection_idle_timeout = connection_idle_timeout_for_polling_interval(

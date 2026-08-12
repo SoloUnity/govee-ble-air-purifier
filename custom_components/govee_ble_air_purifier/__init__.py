@@ -21,7 +21,9 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
 
     address = entry.data[CONF_ADDRESS]
     profile = get_profile(entry.data.get(CONF_PROFILE))
-    polling_interval_seconds = polling_interval_from_options(entry.options)
+    polling_interval_seconds = polling_interval_from_options(
+        entry.options, profile.polling_interval_seconds
+    )
     client = GoveeBleClient(
         hass,
         address,

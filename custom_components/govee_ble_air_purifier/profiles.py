@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from .bluetooth.framing import ProtocolError, build_frame, validate_frame
+from .const import MAX_POLLING_INTERVAL_SECONDS, MIN_POLLING_INTERVAL_SECONDS
 from .models import DecodedStatus
 from .protocol import (
     decode_power_state,
@@ -21,14 +22,20 @@ from .protocol import (
     is_status_response,
 )
 
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
 PROFILE_DIRECTORY = Path(__file__).with_name("model_profiles")
 DEFAULT_PROFILE_KEY = "default"
 H7124_PROFILE_KEY = "h7124"
 
 _BLE_MODEL_PATTERN = re.compile(r"(H712[0-9A-Z])", re.IGNORECASE | re.ASCII)
 _PROFILE_KEY_PATTERN = re.compile(r"h712[0-9a-z]\Z")
-_TOP_LEVEL_KEYS = {"schema_version", "encryption", "gatt", "commands"}
+_TOP_LEVEL_KEYS = {
+    "schema_version",
+    "polling_interval_seconds",
+    "encryption",
+    "gatt",
+    "commands",
+}
 _TOP_LEVEL_OPTIONAL_KEYS = {"custom_auto", "night_light"}
 _GATT_KEYS = {"service_uuid", "notify_char_uuid", "write_char_uuid"}
 _CUSTOM_AUTO_KEYS = {"thresholds"}
@@ -122,6 +129,7 @@ class ModelProfile:
     model: str
     display_name: str
     local_name_prefixes: tuple[str, ...]
+    polling_interval_seconds: int
     encryption: EncryptionMode
     service_uuid: str
     notify_char_uuid: str
@@ -155,6 +163,7 @@ class ModelProfile:
 
 @dataclass(frozen=True)
 class _ProfileDefinition:
+    polling_interval_seconds: int
     encryption: EncryptionMode
     service_uuid: str
     notify_char_uuid: str
@@ -343,6 +352,19 @@ def _parse_encryption(value: Any, *, source: str) -> EncryptionMode:
         raise ValueError(f"{source} must be one of {supported}") from err
 
 
+def _parse_polling_interval(value: Any, *, source: str) -> int:
+    """Return one supported profile polling interval."""
+
+    if type(value) is not int or not (
+        MIN_POLLING_INTERVAL_SECONDS <= value <= MAX_POLLING_INTERVAL_SECONDS
+    ):
+        raise ValueError(
+            f"{source} must be an integer from "
+            f"{MIN_POLLING_INTERVAL_SECONDS} to {MAX_POLLING_INTERVAL_SECONDS}"
+        )
+    return value
+
+
 def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
     """Validate and normalize one complete profile definition."""
 
@@ -375,6 +397,10 @@ def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
         )
 
     return _ProfileDefinition(
+        polling_interval_seconds=_parse_polling_interval(
+            profile["polling_interval_seconds"],
+            source=f"{source}.polling_interval_seconds",
+        ),
         encryption=_parse_encryption(
             profile["encryption"], source=f"{source}.encryption"
         ),
@@ -516,6 +542,7 @@ def _build_profile(
         model=model,
         display_name=f"Govee {model} Air Purifier",
         local_name_prefixes=(f"GV{model}",),
+        polling_interval_seconds=definition.polling_interval_seconds,
         encryption=definition.encryption,
         service_uuid=definition.service_uuid,
         notify_char_uuid=definition.notify_char_uuid,

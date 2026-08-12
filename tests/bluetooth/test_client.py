@@ -1120,6 +1120,14 @@ def test_connection_idle_timeout_adapts_to_polling_interval(
     )
 
 
+def test_client_uses_profile_polling_interval_for_idle_timeout() -> None:
+    client = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:FF", profile=get_profile("h7129")
+    )
+
+    assert client._connection_idle_timeout == 8.0
+
+
 @pytest.mark.asyncio
 async def test_connection_delegate_creates_default_deadline_when_omitted(
     monkeypatch: pytest.MonkeyPatch,

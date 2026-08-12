@@ -21,7 +21,6 @@ from custom_components.govee_ble_air_purifier.const import (
     CONF_NAME,
     CONF_POLLING_INTERVAL,
     CONF_PROFILE,
-    DEFAULT_POLLING_INTERVAL_SECONDS,
     LEGACY_CONF_USE_CUSTOM_AUTO,
     PLATFORMS,
 )
@@ -53,7 +52,6 @@ def test_config_entry_and_option_storage_keys_are_stable() -> None:
 
 
 def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
-    assert DEFAULT_POLLING_INTERVAL_SECONDS == 10
     assert CUSTOM_AUTO_DEFAULTS == {
         CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: 3,
         CONF_CUSTOM_AUTO_THRESHOLD_40: 3,
@@ -66,6 +64,7 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
         CONF_CUSTOM_AUTO_DELAY_80: 5,
     }
     assert H7124_PROFILE.key == "h7124"
+    assert H7124_PROFILE.polling_interval_seconds == 10
     assert H7124_PROFILE.custom_auto_thresholds == (3, 5, 9, 15)
     assert get_profile(None) is H7124_PROFILE
     assert get_profile("h7124") is H7124_PROFILE
@@ -73,6 +72,7 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     assert fallback.key == "h712c"
     assert fallback.model == "H712C"
     assert fallback.fan_mode_commands == H7124_PROFILE.fan_mode_commands
+    assert fallback.polling_interval_seconds == 10
     assert fallback.night_light is None
 
 

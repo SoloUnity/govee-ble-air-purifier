@@ -81,6 +81,7 @@ def test_observed_ihoment_h7129_name_uses_exact_encrypted_profile() -> None:
     assert profile.matches_local_name("ihoment_H7129_6B51")
     assert not profile.matches_local_name("GVH7124BEDROOM")
     assert profile.encryption is EncryptionMode.GOVEE_V1
+    assert profile.polling_interval_seconds == 3
     assert profile.service_uuid == H7124_PROFILE.service_uuid
     assert profile.status_query_command == H7124_PROFILE.status_query_command
     assert profile.fan_mode_commands["Auto"] == bytes.fromhex(
@@ -104,6 +105,7 @@ def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> Non
     assert profile.display_name == "Govee H7126 Air Purifier"
     assert profile.local_name_prefixes == ("GVH7126",)
     assert profile.encryption is EncryptionMode.NONE
+    assert profile.polling_interval_seconds == 10
     assert profile.service_uuid == H7124_PROFILE.service_uuid
     assert profile.notify_char_uuid == H7124_PROFILE.notify_char_uuid
     assert profile.write_char_uuid == H7124_PROFILE.write_char_uuid
@@ -189,8 +191,8 @@ def test_profile_loader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
     _write_profile(tmp_path / "default.json", data)
     _write_profile(tmp_path / "h7124.json", data)
     duplicate = json.dumps(data).replace(
-        '"schema_version": 1',
-        '"schema_version": 1, "schema_version": 1',
+        '"schema_version": 2',
+        '"schema_version": 2, "schema_version": 2',
         1,
     )
     (tmp_path / "h7126.json").write_text(duplicate, encoding="utf-8")
@@ -325,6 +327,17 @@ def test_profile_schema_rejects_invalid_uuid() -> None:
         _parse_profile_definition(data, source="test.json")
 
 
+@pytest.mark.parametrize("polling_interval", [True, 2, 301, 3.0, "3"])
+def test_profile_schema_rejects_invalid_polling_interval(
+    polling_interval: object,
+) -> None:
+    data = _profile_data()
+    data["polling_interval_seconds"] = polling_interval
+
+    with pytest.raises(ValueError, match="polling_interval_seconds"):
+        _parse_profile_definition(data, source="test.json")
+
+
 @pytest.mark.parametrize(
     "frame",
     [
@@ -340,12 +353,12 @@ def test_profile_schema_rejects_invalid_frames(frame: str) -> None:
         _parse_profile_definition(data, source="test.json")
 
 
-@pytest.mark.parametrize("schema_version", [True, 0, 2, 3, "1"])
+@pytest.mark.parametrize("schema_version", [True, 0, 1, 3, "2"])
 def test_profile_schema_rejects_unsupported_versions(schema_version: object) -> None:
     data = _profile_data()
     data["schema_version"] = schema_version
 
-    with pytest.raises(ValueError, match="schema_version must be 1"):
+    with pytest.raises(ValueError, match="schema_version must be 2"):
         _parse_profile_definition(data, source="test.json")
 
 

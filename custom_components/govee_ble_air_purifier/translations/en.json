@@ -7,11 +7,19 @@
         "data": {
           "discovered_device": "Recently seen purifier",
           "address": "BLE address for manual setup",
-          "name": "Name",
+          "name": "Name"
+        },
+        "data_description": {
+          "address": "Only required when Recently seen purifier is set to Enter address manually."
+        }
+      },
+      "polling": {
+        "title": "Polling",
+        "description": "Configure how often Home Assistant reads this purifier. The default is selected for the detected model.",
+        "data": {
           "polling_interval": "Polling interval in seconds"
         },
         "data_description": {
-          "address": "Only required when Recently seen purifier is set to Enter address manually.",
           "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, filter life, and supported night-light state."
         }
       },

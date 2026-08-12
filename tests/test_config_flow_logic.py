@@ -5,7 +5,6 @@ import pytest
 from custom_components.govee_ble_air_purifier.const import (
     CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
     CONF_POLLING_INTERVAL,
-    DEFAULT_POLLING_INTERVAL_SECONDS,
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
@@ -142,26 +141,28 @@ def test_discovered_device_options_ignore_malformed_addresses() -> None:
 
 
 def test_polling_interval_validation_accepts_configured_bounds() -> None:
-    assert MIN_POLLING_INTERVAL_SECONDS == 5
-    assert validate_polling_interval_seconds(MIN_POLLING_INTERVAL_SECONDS) == 5
+    assert MIN_POLLING_INTERVAL_SECONDS == 3
+    assert validate_polling_interval_seconds(MIN_POLLING_INTERVAL_SECONDS) == 3
     assert validate_polling_interval_seconds("45") == 45
     assert validate_polling_interval_seconds(MAX_POLLING_INTERVAL_SECONDS) == 300
-    assert DEFAULT_POLLING_INTERVAL_SECONDS == 10
 
 
-@pytest.mark.parametrize("value", [4, 301, "not-a-number"])
+@pytest.mark.parametrize("value", [2, 301, "not-a-number"])
 def test_polling_interval_validation_rejects_invalid_values(value: object) -> None:
     with pytest.raises(ValueError):
         validate_polling_interval_seconds(value)
 
 
 def test_polling_interval_from_options_defaults_when_missing_or_invalid() -> None:
-    assert polling_interval_from_options({}) == DEFAULT_POLLING_INTERVAL_SECONDS
-    assert polling_interval_from_options({CONF_POLLING_INTERVAL: 15}) == 15
-    assert polling_interval_from_options({CONF_POLLING_INTERVAL: 120}) == 120
+    assert polling_interval_from_options({}, 3) == 3
+    assert polling_interval_from_options({}, 10) == 10
+    assert polling_interval_from_options({CONF_POLLING_INTERVAL: 15}, 3) == 15
+    assert polling_interval_from_options({CONF_POLLING_INTERVAL: 120}, 10) == 120
     assert (
-        polling_interval_from_options({CONF_POLLING_INTERVAL: "not-a-number"})
-        == DEFAULT_POLLING_INTERVAL_SECONDS
+        polling_interval_from_options(
+            {CONF_POLLING_INTERVAL: "not-a-number"}, 3
+        )
+        == 3
     )
 
 

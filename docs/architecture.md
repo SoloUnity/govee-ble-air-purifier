@@ -76,10 +76,12 @@ profile is the exact detected lowercase model key (for example `h7126`), even
 when `default.json` supplies its behavior, so a later exact model JSON takes
 effect after an update and restart. Existing entries without a stored profile
 and existing `h7124` entries resolve to H7124, and the BLE address remains the
-unique ID. Options contain the polling interval and, when the profile supports
-the required modes, Custom Auto thresholds and delays. Saving options reloads
-the entry so the coordinator interval and controller configuration are rebuilt
-consistently.
+unique ID. Setup resolves the profile before displaying polling, allowing the
+form to use the profile-defined default (10 seconds for H7124/fallback and 3
+seconds for H7129). Options contain the polling interval and, when the profile
+supports the required modes, Custom Auto thresholds and delays. Saving options
+reloads the entry so the coordinator interval and controller configuration are
+rebuilt consistently.
 
 `custom_auto/config.py` combines profile-defined PM2.5 boundaries with shared
 confirmation and downshift-delay defaults. It owns bounded integer parsing,

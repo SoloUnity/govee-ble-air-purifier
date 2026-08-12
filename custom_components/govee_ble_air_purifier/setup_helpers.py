@@ -7,7 +7,6 @@ from typing import Any, Mapping
 
 from .const import (
     CONF_POLLING_INTERVAL,
-    DEFAULT_POLLING_INTERVAL_SECONDS,
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
@@ -83,15 +82,17 @@ def validate_polling_interval_seconds(value: object) -> int:
     return seconds
 
 
-def polling_interval_from_options(options: Mapping[str, Any]) -> int:
-    """Read a stored polling interval, falling back to the default if invalid."""
+def polling_interval_from_options(
+    options: Mapping[str, Any], profile_default: int
+) -> int:
+    """Read a stored polling interval, falling back to the profile default."""
 
     try:
         return validate_polling_interval_seconds(
-            options.get(CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL_SECONDS)
+            options.get(CONF_POLLING_INTERVAL, profile_default)
         )
     except ValueError:
-        return DEFAULT_POLLING_INTERVAL_SECONDS
+        return profile_default
 
 
 def _format_device_label(service_info: Any, name: str, address: str) -> str:

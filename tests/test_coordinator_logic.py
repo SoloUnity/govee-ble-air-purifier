@@ -3,7 +3,6 @@ from datetime import timedelta
 
 import pytest
 
-from custom_components.govee_ble_air_purifier.coordinator import POLLING_INTERVAL
 from custom_components.govee_ble_air_purifier.models import (
     NightLightState,
     PurifierState,
@@ -129,7 +128,7 @@ async def test_coordinator_fetches_power_status_pm25_and_filter_life() -> None:
     assert coordinator.last_pm25_update_success is True
     assert coordinator.pm25_sample_revision == 1
     assert coordinator.poll_revision == 1
-    assert POLLING_INTERVAL == timedelta(seconds=10)
+    assert coordinator.polling_interval == timedelta(seconds=10)
 
     await coordinator._async_update_data()
 
@@ -181,6 +180,16 @@ def test_coordinator_accepts_custom_polling_interval() -> None:
     )
 
     assert coordinator.polling_interval == timedelta(seconds=120)
+
+
+def test_coordinator_uses_profile_polling_interval() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    coordinator = GoveeCoordinator(
+        FakeHass(), FakeClient(), profile=get_profile("h7129")
+    )
+
+    assert coordinator.polling_interval == timedelta(seconds=3)
 
 
 @pytest.mark.asyncio

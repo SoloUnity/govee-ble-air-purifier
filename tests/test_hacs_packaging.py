@@ -79,7 +79,10 @@ def test_integration_packages_bundled_model_profiles() -> None:
     assert "night_light" not in default
     assert "night_light" in h7124
     assert "night_light" in h7129
-    assert default["schema_version"] == h7129["schema_version"] == 1
+    assert default["schema_version"] == h7129["schema_version"] == 2
+    assert default["polling_interval_seconds"] == 10
+    assert h7124["polling_interval_seconds"] == 10
+    assert h7129["polling_interval_seconds"] == 3
     assert default["encryption"] == "none"
     assert h7129["encryption"] == "govee_v1"
 

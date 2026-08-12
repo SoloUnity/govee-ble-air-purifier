@@ -10,11 +10,9 @@ from typing import Any
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DEFAULT_POLLING_INTERVAL_SECONDS
 from .models import NightLightState, PurifierState
 from .profiles import H7124_PROFILE, ModelProfile
 
-POLLING_INTERVAL = timedelta(seconds=DEFAULT_POLLING_INTERVAL_SECONDS)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -57,8 +55,10 @@ class GoveeCoordinator(DataUpdateCoordinator):
         client: Any,
         *,
         profile: ModelProfile = H7124_PROFILE,
-        polling_interval: timedelta = POLLING_INTERVAL,
+        polling_interval: timedelta | None = None,
     ) -> None:
+        if polling_interval is None:
+            polling_interval = timedelta(seconds=profile.polling_interval_seconds)
         self._hass = hass
         self.client = client
         self.profile = profile

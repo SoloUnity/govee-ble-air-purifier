@@ -233,12 +233,15 @@ async def test_real_config_flow_creates_complete_entry(
         {
             "discovered_device": address,
             "name": "Bedroom Purifier",
-            "polling_interval": 20,
         }
     )
 
     assert first_result["type"] is FlowResultType.FORM
-    assert first_result["step_id"] == "custom_auto"
+    assert first_result["step_id"] == "polling"
+
+    polling_result = await flow.async_step_polling({"polling_interval": 20})
+    assert polling_result["type"] is FlowResultType.FORM
+    assert polling_result["step_id"] == "custom_auto"
 
     result = await flow.async_step_custom_auto(dict(CUSTOM_AUTO_DEFAULTS))
 

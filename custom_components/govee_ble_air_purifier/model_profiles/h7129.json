@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "polling_interval_seconds": 3,
   "encryption": "govee_v1",
   "gatt": {
     "service_uuid": "00010203-0405-0607-0809-0a0b0c0d1910",
