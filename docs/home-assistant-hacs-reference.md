@@ -178,28 +178,24 @@ options.
 
 ### Step 2: Five Air Quality Steps
 
-When the resolved profile defines Sleep, Low, Medium, High, Turbo, and hardware
-Auto, setup displays four expanded sections after the device form passes
-validation:
+When the resolved profile defines PM2.5 boundaries plus Sleep, Low, Medium,
+High, Turbo, and hardware Auto, setup displays four expanded sections after the
+device form passes validation:
 
 ```text
 Five Air Quality Steps
 |-- Increase confirmation delay
 |-- Excellent to Good (20% / 40%)
-|   |-- Increase to Good above
-|   |-- Return to Excellent at or below
+|   |-- Boundary
 |   `-- Time at or below before returning
 |-- Good to Fair (40% / 60%)
-|   |-- Increase to Fair above
-|   |-- Return to Good at or below
+|   |-- Boundary
 |   `-- Time at or below before returning
 |-- Fair to Bad (60% / 80%)
-|   |-- Increase to Bad above
-|   |-- Return to Fair at or below
+|   |-- Boundary
 |   `-- Time at or below before returning
 |-- Bad to Poor (80% / 100%)
-|   |-- Increase to Poor above
-|   |-- Return to Bad at or below
+|   |-- Boundary
 |   `-- Time at or below before returning
 `-- Submit
 ```
@@ -209,17 +205,16 @@ The increase confirmation delay is a whole number from 0 through 300 seconds
 and defaults to 3 seconds. Return delay inputs are whole minutes from 0 through
 1440. The boundary defaults are:
 
-| Boundary | Increase above | Return at or below | Return delay | Speeds |
+| Boundary | H7124/fallback | H7129 | Return delay | Speeds |
 | --- | ---: | ---: | ---: | --- |
-| Excellent / Good | 3 | 3 | 7 minutes | 20% / 40% |
-| Good / Fair | 5 | 5 | 5 minutes | 40% / 60% |
-| Fair / Bad | 9 | 9 | 5 minutes | 60% / 80% |
-| Bad / Poor | 15 | 15 | 5 minutes | 80% / 100% |
+| Excellent / Good | 3 | 7 | 7 minutes | 20% / 40% |
+| Good / Fair | 5 | 9 | 5 minutes | 40% / 60% |
+| Fair / Bad | 9 | 13 | 5 minutes | 60% / 80% |
+| Bad / Poor | 15 | 19 | 5 minutes | 80% / 100% |
 
-The four increase values must be strictly ascending, the four return values
-must be strictly ascending, and a return value cannot exceed the corresponding
-increase value. With a positive confirmation delay, an increase requires two
-distinct valid PM2.5 samples that both require an upshift. The first is detected
+The four shared boundary values must be strictly ascending. With a positive
+confirmation delay, an increase requires two distinct valid PM2.5 samples that
+both require an upshift. The first is detected
 on the configured polling interval and schedules one full-state confirmation
 poll after the configured delay unless a newer valid sample confirms sooner. A
 failed or PM-invalid dedicated poll preserves the first sample and waits for the

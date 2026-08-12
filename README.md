@@ -75,9 +75,9 @@ an RGB payload or Home Assistant receives an exact echo for a color command.
 When the resolved model profile provides all required fan modes, setup and the
 device's integration Options contain four expanded PM2.5 boundary groups for
 five air-quality levels: Excellent, Good, Fair, Bad, and Poor. Each group
-contains an increase threshold, a delayed return threshold, and the return
-delay. The increase confirmation delay appears above those groups and defaults
-to 3 seconds. A positive delay requires two valid PM2.5 readings that both call
+contains one shared increase/return boundary and the return delay. The increase
+confirmation delay appears above those groups and defaults to 3 seconds. A
+positive delay requires two valid PM2.5 readings that both call
 for a higher speed; the second reading determines the target. After the first
 upward reading, Custom Auto schedules one full-state confirmation poll after
 the configured delay unless a newer valid reading arrives first and can confirm
@@ -105,13 +105,10 @@ powering on the purifier. This intent survives Home Assistant restarts; mode
 changes made directly on the purifier cannot be detected because its verified
 poll responses do not report fan mode.
 
-The defaults reproduce the original Home Assistant automations: Excellent to
-Good increases to 40% above 3 and returns to 20% at or below 3 after 7 minutes;
-Good to Fair increases to 60% above 5 and returns to 40% at or below 5 after 5
-minutes; Fair to Bad increases to 80% above 9 and returns to 60% at or below 9
-after 5 minutes; Bad to Poor increases to 100% above 15 and returns to 80% at
-or below 15 after 5
-minutes. Every threshold and return delay is independently configurable.
+H7124 and fallback profiles use boundaries 3, 5, 9, and 15. H7129 uses 7, 9,
+13, and 19. At each boundary, an upshift occurs above the value and a delayed
+downshift qualifies at or below it. Every boundary and return delay is
+independently configurable.
 Equality at a return boundary still qualifies for a downshift because the rule
 uses `<=`; only a valid reading above that boundary resets its timer.
 

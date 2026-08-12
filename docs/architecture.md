@@ -81,10 +81,10 @@ the required modes, Custom Auto thresholds and delays. Saving options reloads
 the entry so the coordinator interval and controller configuration are rebuilt
 consistently.
 
-`custom_auto/config.py` owns the Custom Auto defaults, bounded integer parsing,
-ordering validation, hysteresis validation, and conversion between config-entry
-options and immutable `CustomAutoConfig`. Setup, options, and runtime loading
-use this same boundary.
+`custom_auto/config.py` combines profile-defined PM2.5 boundaries with shared
+confirmation and downshift-delay defaults. It owns bounded integer parsing,
+ordering validation, and conversion between config-entry options and immutable
+`CustomAutoConfig`. Setup, options, and runtime loading use this same boundary.
 
 ## Models And Protocol
 
@@ -114,12 +114,12 @@ here; they cannot be added by JSON alone.
 `model_profiles/` holds one complete JSON definition per model. `default.json`
 and `h7124.json` contain the physically tested H7124 definition; `h7129.json`
 contains the capture-derived H7129 definition. Each file owns its GATT service
-and characteristic UUIDs, transport encryption selection, and exact outbound
-20-byte power, query, and fan-mode command frames. Exact profiles may also own
-an optional `night_light` capability with static calls and variable
-brightness/RGB templates. The JSON does not own encryption mechanics or
-response interpretation. Future model files are complete definitions, not
-partial inheritance over another file.
+and characteristic UUIDs, transport encryption selection, exact outbound
+20-byte power, query, and fan-mode command frames, and optional Custom Auto
+PM2.5 boundaries. Exact profiles may also own an optional `night_light`
+capability with static calls and variable brightness/RGB templates. The JSON
+does not own encryption mechanics or response interpretation. Future model
+files are complete definitions, not partial inheritance over another file.
 
 `profiles.py` searches advertised names case-insensitively for `H712` plus one
 ASCII letter or digit (for example `GVH7124`, `GVH712C`, or
@@ -278,7 +278,8 @@ state. The light does not restore RGB after restart.
 
 `custom_auto/policy.py` is pure policy. It defines the five percentages and
 mode mappings, the maximum two-sample upshift requirement, and `speed_for_pm()`.
-Upward thresholds use strict `>` comparisons.
+Each model's four shared boundaries use strict `>` comparisons for upshifts and
+inclusive `<=` comparisons for delayed downshifts.
 
 `custom_auto/controller.py` owns mutable behavior: activation and restored
 speed, coordinator subscription, queued sample revisions, one-shot upshift

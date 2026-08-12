@@ -38,9 +38,7 @@ def test_discovered_device_options_include_name_address_and_signal() -> None:
     options = build_discovered_device_options(
         [
             _service_info("GVH7124FAR", "AA:BB:CC:DD:EE:02", rssi=-86),
-            _service_info(
-                "GVH7124NEAR", "AA:BB:CC:DD:EE:01", rssi=-43, source="hci0"
-            ),
+            _service_info("GVH7124NEAR", "AA:BB:CC:DD:EE:01", rssi=-43, source="hci0"),
             _service_info("Other", "AA:BB:CC:DD:EE:03", rssi=-20),
         ]
     )
@@ -84,7 +82,9 @@ def test_discovered_device_options_include_h712_family_fallback_models() -> None
     ]
 
 
-def test_discovered_device_options_deduplicate_by_address_using_strongest_signal() -> None:
+def test_discovered_device_options_deduplicate_by_address_using_strongest_signal() -> (
+    None
+):
     options = build_discovered_device_options(
         [
             _service_info("GVH7124OLD", "AA:BB:CC:DD:EE:01", rssi=-82),
@@ -133,9 +133,12 @@ def test_ble_address_validation_rejects_malformed_values(address: str) -> None:
 
 
 def test_discovered_device_options_ignore_malformed_addresses() -> None:
-    assert build_discovered_device_options(
-        [_service_info("GVH7124BAD", "AA:BB:CC:DD:EE:FFG")]
-    ) == ()
+    assert (
+        build_discovered_device_options(
+            [_service_info("GVH7124BAD", "AA:BB:CC:DD:EE:FFG")]
+        )
+        == ()
+    )
 
 
 def test_polling_interval_validation_accepts_configured_bounds() -> None:
@@ -166,15 +169,12 @@ def test_custom_auto_options_default_for_existing_entries() -> None:
     config = CustomAutoConfig.from_options({})
 
     assert config.confirmation_delay_seconds == 3
-    assert config.up_thresholds == (3, 5, 9, 15)
-    assert config.down_thresholds == (3, 5, 9, 15)
+    assert config.thresholds == (3, 5, 9, 15)
     assert config.down_delays == (7, 5, 5, 5)
 
 
 def test_custom_auto_options_parse_every_mutable_value() -> None:
-    values = {
-        key: value + 1 for key, value in CUSTOM_AUTO_DEFAULTS.items()
-    }
+    values = {key: value + 1 for key, value in CUSTOM_AUTO_DEFAULTS.items()}
     config = CustomAutoConfig.from_options({"use_custom_auto": True, **values})
 
     assert config.as_options() == values
@@ -182,20 +182,7 @@ def test_custom_auto_options_parse_every_mutable_value() -> None:
 
 @pytest.mark.parametrize(
     ("updates", "error"),
-    [
-        (
-            {"custom_auto_up_60": 3},
-            "up_thresholds_not_ascending",
-        ),
-        (
-            {"custom_auto_down_40": 3},
-            "down_thresholds_not_ascending",
-        ),
-        (
-            {"custom_auto_down_80": 16},
-            "down_threshold_above_up",
-        ),
-    ],
+    [({"custom_auto_threshold_60": 3}, "thresholds_not_ascending")],
 )
 def test_custom_auto_cross_validation_returns_stable_error_keys(
     updates: dict[str, int], error: str
@@ -209,12 +196,12 @@ def test_custom_auto_cross_validation_returns_stable_error_keys(
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("custom_auto_up_40", -1),
-        ("custom_auto_up_100", 1000),
+        ("custom_auto_threshold_40", -1),
+        ("custom_auto_threshold_100", 1000),
         ("custom_auto_delay_20", -1),
         ("custom_auto_delay_80", 1441),
         (CONF_CUSTOM_AUTO_CONFIRMATION_DELAY, 301),
-        ("custom_auto_up_40", 3.5),
+        ("custom_auto_threshold_40", 3.5),
     ],
 )
 def test_custom_auto_value_parsing_rejects_out_of_range_or_non_integer_values(

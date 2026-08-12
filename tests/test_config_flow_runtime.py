@@ -150,9 +150,9 @@ def _assert_schema_values_are_serializable(schema: object) -> None:
             (_VoluptuousAll, _VoluptuousIn, _BooleanSelector, _NumberSelector),
         ):
             continue
-        assert not (
-            callable(value) and not isinstance(value, type)
-        ), f"custom callable schema value is not serializable: {value}"
+        assert not (callable(value) and not isinstance(value, type)), (
+            f"custom callable schema value is not serializable: {value}"
+        )
 
 
 def _install_homeassistant_modules(
@@ -207,9 +207,7 @@ def _import_config_flow(
 
 
 def _schema_by_key(schema: _VoluptuousSchema) -> dict[str, tuple[object, object]]:
-    return {
-        marker.key: (marker, value) for marker, value in schema.schema.items()
-    }
+    return {marker.key: (marker, value) for marker, value in schema.schema.items()}
 
 
 def _sectioned_values(config_flow, values: dict[str, int]) -> dict[str, object]:
@@ -219,11 +217,10 @@ def _sectioned_values(config_flow, values: dict[str, int]) -> dict[str, object]:
         ],
         **{
             section_key: {
-                up_key: values[up_key],
-                down_key: values[down_key],
+                threshold_key: values[threshold_key],
                 delay_key: values[delay_key],
             }
-            for section_key, up_key, down_key, delay_key in config_flow.CUSTOM_AUTO_SECTIONS
+            for section_key, threshold_key, delay_key in config_flow.CUSTOM_AUTO_SECTIONS
         },
     }
 
@@ -410,7 +407,7 @@ async def test_custom_auto_form_uses_bounded_box_number_selectors(
         assert isinstance(section_value, _Section)
         assert section_value.options == {"collapsed": False}
         section_fields = _schema_by_key(section_value.schema)
-        assert len(section_fields) == 3
+        assert len(section_fields) == 2
         for key, (_, selector) in section_fields.items():
             assert isinstance(selector, _NumberSelector)
             assert selector.config.mode is _NumberSelectorMode.BOX
@@ -441,12 +438,12 @@ async def test_setup_stores_custom_confirmation_delay_and_reports_cross_field_er
     )
     invalid_flat = {
         **CUSTOM_AUTO_DEFAULTS,
-        "custom_auto_up_60": 3,
+        "custom_auto_threshold_60": 3,
     }
     invalid = _sectioned_values(config_flow, invalid_flat)
 
     error_result = await flow.async_step_custom_auto(invalid)
-    assert error_result["errors"] == {"base": "up_thresholds_not_ascending"}
+    assert error_result["errors"] == {"base": "thresholds_not_ascending"}
 
     submitted = {
         **CUSTOM_AUTO_DEFAULTS,
@@ -491,6 +488,13 @@ async def test_discovered_family_model_persists_exact_profile_key(
             "profile": "h7129",
         },
     }
+    fields = _schema_by_key(result["data_schema"])
+    displayed_thresholds = []
+    for section_key in list(fields)[1:]:
+        section_fields = _schema_by_key(fields[section_key][1].schema)
+        threshold_key = next(key for key in section_fields if "threshold" in key)
+        displayed_thresholds.append(section_fields[threshold_key][0].default)
+    assert displayed_thresholds == [7, 9, 13, 19]
 
 
 @pytest.mark.asyncio
@@ -743,6 +747,28 @@ async def test_options_show_all_custom_auto_sections_on_initial_page(
 
 
 @pytest.mark.asyncio
+async def test_h7129_options_use_profile_threshold_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    options_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
+        SimpleNamespace(data={"profile": "h7129"}, options={})
+    )
+
+    form = await options_flow.async_step_init()
+    fields = _schema_by_key(form["data_schema"])
+    displayed_thresholds = []
+    for section_key in list(fields)[2:]:
+        section_fields = _schema_by_key(fields[section_key][1].schema)
+        threshold_key = next(key for key in section_fields if "threshold" in key)
+        displayed_thresholds.append(section_fields[threshold_key][0].default)
+
+    assert displayed_thresholds == [7, 9, 13, 19]
+
+
+@pytest.mark.asyncio
 async def test_options_report_boundary_errors_without_leaving_initial_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -754,7 +780,7 @@ async def test_options_report_boundary_errors_without_leaving_initial_page(
     )
     invalid = {
         **CUSTOM_AUTO_DEFAULTS,
-        "custom_auto_up_60": 3,
+        "custom_auto_threshold_60": 3,
     }
 
     result = await options_flow.async_step_init(
@@ -765,4 +791,4 @@ async def test_options_report_boundary_errors_without_leaving_initial_page(
     )
 
     assert result["step_id"] == "init"
-    assert result["errors"] == {"base": "up_thresholds_not_ascending"}
+    assert result["errors"] == {"base": "thresholds_not_ascending"}

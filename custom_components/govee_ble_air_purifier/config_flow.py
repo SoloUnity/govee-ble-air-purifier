@@ -23,14 +23,10 @@ from .const import (
     CONF_CUSTOM_AUTO_DELAY_40,
     CONF_CUSTOM_AUTO_DELAY_60,
     CONF_CUSTOM_AUTO_DELAY_80,
-    CONF_CUSTOM_AUTO_DOWN_20,
-    CONF_CUSTOM_AUTO_DOWN_40,
-    CONF_CUSTOM_AUTO_DOWN_60,
-    CONF_CUSTOM_AUTO_DOWN_80,
-    CONF_CUSTOM_AUTO_UP_100,
-    CONF_CUSTOM_AUTO_UP_40,
-    CONF_CUSTOM_AUTO_UP_60,
-    CONF_CUSTOM_AUTO_UP_80,
+    CONF_CUSTOM_AUTO_THRESHOLD_100,
+    CONF_CUSTOM_AUTO_THRESHOLD_40,
+    CONF_CUSTOM_AUTO_THRESHOLD_60,
+    CONF_CUSTOM_AUTO_THRESHOLD_80,
     CONF_DISCOVERED_DEVICE,
     CONF_POLLING_INTERVAL,
     CONF_PROFILE,
@@ -45,6 +41,7 @@ from .custom_auto.config import (
     CUSTOM_AUTO_OPTION_KEYS,
     MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
     CustomAutoConfig,
+    custom_auto_defaults,
     parse_custom_auto_values,
     validate_custom_auto_values,
 )
@@ -70,26 +67,22 @@ SECTION_BAD_POOR = "bad_poor"
 CUSTOM_AUTO_SECTIONS = (
     (
         SECTION_EXCELLENT_GOOD,
-        CONF_CUSTOM_AUTO_UP_40,
-        CONF_CUSTOM_AUTO_DOWN_20,
+        CONF_CUSTOM_AUTO_THRESHOLD_40,
         CONF_CUSTOM_AUTO_DELAY_20,
     ),
     (
         SECTION_GOOD_FAIR,
-        CONF_CUSTOM_AUTO_UP_60,
-        CONF_CUSTOM_AUTO_DOWN_40,
+        CONF_CUSTOM_AUTO_THRESHOLD_60,
         CONF_CUSTOM_AUTO_DELAY_40,
     ),
     (
         SECTION_FAIR_BAD,
-        CONF_CUSTOM_AUTO_UP_80,
-        CONF_CUSTOM_AUTO_DOWN_60,
+        CONF_CUSTOM_AUTO_THRESHOLD_80,
         CONF_CUSTOM_AUTO_DELAY_60,
     ),
     (
         SECTION_BAD_POOR,
-        CONF_CUSTOM_AUTO_UP_100,
-        CONF_CUSTOM_AUTO_DOWN_80,
+        CONF_CUSTOM_AUTO_THRESHOLD_100,
         CONF_CUSTOM_AUTO_DELAY_80,
     ),
 )
@@ -104,6 +97,7 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         super().__init__()
         self._pending_entry: dict[str, Any] | None = None
         self._pending_options: dict[str, Any] | None = None
+        self._custom_auto_defaults: Mapping[str, int] = CUSTOM_AUTO_DEFAULTS
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -177,9 +171,7 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 name = user_input.get(CONF_NAME) or option.name
 
             polling_interval = validate_polling_interval_seconds(
-                user_input.get(
-                    CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL_SECONDS
-                )
+                user_input.get(CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL_SECONDS)
             )
             unique_id = _unique_id_from_address(address)
             await self.async_set_unique_id(unique_id)
@@ -197,6 +189,9 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
             if not profile.supports_custom_auto:
                 return self._create_pending_entry()
+            self._custom_auto_defaults = custom_auto_defaults(
+                profile.custom_auto_thresholds
+            )
             return await self.async_step_custom_auto()
 
         return self.async_show_form(
@@ -209,11 +204,13 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure integration-managed automatic speed rules."""
 
         errors: dict[str, str] = {}
-        defaults: Mapping[str, Any] = CUSTOM_AUTO_DEFAULTS
+        defaults: Mapping[str, Any] = self._custom_auto_defaults
         submitted_values: dict[str, int] | None = None
         if user_input is not None:
             try:
-                submitted_values = _parse_custom_auto_form(user_input)
+                submitted_values = _parse_custom_auto_form(
+                    user_input, self._custom_auto_defaults
+                )
                 validate_custom_auto_values(submitted_values)
             except ValueError as err:
                 error = str(err)
@@ -221,9 +218,7 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     error
                     if error
                     in {
-                        "up_thresholds_not_ascending",
-                        "down_thresholds_not_ascending",
-                        "down_threshold_above_up",
+                        "thresholds_not_ascending",
                     }
                     else "invalid_custom_auto_value"
                 )
@@ -271,12 +266,11 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
         """Manage options."""
 
         errors: dict[str, str] = {}
+        profile = get_profile(getattr(self._config_entry, "data", {}).get(CONF_PROFILE))
+        profile_defaults = custom_auto_defaults(profile.custom_auto_thresholds)
         defaults = CustomAutoConfig.from_options(
-            self._config_entry.options
+            self._config_entry.options, profile_defaults
         ).as_options()
-        profile = get_profile(
-            getattr(self._config_entry, "data", {}).get(CONF_PROFILE)
-        )
         supports_custom_auto = profile.supports_custom_auto
         polling_default = polling_interval_from_options(self._config_entry.options)
         submitted_values: dict[str, int] | None = None
@@ -286,7 +280,9 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
             )
             if supports_custom_auto:
                 try:
-                    submitted_values = _parse_custom_auto_form(user_input)
+                    submitted_values = _parse_custom_auto_form(
+                        user_input, profile_defaults
+                    )
                     validate_custom_auto_values(submitted_values)
                 except ValueError as err:
                     error = str(err)
@@ -294,9 +290,7 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
                         error
                         if error
                         in {
-                            "up_thresholds_not_ascending",
-                            "down_thresholds_not_ascending",
-                            "down_threshold_above_up",
+                            "thresholds_not_ascending",
                         }
                         else "invalid_custom_auto_value"
                     )
@@ -342,9 +336,7 @@ def _cached_service_info(hass: Any, address: str) -> Any | None:
     """Return cached advertisement evidence for an address, including history."""
 
     normalized = normalize_ble_address(address)
-    for service_info in bluetooth.async_discovered_service_info(
-        hass, connectable=True
-    ):
+    for service_info in bluetooth.async_discovered_service_info(hass, connectable=True):
         candidate_address = getattr(service_info, "address", "")
         try:
             canonicalize_ble_address(candidate_address)
@@ -452,8 +444,9 @@ def _custom_auto_sections(defaults: Mapping[str, Any]) -> dict[Any, Any]:
             vol.Required(section_key): data_entry_section(
                 vol.Schema(
                     {
-                        vol.Required(up_key, default=values[up_key]): pm_selector,
-                        vol.Required(down_key, default=values[down_key]): pm_selector,
+                        vol.Required(
+                            threshold_key, default=values[threshold_key]
+                        ): pm_selector,
                         vol.Required(
                             delay_key, default=values[delay_key]
                         ): delay_selector,
@@ -461,30 +454,36 @@ def _custom_auto_sections(defaults: Mapping[str, Any]) -> dict[Any, Any]:
                 ),
                 {"collapsed": False},
             )
-            for section_key, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS
+            for section_key, threshold_key, delay_key in CUSTOM_AUTO_SECTIONS
         },
     }
 
 
-def _parse_custom_auto_form(values: Mapping[str, Any]) -> dict[str, int]:
+def _parse_custom_auto_form(
+    values: Mapping[str, Any],
+    defaults: Mapping[str, int] = CUSTOM_AUTO_DEFAULTS,
+) -> dict[str, int]:
     """Flatten sectioned form input into the existing config-entry option keys."""
 
     flattened: dict[str, Any] = {
         CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: values.get(
             CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
-            CUSTOM_AUTO_DEFAULTS[CONF_CUSTOM_AUTO_CONFIRMATION_DELAY],
+            defaults[CONF_CUSTOM_AUTO_CONFIRMATION_DELAY],
         )
     }
     has_sections = False
-    for section_key, up_key, down_key, delay_key in CUSTOM_AUTO_SECTIONS:
+    for section_key, threshold_key, delay_key in CUSTOM_AUTO_SECTIONS:
         section_values = values.get(section_key)
         if not isinstance(section_values, Mapping):
             continue
         has_sections = True
-        for key in (up_key, down_key, delay_key):
+        for key in (threshold_key, delay_key):
             if key in section_values:
                 flattened[key] = section_values[key]
-    return parse_custom_auto_values(flattened if has_sections else values)
+    return parse_custom_auto_values(
+        flattened if has_sections else values,
+        defaults,
+    )
 
 
 def _select_options(

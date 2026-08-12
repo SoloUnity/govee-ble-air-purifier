@@ -52,9 +52,7 @@ def test_bundled_h7124_definition_matches_default_fallback() -> None:
         ("prefix_h712c_suffix", "H712C", "H712C-suffix"),
     ],
 )
-def test_ble_names_resolve_family_model(
-    name: str, model: str, normalized: str
-) -> None:
+def test_ble_names_resolve_family_model(name: str, model: str, normalized: str) -> None:
     assert model_from_ble_name(name) == model
     assert normalize_ble_name(name) == normalized
     profile = match_profile(name)
@@ -89,8 +87,12 @@ def test_observed_ihoment_h7129_name_uses_exact_encrypted_profile() -> None:
         "3a 05 03 00 00 12 00 00 00 00 00 00 00 00 00 00 00 00 00 2e"
     )
     assert profile.supports_custom_auto is True
+    assert profile.custom_auto_thresholds == (7, 9, 13, 19)
     assert profile.night_light is not None
-    assert profile.night_light.power_on_command == H7124_PROFILE.night_light.power_on_command
+    assert (
+        profile.night_light.power_on_command
+        == H7124_PROFILE.night_light.power_on_command
+    )
 
 
 def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> None:
@@ -110,6 +112,7 @@ def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> Non
     assert profile.state_query_command == H7124_PROFILE.state_query_command
     assert profile.status_query_command == H7124_PROFILE.status_query_command
     assert profile.fan_mode_commands == H7124_PROFILE.fan_mode_commands
+    assert profile.custom_auto_thresholds == H7124_PROFILE.custom_auto_thresholds
     assert profile.night_light is None
 
 
@@ -217,6 +220,36 @@ def test_profile_schema_allows_absent_optional_night_light() -> None:
     definition = _parse_profile_definition(data, source="test.json")
 
     assert definition.night_light is None
+
+
+def test_profile_without_custom_auto_thresholds_does_not_support_policy() -> None:
+    data = _profile_data()
+    del data["custom_auto"]
+
+    definition = _parse_profile_definition(data, source="test.json")
+    profile = _build_profile("h7124", {"default": definition, "h7124": definition})
+
+    assert profile.custom_auto_thresholds is None
+    assert profile.supports_custom_auto is False
+
+
+@pytest.mark.parametrize(
+    ("thresholds", "message"),
+    [
+        ([3, 5, 9], "exactly four"),
+        ([3, 5, 5, 15], "strictly ascending"),
+        ([3, 5, 9, 1000], "integers from 0 to 999"),
+        ([3, 5, 9, True], "integers from 0 to 999"),
+    ],
+)
+def test_profile_schema_rejects_invalid_custom_auto_thresholds(
+    thresholds: list[object], message: str
+) -> None:
+    data = _profile_data()
+    data["custom_auto"]["thresholds"] = thresholds
+
+    with pytest.raises(ValueError, match=message):
+        _parse_profile_definition(data, source="test.json")
 
 
 def test_profile_schema_rejects_incomplete_night_light() -> None:

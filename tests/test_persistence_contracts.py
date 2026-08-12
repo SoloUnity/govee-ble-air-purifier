@@ -14,14 +14,10 @@ from custom_components.govee_ble_air_purifier.const import (
     CONF_CUSTOM_AUTO_DELAY_40,
     CONF_CUSTOM_AUTO_DELAY_60,
     CONF_CUSTOM_AUTO_DELAY_80,
-    CONF_CUSTOM_AUTO_DOWN_20,
-    CONF_CUSTOM_AUTO_DOWN_40,
-    CONF_CUSTOM_AUTO_DOWN_60,
-    CONF_CUSTOM_AUTO_DOWN_80,
-    CONF_CUSTOM_AUTO_UP_100,
-    CONF_CUSTOM_AUTO_UP_40,
-    CONF_CUSTOM_AUTO_UP_60,
-    CONF_CUSTOM_AUTO_UP_80,
+    CONF_CUSTOM_AUTO_THRESHOLD_100,
+    CONF_CUSTOM_AUTO_THRESHOLD_40,
+    CONF_CUSTOM_AUTO_THRESHOLD_60,
+    CONF_CUSTOM_AUTO_THRESHOLD_80,
     CONF_NAME,
     CONF_POLLING_INTERVAL,
     CONF_PROFILE,
@@ -45,14 +41,10 @@ def test_config_entry_and_option_storage_keys_are_stable() -> None:
     assert (CONF_POLLING_INTERVAL, *CUSTOM_AUTO_OPTION_KEYS) == (
         "polling_interval",
         "custom_auto_confirmation_delay",
-        "custom_auto_up_40",
-        "custom_auto_up_60",
-        "custom_auto_up_80",
-        "custom_auto_up_100",
-        "custom_auto_down_20",
-        "custom_auto_down_40",
-        "custom_auto_down_60",
-        "custom_auto_down_80",
+        "custom_auto_threshold_40",
+        "custom_auto_threshold_60",
+        "custom_auto_threshold_80",
+        "custom_auto_threshold_100",
         "custom_auto_delay_20",
         "custom_auto_delay_40",
         "custom_auto_delay_60",
@@ -64,20 +56,17 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     assert DEFAULT_POLLING_INTERVAL_SECONDS == 10
     assert CUSTOM_AUTO_DEFAULTS == {
         CONF_CUSTOM_AUTO_CONFIRMATION_DELAY: 3,
-        CONF_CUSTOM_AUTO_UP_40: 3,
-        CONF_CUSTOM_AUTO_UP_60: 5,
-        CONF_CUSTOM_AUTO_UP_80: 9,
-        CONF_CUSTOM_AUTO_UP_100: 15,
-        CONF_CUSTOM_AUTO_DOWN_20: 3,
-        CONF_CUSTOM_AUTO_DOWN_40: 5,
-        CONF_CUSTOM_AUTO_DOWN_60: 9,
-        CONF_CUSTOM_AUTO_DOWN_80: 15,
+        CONF_CUSTOM_AUTO_THRESHOLD_40: 3,
+        CONF_CUSTOM_AUTO_THRESHOLD_60: 5,
+        CONF_CUSTOM_AUTO_THRESHOLD_80: 9,
+        CONF_CUSTOM_AUTO_THRESHOLD_100: 15,
         CONF_CUSTOM_AUTO_DELAY_20: 7,
         CONF_CUSTOM_AUTO_DELAY_40: 5,
         CONF_CUSTOM_AUTO_DELAY_60: 5,
         CONF_CUSTOM_AUTO_DELAY_80: 5,
     }
     assert H7124_PROFILE.key == "h7124"
+    assert H7124_PROFILE.custom_auto_thresholds == (3, 5, 9, 15)
     assert get_profile(None) is H7124_PROFILE
     assert get_profile("h7124") is H7124_PROFILE
     fallback = get_profile("h712c")

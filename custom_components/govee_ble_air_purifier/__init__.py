@@ -10,7 +10,7 @@ from .auto_resume import AutoResumeManager
 from .bluetooth.client import GoveeBleClient
 from .const import CONF_ADDRESS, CONF_PROFILE, PLATFORMS
 from .coordinator import GoveeCoordinator, GoveeRuntimeData
-from .custom_auto.config import CustomAutoConfig
+from .custom_auto.config import CustomAutoConfig, custom_auto_defaults
 from .custom_auto.controller import CustomAutoController
 from .profiles import get_profile
 from .setup_helpers import polling_interval_from_options
@@ -42,7 +42,10 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         controller = CustomAutoController(
             hass,
             coordinator,
-            CustomAutoConfig.from_options(entry.options),
+            CustomAutoConfig.from_options(
+                entry.options,
+                custom_auto_defaults(profile.custom_auto_thresholds),
+            ),
             config_entry=entry,
         )
         auto_resume = AutoResumeManager(

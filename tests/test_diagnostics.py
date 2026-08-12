@@ -48,7 +48,7 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
     )
     entry = SimpleNamespace(
         data={"address": "aa:bb:cc:dd:ee:ff", "name": "GVH7124ABCD"},
-        options={"use_custom_auto": True, "custom_auto_up_40": 3},
+        options={"use_custom_auto": True, "custom_auto_threshold_40": 3},
         entry_id="entry-1",
         runtime_data=SimpleNamespace(
             coordinator=runtime_coordinator,
@@ -76,7 +76,7 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
 
     assert result == {
         "entry": {"address": "XX:XX:XX:XX:XX:XX", "name": "REDACTED"},
-        "options": {"use_custom_auto": True, "custom_auto_up_40": 3},
+        "options": {"use_custom_auto": True, "custom_auto_threshold_40": 3},
         "state": {
             "is_on": True,
             "fan_mode": "Auto",

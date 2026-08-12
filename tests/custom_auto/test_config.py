@@ -11,6 +11,7 @@ from custom_components.govee_ble_air_purifier.custom_auto.config import (
     DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
     MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
     CustomAutoConfig,
+    custom_auto_defaults,
     parse_custom_auto_values,
     validate_custom_auto_values,
 )
@@ -19,14 +20,10 @@ from custom_components.govee_ble_air_purifier.custom_auto.config import (
 def test_option_order_is_stable() -> None:
     assert CUSTOM_AUTO_OPTION_KEYS == (
         "custom_auto_confirmation_delay",
-        "custom_auto_up_40",
-        "custom_auto_up_60",
-        "custom_auto_up_80",
-        "custom_auto_up_100",
-        "custom_auto_down_20",
-        "custom_auto_down_40",
-        "custom_auto_down_60",
-        "custom_auto_down_80",
+        "custom_auto_threshold_40",
+        "custom_auto_threshold_60",
+        "custom_auto_threshold_80",
+        "custom_auto_threshold_100",
         "custom_auto_delay_20",
         "custom_auto_delay_40",
         "custom_auto_delay_60",
@@ -37,18 +34,14 @@ def test_option_order_is_stable() -> None:
 def test_default_key_order_is_stable() -> None:
     assert tuple(CUSTOM_AUTO_DEFAULTS) == (
         "custom_auto_confirmation_delay",
-        "custom_auto_up_40",
-        "custom_auto_up_60",
-        "custom_auto_up_80",
-        "custom_auto_up_100",
-        "custom_auto_down_80",
-        "custom_auto_delay_80",
-        "custom_auto_down_60",
-        "custom_auto_delay_60",
-        "custom_auto_down_40",
-        "custom_auto_delay_40",
-        "custom_auto_down_20",
+        "custom_auto_threshold_40",
+        "custom_auto_threshold_60",
+        "custom_auto_threshold_80",
+        "custom_auto_threshold_100",
         "custom_auto_delay_20",
+        "custom_auto_delay_40",
+        "custom_auto_delay_60",
+        "custom_auto_delay_80",
     )
 
 
@@ -85,25 +78,25 @@ def test_confirmation_delay_rejects_value_above_configured_range() -> None:
 
 @pytest.mark.parametrize("value", [0, 3, 3.0, "3", 999])
 def test_parser_accepts_stable_integer_forms(value: object) -> None:
-    parsed = parse_custom_auto_values({"custom_auto_up_40": value})
+    parsed = parse_custom_auto_values({"custom_auto_threshold_40": value})
 
-    assert parsed["custom_auto_up_40"] == int(value)
+    assert parsed["custom_auto_threshold_40"] == int(value)
 
 
 @pytest.mark.parametrize(
     ("value", "error"),
     [
-        (True, "custom_auto_up_40 must be an integer"),
-        (3.5, "custom_auto_up_40 must be an integer"),
-        ("03", "custom_auto_up_40 must be an integer"),
-        (None, "custom_auto_up_40 must be an integer"),
-        (-1, "custom_auto_up_40 is outside its allowed range"),
-        (1000, "custom_auto_up_40 is outside its allowed range"),
+        (True, "custom_auto_threshold_40 must be an integer"),
+        (3.5, "custom_auto_threshold_40 must be an integer"),
+        ("03", "custom_auto_threshold_40 must be an integer"),
+        (None, "custom_auto_threshold_40 must be an integer"),
+        (-1, "custom_auto_threshold_40 is outside its allowed range"),
+        (1000, "custom_auto_threshold_40 is outside its allowed range"),
     ],
 )
 def test_parser_rejection_and_errors_are_stable(value: object, error: str) -> None:
     with pytest.raises(ValueError) as exc_info:
-        parse_custom_auto_values({"custom_auto_up_40": value})
+        parse_custom_auto_values({"custom_auto_threshold_40": value})
 
     assert str(exc_info.value) == error
 
@@ -111,8 +104,8 @@ def test_parser_rejection_and_errors_are_stable(value: object, error: str) -> No
 def test_invalid_single_value_falls_back_to_complete_defaults() -> None:
     options = {
         **CUSTOM_AUTO_DEFAULTS,
-        "custom_auto_up_40": 4,
-        "custom_auto_up_60": "invalid",
+        "custom_auto_threshold_40": 4,
+        "custom_auto_threshold_60": "invalid",
     }
 
     assert CustomAutoConfig.from_options(options).as_options() == {
@@ -122,11 +115,7 @@ def test_invalid_single_value_falls_back_to_complete_defaults() -> None:
 
 @pytest.mark.parametrize(
     ("updates", "error"),
-    [
-        ({"custom_auto_up_60": 3}, "up_thresholds_not_ascending"),
-        ({"custom_auto_down_40": 3}, "down_thresholds_not_ascending"),
-        ({"custom_auto_down_80": 16}, "down_threshold_above_up"),
-    ],
+    [({"custom_auto_threshold_60": 3}, "thresholds_not_ascending")],
 )
 def test_validation_error_strings_are_stable(
     updates: dict[str, int], error: str
@@ -135,3 +124,9 @@ def test_validation_error_strings_are_stable(
         validate_custom_auto_values({**CUSTOM_AUTO_DEFAULTS, **updates})
 
     assert str(exc_info.value) == error
+
+
+def test_model_thresholds_build_model_specific_defaults() -> None:
+    defaults = custom_auto_defaults((7, 9, 13, 19))
+
+    assert CustomAutoConfig.from_options({}, defaults).thresholds == (7, 9, 13, 19)

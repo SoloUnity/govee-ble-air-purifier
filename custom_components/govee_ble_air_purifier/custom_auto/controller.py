@@ -107,9 +107,7 @@ class CustomAutoController:
                     self._current_speed = restored_speed
                 elif self._current_speed not in CUSTOM_AUTO_SPEEDS:
                     mode = getattr(self.coordinator.data, "fan_mode", None)
-                    self._current_speed = MODE_TO_SPEED.get(
-                        mode, CUSTOM_AUTO_SPEEDS[0]
-                    )
+                    self._current_speed = MODE_TO_SPEED.get(mode, CUSTOM_AUTO_SPEEDS[0])
 
                 update_succeeded = self._coordinator_update_succeeded()
                 self._waiting_for_successful_update = not update_succeeded
@@ -192,8 +190,7 @@ class CustomAutoController:
             "active": self.active,
             "current_speed": self.current_speed,
             "confirmation_delay_seconds": self.config.confirmation_delay_seconds,
-            "up_thresholds": list(self.config.up_thresholds),
-            "down_thresholds": list(self.config.down_thresholds),
+            "thresholds": list(self.config.thresholds),
             "down_delays": list(self.config.down_delays),
             "pending_downshifts": list(self.pending_downshifts),
             "mature_downshifts": sorted(self._mature_downshifts),
@@ -272,9 +269,7 @@ class CustomAutoController:
             revision, pm25 = self._pending_pm25_samples.popleft()
             required_speed = self._speed_for_pm(pm25)
             self._update_downshift_timers(pm25)
-            confirmed_upshift = self._observe_upshift_sample(
-                required_speed, revision
-            )
+            confirmed_upshift = self._observe_upshift_sample(required_speed, revision)
             if confirmed_upshift is not None:
                 await self._async_set_speed(confirmed_upshift)
                 self._clear_upshift_confirmation()
@@ -288,9 +283,7 @@ class CustomAutoController:
             await self._async_set_speed(min(eligible))
             self._clear_upshift_confirmation()
 
-    def _observe_upshift_sample(
-        self, required_speed: int, revision: int
-    ) -> int | None:
+    def _observe_upshift_sample(self, required_speed: int, revision: int) -> int | None:
         """Return a confirmed upshift or schedule its delayed confirmation."""
 
         if revision == self._last_pm25_sample_revision:
@@ -370,7 +363,7 @@ class CustomAutoController:
                 self._upshift_confirmation_refreshing = False
 
     def _speed_for_pm(self, pm25: int) -> int:
-        return speed_for_pm(pm25, self.config.up_thresholds)
+        return speed_for_pm(pm25, self.config.thresholds)
 
     async def _async_set_speed(self, speed: int, *, force: bool = False) -> None:
         if not force and speed == self._current_speed:
@@ -389,12 +382,15 @@ class CustomAutoController:
     def _update_downshift_timers(self, pm25: int) -> None:
         for speed, threshold, delay in zip(
             CUSTOM_AUTO_SPEEDS[:-1],
-            self.config.down_thresholds,
+            self.config.thresholds,
             self.config.down_delays,
             strict=True,
         ):
             if pm25 <= threshold:
-                if speed not in self._timer_tasks and speed not in self._mature_downshifts:
+                if (
+                    speed not in self._timer_tasks
+                    and speed not in self._mature_downshifts
+                ):
                     self._timer_tasks[speed] = self._create_task(
                         self._async_downshift_timer(speed, delay)
                     )

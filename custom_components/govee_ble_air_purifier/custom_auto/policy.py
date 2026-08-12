@@ -12,13 +12,11 @@ SPEED_TO_MODE = {
 MODE_TO_SPEED = {mode: speed for speed, mode in SPEED_TO_MODE.items()}
 
 
-def speed_for_pm(pm25: int, up_thresholds: tuple[int, int, int, int]) -> int:
-    """Return the speed required by a PM2.5 reading and upward thresholds."""
+def speed_for_pm(pm25: int, thresholds: tuple[int, int, int, int]) -> int:
+    """Return the speed required by a PM2.5 reading and model boundaries."""
 
     speed = CUSTOM_AUTO_SPEEDS[0]
-    for threshold, candidate in zip(
-        up_thresholds, CUSTOM_AUTO_SPEEDS[1:], strict=True
-    ):
+    for threshold, candidate in zip(thresholds, CUSTOM_AUTO_SPEEDS[1:], strict=True):
         if pm25 > threshold:
             speed = candidate
     return speed

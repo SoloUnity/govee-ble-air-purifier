@@ -20,17 +20,13 @@
         "description": "Configure increase confirmation and the four boundaries between Excellent, Good, Fair, Bad, and Poor. Positive confirmation delays require a second valid reading; 0 seconds reacts to the first reading. Returns to cleaner levels happen only after the configured delay. Activate these rules with the device's Custom Auto switch.",
         "data": {
           "custom_auto_confirmation_delay": "Increase confirmation delay",
-          "custom_auto_up_40": "Excellent to Good: increase above",
-          "custom_auto_down_20": "Good to Excellent: return at or below",
+          "custom_auto_threshold_40": "Excellent / Good boundary",
           "custom_auto_delay_20": "Good to Excellent: time at or below",
-          "custom_auto_up_60": "Good to Fair: increase above",
-          "custom_auto_down_40": "Fair to Good: return at or below",
+          "custom_auto_threshold_60": "Good / Fair boundary",
           "custom_auto_delay_40": "Fair to Good: time at or below",
-          "custom_auto_up_80": "Fair to Bad: increase above",
-          "custom_auto_down_60": "Bad to Fair: return at or below",
+          "custom_auto_threshold_80": "Fair / Bad boundary",
           "custom_auto_delay_60": "Bad to Fair: time at or below",
-          "custom_auto_up_100": "Bad to Poor: increase above",
-          "custom_auto_down_80": "Poor to Bad: return at or below",
+          "custom_auto_threshold_100": "Bad / Poor boundary",
           "custom_auto_delay_80": "Poor to Bad: time at or below"
         },
         "data_description": {
@@ -41,8 +37,7 @@
             "name": "Excellent to Good (20% / 40%)",
             "description": "Controls the boundary between Excellent air at 20% and Good air at 40%.",
             "data": {
-              "custom_auto_up_40": "Increase to Good above",
-              "custom_auto_down_20": "Return to Excellent at or below",
+              "custom_auto_threshold_40": "Boundary",
               "custom_auto_delay_20": "Time at or below before returning"
             }
           },
@@ -50,8 +45,7 @@
             "name": "Good to Fair (40% / 60%)",
             "description": "Controls the boundary between Good air at 40% and Fair air at 60%.",
             "data": {
-              "custom_auto_up_60": "Increase to Fair above",
-              "custom_auto_down_40": "Return to Good at or below",
+              "custom_auto_threshold_60": "Boundary",
               "custom_auto_delay_40": "Time at or below before returning"
             }
           },
@@ -59,8 +53,7 @@
             "name": "Fair to Bad (60% / 80%)",
             "description": "Controls the boundary between Fair air at 60% and Bad air at 80%.",
             "data": {
-              "custom_auto_up_80": "Increase to Bad above",
-              "custom_auto_down_60": "Return to Fair at or below",
+              "custom_auto_threshold_80": "Boundary",
               "custom_auto_delay_60": "Time at or below before returning"
             }
           },
@@ -68,8 +61,7 @@
             "name": "Bad to Poor (80% / 100%)",
             "description": "Controls the boundary between Bad air at 80% and Poor air at 100%.",
             "data": {
-              "custom_auto_up_100": "Increase to Poor above",
-              "custom_auto_down_80": "Return to Bad at or below",
+              "custom_auto_threshold_100": "Boundary",
               "custom_auto_delay_80": "Time at or below before returning"
             }
           }
@@ -82,9 +74,7 @@
       "invalid_address": "Enter a complete Bluetooth MAC address or platform UUID.",
       "unsupported_device": "The selected BLE device is not a recognized Govee H712-family air purifier.",
       "invalid_custom_auto_value": "Enter whole numbers within the displayed ranges.",
-      "up_thresholds_not_ascending": "Increase thresholds must rise from Excellent through Poor.",
-      "down_thresholds_not_ascending": "Return thresholds must rise from Excellent through Bad.",
-      "down_threshold_above_up": "A return threshold cannot exceed the increase threshold for the same air-quality boundary."
+      "thresholds_not_ascending": "Air-quality boundaries must rise from Excellent through Poor."
     },
     "abort": {
       "already_configured": "This air purifier is already configured.",
@@ -100,17 +90,13 @@
         "data": {
           "polling_interval": "Polling interval in seconds",
           "custom_auto_confirmation_delay": "Increase confirmation delay",
-          "custom_auto_up_40": "Excellent to Good: increase above",
-          "custom_auto_down_20": "Good to Excellent: return at or below",
+          "custom_auto_threshold_40": "Excellent / Good boundary",
           "custom_auto_delay_20": "Good to Excellent: time at or below",
-          "custom_auto_up_60": "Good to Fair: increase above",
-          "custom_auto_down_40": "Fair to Good: return at or below",
+          "custom_auto_threshold_60": "Good / Fair boundary",
           "custom_auto_delay_40": "Fair to Good: time at or below",
-          "custom_auto_up_80": "Fair to Bad: increase above",
-          "custom_auto_down_60": "Bad to Fair: return at or below",
+          "custom_auto_threshold_80": "Fair / Bad boundary",
           "custom_auto_delay_60": "Bad to Fair: time at or below",
-          "custom_auto_up_100": "Bad to Poor: increase above",
-          "custom_auto_down_80": "Poor to Bad: return at or below",
+          "custom_auto_threshold_100": "Bad / Poor boundary",
           "custom_auto_delay_80": "Poor to Bad: time at or below"
         },
         "data_description": {
@@ -122,8 +108,7 @@
             "name": "Excellent to Good (20% / 40%)",
             "description": "Controls the boundary between Excellent air at 20% and Good air at 40%.",
             "data": {
-              "custom_auto_up_40": "Increase to Good above",
-              "custom_auto_down_20": "Return to Excellent at or below",
+              "custom_auto_threshold_40": "Boundary",
               "custom_auto_delay_20": "Time at or below before returning"
             }
           },
@@ -131,8 +116,7 @@
             "name": "Good to Fair (40% / 60%)",
             "description": "Controls the boundary between Good air at 40% and Fair air at 60%.",
             "data": {
-              "custom_auto_up_60": "Increase to Fair above",
-              "custom_auto_down_40": "Return to Good at or below",
+              "custom_auto_threshold_60": "Boundary",
               "custom_auto_delay_40": "Time at or below before returning"
             }
           },
@@ -140,8 +124,7 @@
             "name": "Fair to Bad (60% / 80%)",
             "description": "Controls the boundary between Fair air at 60% and Bad air at 80%.",
             "data": {
-              "custom_auto_up_80": "Increase to Bad above",
-              "custom_auto_down_60": "Return to Fair at or below",
+              "custom_auto_threshold_80": "Boundary",
               "custom_auto_delay_60": "Time at or below before returning"
             }
           },
@@ -149,8 +132,7 @@
             "name": "Bad to Poor (80% / 100%)",
             "description": "Controls the boundary between Bad air at 80% and Poor air at 100%.",
             "data": {
-              "custom_auto_up_100": "Increase to Poor above",
-              "custom_auto_down_80": "Return to Bad at or below",
+              "custom_auto_threshold_100": "Boundary",
               "custom_auto_delay_80": "Time at or below before returning"
             }
           }
@@ -159,9 +141,7 @@
     },
     "error": {
       "invalid_custom_auto_value": "Enter whole numbers within the displayed ranges.",
-      "up_thresholds_not_ascending": "Increase thresholds must rise from Excellent through Poor.",
-      "down_thresholds_not_ascending": "Return thresholds must rise from Excellent through Bad.",
-      "down_threshold_above_up": "A return threshold cannot exceed the increase threshold for the same air-quality boundary."
+      "thresholds_not_ascending": "Air-quality boundaries must rise from Excellent through Poor."
     }
   },
   "entity": {

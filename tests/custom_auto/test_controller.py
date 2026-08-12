@@ -21,9 +21,7 @@ class FakeCoordinator:
     def __init__(
         self, *, pm25: int | None, mode: str = "Sleep", is_on: bool = True
     ) -> None:
-        self.data = PurifierState(
-            is_on=is_on, pm25=pm25, filter_life=90, fan_mode=mode
-        )
+        self.data = PurifierState(is_on=is_on, pm25=pm25, filter_life=90, fan_mode=mode)
         self.last_update_success = True
         self.last_pm25_update_success = pm25 is not None
         self.pm25_sample_revision = 1 if pm25 is not None else 0
@@ -115,9 +113,7 @@ class ControlledSleep:
 
 
 def custom_auto_config(**overrides: int) -> CustomAutoConfig:
-    return CustomAutoConfig.from_options(
-        {**CUSTOM_AUTO_DEFAULTS, **overrides}
-    )
+    return CustomAutoConfig.from_options({**CUSTOM_AUTO_DEFAULTS, **overrides})
 
 
 async def settle() -> None:
@@ -149,7 +145,9 @@ async def test_two_upward_readings_use_second_readings_required_speed(
 
 
 @pytest.mark.asyncio
-async def test_activation_from_off_deliberately_powers_on_before_off_detection() -> None:
+async def test_activation_from_off_deliberately_powers_on_before_off_detection() -> (
+    None
+):
     coordinator = FakeCoordinator(pm25=10, mode="Sleep", is_on=False)
     controller = CustomAutoController(None, coordinator, custom_auto_config())
 
@@ -186,7 +184,9 @@ async def test_activation_ignores_stale_pm_until_update_recovers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rapid_pm_updates_are_serialized_and_use_latest_highest_requirement() -> None:
+async def test_rapid_pm_updates_are_serialized_and_use_latest_highest_requirement() -> (
+    None
+):
     coordinator = FakeCoordinator(pm25=0)
     controller = CustomAutoController(None, coordinator, custom_auto_config())
     await controller.async_activate()
@@ -874,9 +874,7 @@ async def test_failed_handoff_preserves_controller_and_downshift_state() -> None
     await settle()
     sleep.release(300)
     await settle()
-    pending_timer = next(
-        future for delay, future in sleep.waiters if delay == 420
-    )
+    pending_timer = next(future for delay, future in sleep.waiters if delay == 420)
     assert controller.current_speed == 40
     assert controller.diagnostics()["mature_downshifts"] == [40, 60, 80]
 
@@ -950,7 +948,9 @@ async def test_handoff_cancellation_reasserts_custom_auto_speed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_pm_is_ignored_after_activation_and_commands_are_deduplicated() -> None:
+async def test_missing_pm_is_ignored_after_activation_and_commands_are_deduplicated() -> (
+    None
+):
     coordinator = FakeCoordinator(pm25=6, mode="Medium")
     controller = CustomAutoController(None, coordinator, custom_auto_config())
     await controller.async_activate()
@@ -967,7 +967,9 @@ async def test_missing_pm_is_ignored_after_activation_and_commands_are_deduplica
 
 
 @pytest.mark.asyncio
-async def test_activation_with_unknown_pm_powers_on_at_existing_or_sleep_speed() -> None:
+async def test_activation_with_unknown_pm_powers_on_at_existing_or_sleep_speed() -> (
+    None
+):
     coordinator = FakeCoordinator(pm25=None, mode="Auto")
     controller = CustomAutoController(None, coordinator, custom_auto_config())
 
@@ -978,7 +980,9 @@ async def test_activation_with_unknown_pm_powers_on_at_existing_or_sleep_speed()
 
 
 @pytest.mark.asyncio
-async def test_restore_retains_speed_confirms_upward_correction_and_restarts_timers() -> None:
+async def test_restore_retains_speed_confirms_upward_correction_and_restarts_timers() -> (
+    None
+):
     coordinator = FakeCoordinator(pm25=10, mode="Low")
     sleep = ControlledSleep()
     controller = CustomAutoController(
@@ -1031,8 +1035,7 @@ def test_diagnostics_shape_is_complete() -> None:
         "active": False,
         "current_speed": None,
         "confirmation_delay_seconds": 3,
-        "up_thresholds": [3, 5, 9, 15],
-        "down_thresholds": [3, 5, 9, 15],
+        "thresholds": [3, 5, 9, 15],
         "down_delays": [7, 5, 5, 5],
         "pending_downshifts": [],
         "mature_downshifts": [],

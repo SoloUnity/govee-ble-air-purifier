@@ -29,8 +29,9 @@ H7124_PROFILE_KEY = "h7124"
 _BLE_MODEL_PATTERN = re.compile(r"(H712[0-9A-Z])", re.IGNORECASE | re.ASCII)
 _PROFILE_KEY_PATTERN = re.compile(r"h712[0-9a-z]\Z")
 _TOP_LEVEL_KEYS = {"schema_version", "encryption", "gatt", "commands"}
-_TOP_LEVEL_OPTIONAL_KEYS = {"night_light"}
+_TOP_LEVEL_OPTIONAL_KEYS = {"custom_auto", "night_light"}
 _GATT_KEYS = {"service_uuid", "notify_char_uuid", "write_char_uuid"}
+_CUSTOM_AUTO_KEYS = {"thresholds"}
 _COMMAND_KEYS = {
     "power_off",
     "power_on",
@@ -130,6 +131,7 @@ class ModelProfile:
     state_query_command: bytes
     status_query_command: bytes
     fan_mode_commands: dict[str, bytes]
+    custom_auto_thresholds: tuple[int, int, int, int] | None
     night_light: NightLightProfile | None
     is_power_state_response: Callable[[bytes], bool]
     is_status_response: Callable[[bytes], bool]
@@ -145,7 +147,10 @@ class ModelProfile:
     def supports_custom_auto(self) -> bool:
         """Return whether all modes required by Custom Auto are available."""
 
-        return _CUSTOM_AUTO_REQUIRED_FAN_MODES <= self.fan_mode_commands.keys()
+        return (
+            self.custom_auto_thresholds is not None
+            and _CUSTOM_AUTO_REQUIRED_FAN_MODES <= self.fan_mode_commands.keys()
+        )
 
 
 @dataclass(frozen=True)
@@ -159,6 +164,7 @@ class _ProfileDefinition:
     state_query_command: bytes
     status_query_command: bytes
     fan_mode_commands: dict[str, bytes]
+    custom_auto_thresholds: tuple[int, int, int, int] | None
     night_light: NightLightProfile | None
 
 
@@ -175,7 +181,10 @@ def _require_object(
         raise ValueError(f"{source} must be a JSON object")
     optional_keys = optional_keys or set()
     actual_keys = set(value)
-    if not expected_keys <= actual_keys or not actual_keys <= expected_keys | optional_keys:
+    if (
+        not expected_keys <= actual_keys
+        or not actual_keys <= expected_keys | optional_keys
+    ):
         missing = sorted(expected_keys - actual_keys)
         unknown = sorted(actual_keys - expected_keys - optional_keys)
         details = []
@@ -305,6 +314,23 @@ def _parse_night_light(value: Any, *, source: str) -> NightLightProfile:
     )
 
 
+def _parse_custom_auto(value: Any, *, source: str) -> tuple[int, int, int, int]:
+    """Parse model-specific Custom Auto PM2.5 boundaries."""
+
+    custom_auto = _require_object(value, _CUSTOM_AUTO_KEYS, source=source)
+    thresholds = custom_auto["thresholds"]
+    if not isinstance(thresholds, list) or len(thresholds) != 4:
+        raise ValueError(f"{source}.thresholds must contain exactly four values")
+    if any(
+        type(threshold) is not int or not 0 <= threshold <= 999
+        for threshold in thresholds
+    ):
+        raise ValueError(f"{source}.thresholds must contain integers from 0 to 999")
+    if not all(left < right for left, right in zip(thresholds, thresholds[1:])):
+        raise ValueError(f"{source}.thresholds must be strictly ascending")
+    return thresholds[0], thresholds[1], thresholds[2], thresholds[3]
+
+
 def _parse_encryption(value: Any, *, source: str) -> EncryptionMode:
     """Return one supported profile encryption mode."""
 
@@ -330,9 +356,7 @@ def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
         type(profile["schema_version"]) is not int
         or profile["schema_version"] != PROFILE_SCHEMA_VERSION
     ):
-        raise ValueError(
-            f"{source}.schema_version must be {PROFILE_SCHEMA_VERSION}"
-        )
+        raise ValueError(f"{source}.schema_version must be {PROFILE_SCHEMA_VERSION}")
     gatt = _require_object(profile["gatt"], _GATT_KEYS, source=f"{source}.gatt")
     commands = _require_object(
         profile["commands"], _COMMAND_KEYS, source=f"{source}.commands"
@@ -376,10 +400,13 @@ def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
             commands["status_query"], source=f"{source}.commands.status_query"
         ),
         fan_mode_commands=parsed_fan_modes,
+        custom_auto_thresholds=(
+            _parse_custom_auto(profile["custom_auto"], source=f"{source}.custom_auto")
+            if "custom_auto" in profile
+            else None
+        ),
         night_light=(
-            _parse_night_light(
-                profile["night_light"], source=f"{source}.night_light"
-            )
+            _parse_night_light(profile["night_light"], source=f"{source}.night_light")
             if "night_light" in profile
             else None
         ),
@@ -419,7 +446,9 @@ def _load_profile_definitions(
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError as err:
-            raise ValueError(f"Unable to load model profile {path.name}: {err}") from err
+            raise ValueError(
+                f"Unable to load model profile {path.name}: {err}"
+            ) from err
         data = _decode_profile_json(raw, source=path.name)
         definitions[key] = _parse_profile_definition(data, source=path.name)
     if DEFAULT_PROFILE_KEY not in definitions:
@@ -496,6 +525,7 @@ def _build_profile(
         state_query_command=definition.state_query_command,
         status_query_command=definition.status_query_command,
         fan_mode_commands=dict(definition.fan_mode_commands),
+        custom_auto_thresholds=definition.custom_auto_thresholds,
         night_light=definition.night_light,
         is_power_state_response=is_power_state_response,
         is_status_response=is_status_response,
