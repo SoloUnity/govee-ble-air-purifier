@@ -1540,6 +1540,16 @@ async def test_connection_arbiter_prioritizes_control_over_queued_poll(
 
     blocker_task = asyncio.create_task(blocker._async_with_connection(hold_connection))
     await blocker_started.wait()
+    preparation_order: list[str] = []
+
+    async def prepare_poller() -> None:
+        preparation_order.append("poll")
+
+    async def prepare_commander() -> None:
+        preparation_order.append("command")
+
+    monkeypatch.setattr(poller, "_async_prepare_connection", prepare_poller)
+    monkeypatch.setattr(commander, "_async_prepare_connection", prepare_commander)
     poll_task = asyncio.create_task(poller.async_get_state())
     await asyncio.sleep(0)
     command_task = asyncio.create_task(commander.async_set_power(True))
@@ -1547,6 +1557,7 @@ async def test_connection_arbiter_prioritizes_control_over_queued_poll(
 
     assert len(arbiter._poll_waiters) == 1
     assert len(arbiter._command_waiters) == 1
+    assert preparation_order == []
     release_blocker.set()
 
     await asyncio.wait_for(blocker_task, timeout=1)
@@ -1557,10 +1568,40 @@ async def test_connection_arbiter_prioritizes_control_over_queued_poll(
         "AA:BB:CC:DD:EE:03",
         "AA:BB:CC:DD:EE:02",
     ]
+    assert preparation_order == ["command", "poll"]
 
     await asyncio.gather(
         blocker.async_close(), poller.async_close(), commander.async_close()
     )
+
+
+@pytest.mark.asyncio
+async def test_connection_preparation_failure_releases_priority_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failed work after priority admission cannot strand later controls."""
+
+    arbiter = GoveeConnectionArbiter()
+    failing = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:01", connection_arbiter=arbiter
+    )
+    following = GoveeBleClient(None, "AA:BB:CC:DD:EE:02")
+    following_ran = False
+
+    async def fail_preparation() -> None:
+        raise GoveeBleClientError("preparation failed")
+
+    async def record_following() -> None:
+        nonlocal following_ran
+        following_ran = True
+
+    monkeypatch.setattr(failing, "_async_prepare_connection", fail_preparation)
+
+    with pytest.raises(GoveeBleClientError, match="preparation failed"):
+        await failing.async_set_power(True)
+    await asyncio.wait_for(arbiter.async_run(following, record_following), timeout=1)
+
+    assert following_ran
 
 
 @pytest.mark.asyncio

@@ -111,6 +111,23 @@ class RacingClient(FakeClient):
         return await super().async_set_power(is_on)
 
 
+class PollBlockedClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.poll_started = asyncio.Event()
+        self.release_poll = asyncio.Event()
+        self.command_started = asyncio.Event()
+
+    async def async_get_state(self) -> PurifierState:
+        self.poll_started.set()
+        await self.release_poll.wait()
+        return PurifierState(is_on=False, pm25=12, filter_life=87)
+
+    async def async_set_power(self, is_on: bool) -> bool:
+        self.command_started.set()
+        return await super().async_set_power(is_on)
+
+
 async def _cleanup_tasks(tasks: list[asyncio.Task]) -> None:
     for task in tasks:
         task.cancel()
@@ -372,7 +389,7 @@ async def test_night_light_command_rejects_profile_without_capability() -> None:
 
 
 @pytest.mark.asyncio
-async def test_setting_fan_mode_turns_device_on_when_off_and_remembers_mode(
+async def test_setting_fan_mode_does_not_poll_before_urgent_initial_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
@@ -386,9 +403,37 @@ async def test_setting_fan_mode_turns_device_on_when_off_and_remembers_mode(
     assert client.commands == [b"power_on_and_" + FAN_MODE_COMMANDS["Turbo"]]
     assert coordinator.data == PurifierState(
         is_on=True,
+        fan_mode="Turbo",
+    )
+    assert client.state_fetches == 0
+
+
+@pytest.mark.asyncio
+async def test_command_bypasses_waiting_poll_and_rejects_its_stale_power(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A poll waiting below BLE must not hold the coordinator ahead of a control."""
+
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    client = PollBlockedClient()
+    coordinator = GoveeCoordinator(FakeHass(), client)
+    monkeypatch.setattr(coordinator, "_schedule_background_refresh", lambda: None)
+    coordinator.data = PurifierState(is_on=False, pm25=4, filter_life=88)
+
+    poll_task = asyncio.create_task(coordinator._async_update_data())
+    await client.poll_started.wait()
+    command_task = asyncio.create_task(coordinator.async_set_power(True))
+
+    await asyncio.wait_for(client.command_started.wait(), timeout=0.1)
+    await command_task
+    client.release_poll.set()
+    await poll_task
+
+    assert coordinator.data == PurifierState(
+        is_on=True,
         pm25=12,
         filter_life=87,
-        fan_mode="Turbo",
     )
 
 

@@ -134,9 +134,10 @@ custom_auto/
   retries. The fan and Custom Auto entities replicate its persisted attributes;
   startup restores the newest available record so either entity may be disabled.
 - `coordinator.py` defines `GoveeRuntimeData` and `GoveeCoordinator`. The
-  coordinator polls, serializes state-changing work, merges `PurifierState`,
-  publishes confirmed commands immediately, tracks fresh poll revisions, and
-  schedules reconciliation refreshes.
+  coordinator polls, serializes state-changing work without blocking controls
+  behind waiting polls, merges `PurifierState`, publishes confirmed commands
+  immediately, tracks command and fresh-poll revisions, and schedules
+  reconciliation refreshes.
 - `custom_auto/config.py` combines model-profile boundaries with shared timing
   defaults and owns option parsing, validation, and immutable `CustomAutoConfig`.
 - `custom_auto/policy.py` owns pure speed and confirmation constants, mode

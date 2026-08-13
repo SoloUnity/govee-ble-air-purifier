@@ -69,7 +69,10 @@ class GoveeCoordinator(DataUpdateCoordinator):
         self.pm25_sample_revision = 0
         self.poll_revision = 0
         self._last_fan_mode: str | None = None
+        self._command_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
+        self._command_revision = 0
+        self._last_published_command_revision = 0
         self._background_refresh_task: asyncio.Task[Any] | None = None
         super().__init__(
             hass,
@@ -125,14 +128,15 @@ class GoveeCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> PurifierState:
         """Fetch current state from the BLE client."""
 
+        command_revision = self._command_revision
+        try:
+            client_data = await self.client.async_get_state()
+        except Exception as err:  # pragma: no cover - depends on HA runtime
+            self.last_poll_success = False
+            self.last_pm25_update_success = False
+            LOGGER.warning("Govee BLE Air Purifier update failed: %s", err)
+            raise UpdateFailed(str(err)) from err
         async with self._state_lock:
-            try:
-                client_data = await self.client.async_get_state()
-            except Exception as err:  # pragma: no cover - depends on HA runtime
-                self.last_poll_success = False
-                self.last_pm25_update_success = False
-                LOGGER.warning("Govee BLE Air Purifier update failed: %s", err)
-                raise UpdateFailed(str(err)) from err
             self.last_poll_success = True
             self.poll_revision += 1
             self.last_pm25_update_success = client_data.pm25 is not None
@@ -147,13 +151,19 @@ class GoveeCoordinator(DataUpdateCoordinator):
                 filter_life=client_data.filter_life,
                 fan_mode=self._last_fan_mode or client_data.fan_mode,
                 night_light=(
-                    _merge_night_light_state(
-                        current.night_light, client_data.night_light
+                    (
+                        current.night_light
+                        if self._last_published_command_revision > command_revision
+                        else _merge_night_light_state(
+                            current.night_light, client_data.night_light
+                        )
                     )
                     if self.profile.night_light is not None
                     else None
                 ),
             )
+            if self._last_published_command_revision > command_revision:
+                data = replace(data, is_on=current.is_on)
             self.data = data
             return data
 
@@ -166,19 +176,23 @@ class GoveeCoordinator(DataUpdateCoordinator):
         """Set power and refresh shared state."""
 
         self._cancel_background_refresh()
-        async with self._state_lock:
+        self._command_revision += 1
+        command_revision = self._command_revision
+        async with self._command_lock:
             result = await self.client.async_set_power(is_on)
             confirmed_is_on = is_on if result is None else result
-            if not confirmed_is_on:
-                self._last_fan_mode = None
-            current = self.data or PurifierState()
-            self._publish_data(
-                replace(
-                    current,
-                    is_on=confirmed_is_on,
-                    fan_mode=current.fan_mode if confirmed_is_on else None,
+            async with self._state_lock:
+                if not confirmed_is_on:
+                    self._last_fan_mode = None
+                current = self.data or PurifierState()
+                self._last_published_command_revision = command_revision
+                self._publish_data(
+                    replace(
+                        current,
+                        is_on=confirmed_is_on,
+                        fan_mode=current.fan_mode if confirmed_is_on else None,
+                    )
                 )
-            )
         self._schedule_background_refresh()
 
     async def async_set_fan_mode(self, mode: str) -> None:
@@ -187,10 +201,11 @@ class GoveeCoordinator(DataUpdateCoordinator):
         if mode not in self.profile.fan_mode_commands:
             raise ValueError(f"Unsupported fan mode: {mode}")
         self._cancel_background_refresh()
-        if self.data is None:
-            await self.async_request_refresh()
-        async with self._state_lock:
-            if self.data is not None and self.data.is_on is False:
+        self._command_revision += 1
+        command_revision = self._command_revision
+        async with self._command_lock:
+            current_before_command = self.data
+            if current_before_command is None or current_before_command.is_on is False:
                 if hasattr(self.client, "async_set_power_and_fan_mode"):
                     result = await self.client.async_set_power_and_fan_mode(mode)
                     confirmed_is_on = (
@@ -212,17 +227,19 @@ class GoveeCoordinator(DataUpdateCoordinator):
                     confirmed_mode = mode if mode_result is None else mode_result
             else:
                 mode_result = await self.client.async_set_fan_mode(mode)
-                confirmed_is_on = True if self.data is None else self.data.is_on
+                confirmed_is_on = current_before_command.is_on
                 confirmed_mode = mode if mode_result is None else mode_result
-            self._last_fan_mode = confirmed_mode
-            current = self.data or PurifierState()
-            self._publish_data(
-                replace(
-                    current,
-                    is_on=confirmed_is_on,
-                    fan_mode=confirmed_mode,
+            async with self._state_lock:
+                self._last_fan_mode = confirmed_mode
+                current = self.data or PurifierState()
+                self._last_published_command_revision = command_revision
+                self._publish_data(
+                    replace(
+                        current,
+                        is_on=confirmed_is_on,
+                        fan_mode=confirmed_mode,
+                    )
                 )
-            )
         self._schedule_background_refresh()
 
     async def async_set_night_light(
@@ -240,15 +257,13 @@ class GoveeCoordinator(DataUpdateCoordinator):
             raise ValueError("Night-light settings cannot accompany power off")
 
         self._cancel_background_refresh()
-        if self.data is None:
-            await self.async_request_refresh()
+        self._command_revision += 1
+        command_revision = self._command_revision
 
         confirmed_any = False
         try:
-            async with self._state_lock:
-                current = self.data or PurifierState(
-                    night_light=NightLightState()
-                )
+            async with self._command_lock:
+                current = self.data or PurifierState(night_light=NightLightState())
                 night_light = current.night_light or NightLightState()
                 has_settings = brightness_percent is not None or rgb_color is not None
                 should_set_power = not is_on or not has_settings or night_light.is_on is not True
@@ -256,8 +271,12 @@ class GoveeCoordinator(DataUpdateCoordinator):
                 if should_set_power:
                     update = await self.client.async_set_night_light_power(is_on)
                     night_light = _merge_night_light_state(night_light, update)
-                    current = replace(current, night_light=night_light)
-                    self._publish_data(current)
+                    async with self._state_lock:
+                        current = replace(
+                            self.data or current, night_light=night_light
+                        )
+                        self._last_published_command_revision = command_revision
+                        self._publish_data(current)
                     confirmed_any = True
 
                 if is_on and brightness_percent is not None:
@@ -265,15 +284,23 @@ class GoveeCoordinator(DataUpdateCoordinator):
                         brightness_percent
                     )
                     night_light = _merge_night_light_state(night_light, update)
-                    current = replace(current, night_light=night_light)
-                    self._publish_data(current)
+                    async with self._state_lock:
+                        current = replace(
+                            self.data or current, night_light=night_light
+                        )
+                        self._last_published_command_revision = command_revision
+                        self._publish_data(current)
                     confirmed_any = True
 
                 if is_on and rgb_color is not None:
                     update = await self.client.async_set_night_light_rgb(rgb_color)
                     night_light = _merge_night_light_state(night_light, update)
-                    current = replace(current, night_light=night_light)
-                    self._publish_data(current)
+                    async with self._state_lock:
+                        current = replace(
+                            self.data or current, night_light=night_light
+                        )
+                        self._last_published_command_revision = command_revision
+                        self._publish_data(current)
                     confirmed_any = True
         finally:
             if confirmed_any:

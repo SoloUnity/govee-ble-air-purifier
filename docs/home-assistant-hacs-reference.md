@@ -424,7 +424,9 @@ must not be exposed.
   disconnects and failed transactions clear the connection, and entry unload
   always closes it. Queued state-changing commands take priority over routine
   polling, with FIFO ordering inside each class and one poll after at most three
-  consecutive priority commands.
+  consecutive priority commands. Admission precedes advertisement recovery and
+  connection setup, and coordinator state publication does not hold a waiting
+  poll ahead of a later control.
 - GATT notifications provide query responses and command confirmation.
 - Connection establishment, encrypted negotiation, and application responses
   use separate bounded deadlines, so a slow BlueZ connection does not consume

@@ -182,7 +182,9 @@ refreshes retain their existing connection and, for H7129, encrypted session.
 The lease maintains separate FIFO queues for state-changing commands and
 routine polls. Commands bypass waiting polls for responsive controls, but a
 queued poll runs after at most three consecutive priority commands. Active BLE
-transactions are never interrupted.
+transactions are never interrupted. Lease admission occurs before fresh-
+advertisement recovery and connection setup, so queued polls cannot perform
+slow preparation ahead of a later control.
 
 Every successful operation resets an idle timer derived from the configured
 polling interval. Intervals from 5 through 25 seconds use the interval plus a
@@ -264,8 +266,11 @@ disconnect cleanup errors are suppressed.
 ## Coordinator Publication
 
 `GoveeCoordinator` is the shared `DataUpdateCoordinator` and the command-side
-publication boundary. Its `_state_lock` prevents polls and commands from
-publishing concurrently.
+publication boundary. BLE I/O happens outside `_state_lock`, allowing a control
+to reach the priority lease while a routine poll is waiting. `_command_lock`
+preserves FIFO command semantics, while `_state_lock` serializes only state
+publication. Command revisions prevent a poll that began earlier from
+overwriting newer command-confirmed power or light state.
 
 A successful poll merges the client's `PurifierState` into coordinator data:
 
@@ -365,19 +370,21 @@ logical Auto while the controller sends manual speed commands.
 
 ## Concurrency
 
-When all four locks are involved, acquisition proceeds in this order:
+Command policy and BLE execution use this lock order:
 
 ```text
 AutoResumeManager._lock
   -> CustomAutoController._lock
-     -> GoveeCoordinator._state_lock
-        -> GoveeBleClient._lock
+     -> GoveeCoordinator._command_lock
+        -> GoveeConnectionArbiter lease
+           -> GoveeBleClient._lock
 ```
 
 Coordinator callbacks only schedule controller or Auto-resume evaluation; they
-do not await either runtime lock. This avoids lock inversion. The locks
-separately protect remembered intent, policy ownership, shared-state
-publication, and BLE request/notification state.
+do not await either runtime lock. `_state_lock` is acquired only after BLE work
+releases the client lock and shared lease. This avoids lock inversion. The
+locks separately protect remembered intent, policy ownership, command order,
+shared-state publication, and BLE request/notification state.
 
 ## Runtime Setup And Cleanup
 

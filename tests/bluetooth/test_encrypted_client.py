@@ -411,6 +411,55 @@ async def test_h7129_reconnects_cleanly_after_another_purifier_uses_shared_slot(
 
 
 @pytest.mark.asyncio
+async def test_h7129_control_bypasses_queued_encrypted_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Priority admission preserves H7129 encryption and application ordering."""
+
+    arbiter = GoveeConnectionArbiter()
+    fake = EncryptedFakeBleakClient(SESSION_KEY_1)
+    _callbacks, _disconnects = _install_connections(monkeypatch, [fake])
+    blocker = GoveeBleClient(None, "AA:BB:CC:DD:EE:24")
+    h7129 = GoveeBleClient(
+        None,
+        "AA:BB:CC:DD:EE:29",
+        profile=H7129_PROFILE,
+        connection_arbiter=arbiter,
+    )
+    blocker_started = asyncio.Event()
+    release_blocker = asyncio.Event()
+
+    async def hold_lease() -> None:
+        blocker_started.set()
+        await release_blocker.wait()
+
+    blocker_task = asyncio.create_task(arbiter.async_run(blocker, hold_lease))
+    await blocker_started.wait()
+    poll_task = asyncio.create_task(h7129.async_get_state())
+    await asyncio.sleep(0)
+    command_task = asyncio.create_task(h7129.async_set_power(True))
+    await asyncio.sleep(0)
+    release_blocker.set()
+
+    await asyncio.wait_for(blocker_task, timeout=1)
+    assert await asyncio.wait_for(command_task, timeout=1) is True
+    assert (await asyncio.wait_for(poll_task, timeout=1)).is_on is True
+    assert fake.application_frames == [
+        H7129_PROFILE.power_on_command,
+        H7129_PROFILE.state_query_command,
+        H7129_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
+    ]
+    assert [frame[:2] for frame in fake.handshake_frames] == [
+        b"\xe7\x01",
+        b"\xe7\x02",
+    ]
+
+    await h7129.async_close()
+
+
+@pytest.mark.asyncio
 async def test_h7129_handshake_does_not_consume_application_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

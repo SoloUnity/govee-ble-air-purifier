@@ -501,29 +501,27 @@ class GoveeBleClient:
 
         self._cancel_idle_disconnect()
         await self._async_wait_for_idle_disconnect()
-        await self._async_prepare_connection()
         await self._async_acquire_connection_lease()
-        deadline = loop.time() + DEFAULT_TIMEOUT
         try:
-            await _async_wait_until(self._lock.acquire(), deadline)
-        except (TimeoutError, asyncio.TimeoutError) as err:
-            self._release_connection_lease()
-            raise GoveeBleClientError(
-                "Timed out waiting for BLE transaction lock"
-            ) from err
-        except BaseException:
-            self._release_connection_lease()
-            raise
-        try:
-            if self._connection_arbiter is None:
-                await self._async_with_connection(operation)
-            else:
-                await self._async_with_connection_unarbitrated(
-                    operation,
-                    deadline=loop.time() + transport.CONNECTION_TIMEOUT,
-                )
+            await self._async_prepare_connection()
+            deadline = loop.time() + DEFAULT_TIMEOUT
+            try:
+                await _async_wait_until(self._lock.acquire(), deadline)
+            except (TimeoutError, asyncio.TimeoutError) as err:
+                raise GoveeBleClientError(
+                    "Timed out waiting for BLE transaction lock"
+                ) from err
+            try:
+                if self._connection_arbiter is None:
+                    await self._async_with_connection(operation)
+                else:
+                    await self._async_with_connection_unarbitrated(
+                        operation,
+                        deadline=loop.time() + transport.CONNECTION_TIMEOUT,
+                    )
+            finally:
+                self._lock.release()
         finally:
-            self._lock.release()
             self._release_connection_lease()
 
     async def _async_write_and_wait(
@@ -563,23 +561,19 @@ class GoveeBleClient:
         )
         self._cancel_idle_disconnect()
         await self._async_wait_for_idle_disconnect()
-        await self._async_prepare_connection()
         await self._async_acquire_connection_lease(lease_priority)
-        started = loop.time()
-        deadline = started + timeout
-        self._log_stage("BLE transaction", stage, started, deadline)
         try:
-            await _async_wait_until(self._lock.acquire(), deadline)
-        except (TimeoutError, asyncio.TimeoutError) as err:
-            self._release_connection_lease()
-            self._log_timeout("BLE transaction", stage, started)
-            raise GoveeBleClientError(
-                "Timed out waiting for BLE transaction lock"
-            ) from err
-        except BaseException:
-            self._release_connection_lease()
-            raise
-        try:
+            await self._async_prepare_connection()
+            started = loop.time()
+            deadline = started + timeout
+            self._log_stage("BLE transaction", stage, started, deadline)
+            try:
+                await _async_wait_until(self._lock.acquire(), deadline)
+            except (TimeoutError, asyncio.TimeoutError) as err:
+                self._log_timeout("BLE transaction", stage, started)
+                raise GoveeBleClientError(
+                    "Timed out waiting for BLE transaction lock"
+                ) from err
             frames: list[bytes | None] = [None] * total_request_count
             future: asyncio.Future[bytes] | None = None
             optional_futures: list[asyncio.Future[bytes]] = []
@@ -888,24 +882,26 @@ class GoveeBleClient:
                                 exc_info=True,
                             )
 
-            if self._connection_arbiter is None:
-                result = await self._async_with_connection(operation)
-            else:
-                result = await self._async_with_connection_unarbitrated(
-                    operation,
-                    deadline=loop.time() + transport.CONNECTION_TIMEOUT,
+            try:
+                if self._connection_arbiter is None:
+                    result = await self._async_with_connection(operation)
+                else:
+                    result = await self._async_with_connection_unarbitrated(
+                        operation,
+                        deadline=loop.time() + transport.CONNECTION_TIMEOUT,
+                    )
+                if discard_connection:
+                    self._cancel_idle_disconnect()
+                    await self._async_drop_connection(loop.time() + DISCONNECT_TIMEOUT)
+                _LOGGER.debug(
+                    "%s BLE transaction completed in %.2f seconds",
+                    self._log_label,
+                    loop.time() - started,
                 )
-            if discard_connection:
-                self._cancel_idle_disconnect()
-                await self._async_drop_connection(loop.time() + DISCONNECT_TIMEOUT)
-            _LOGGER.debug(
-                "%s BLE transaction completed in %.2f seconds",
-                self._log_label,
-                loop.time() - started,
-            )
-            return result
+                return result
+            finally:
+                self._lock.release()
         finally:
-            self._lock.release()
             self._release_connection_lease()
 
     async def _async_with_connection(
