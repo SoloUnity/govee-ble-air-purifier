@@ -1489,6 +1489,132 @@ async def test_connection_arbiter_shares_one_slot_across_four_purifiers(
 
 
 @pytest.mark.asyncio
+async def test_connection_arbiter_queue_does_not_consume_connection_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queued fourth purifier still gets a full connection attempt budget."""
+
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    arbiter = GoveeConnectionArbiter()
+    first = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:01", connection_arbiter=arbiter
+    )
+    second = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:02", connection_arbiter=arbiter
+    )
+    established: list[FakeBleakClient] = []
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        connected = FakeBleakClient()
+        established.append(connected)
+        return connected
+
+    async def async_disconnect(passed_client: FakeBleakClient, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    monkeypatch.setattr(transport, "CONNECTION_TIMEOUT", 0.01)
+
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def hold_lease(_client: Any) -> None:
+        first_started.set()
+        await release_first.wait()
+
+    async def no_op(_client: Any) -> None:
+        return None
+
+    first_task = asyncio.create_task(first._async_with_connection(hold_lease))
+    await first_started.wait()
+    second_task = asyncio.create_task(second._async_with_connection(no_op))
+
+    await asyncio.sleep(0.02)
+    assert not second_task.done()
+    release_first.set()
+    await asyncio.wait_for(first_task, timeout=1)
+    assert await asyncio.wait_for(second_task, timeout=1) is None
+    assert len(established) == 2
+
+    await asyncio.gather(first.async_close(), second.async_close())
+
+
+@pytest.mark.asyncio
+async def test_connection_arbiter_never_waits_for_lease_while_holding_client_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A previous lease owner can start another poll while it is being evicted."""
+
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    arbiter = GoveeConnectionArbiter()
+    first = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:01", connection_arbiter=arbiter
+    )
+    second = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:02", connection_arbiter=arbiter
+    )
+    clients_by_address: dict[str, list[FakeBleakClient]] = {}
+
+    async def async_establish_connection(
+        _hass: Any,
+        address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        connected = FakeBleakClient()
+        clients_by_address.setdefault(address, []).append(connected)
+        return connected
+
+    async def async_disconnect(passed_client: FakeBleakClient, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    monkeypatch.setattr(client_module, "DISCONNECT_TIMEOUT", 0.01)
+
+    assert (await first.async_get_state()).is_on is True
+    release_started = asyncio.Event()
+    allow_release = asyncio.Event()
+    original_release = first._async_release_for_connection_switch
+
+    async def pause_release(deadline: float) -> None:
+        release_started.set()
+        await allow_release.wait()
+        await original_release(deadline)
+
+    monkeypatch.setattr(first, "_async_release_for_connection_switch", pause_release)
+
+    async def no_op(_client: Any) -> None:
+        return None
+
+    second_task = asyncio.create_task(second._async_with_connection(no_op))
+    await release_started.wait()
+    first_task = asyncio.create_task(first.async_get_state())
+    await asyncio.sleep(0)
+    allow_release.set()
+
+    assert await asyncio.wait_for(second_task, timeout=1) is None
+    assert (await asyncio.wait_for(first_task, timeout=1)).is_on is True
+    assert len(clients_by_address["AA:BB:CC:DD:EE:01"]) == 2
+
+    await asyncio.gather(first.async_close(), second.async_close())
+
+
+@pytest.mark.asyncio
 async def test_connection_delegate_creates_default_deadline_when_omitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
