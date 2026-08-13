@@ -41,6 +41,9 @@ HANDSHAKE_TIMEOUT = 10.0
 CONNECTION_IDLE_GRACE = 5.0
 MAX_CONNECTION_IDLE_TIMEOUT = 30.0
 DISCONNECT_TIMEOUT = 5.0
+CONNECTION_LEASE_TIMEOUT = (
+    transport.CONNECTION_TIMEOUT + HANDSHAKE_TIMEOUT + POLL_TIMEOUT + DISCONNECT_TIMEOUT
+)
 ADVERTISEMENT_RETRY_DELAYS = (60.0, 120.0, 300.0)
 _LOGGER = logging.getLogger(__name__)
 _ABANDONED_OPERATION_FUTURES: set[asyncio.Future[Any]] = set()
@@ -106,18 +109,24 @@ class GoveeConnectionArbiter:
     ) -> None:
         """Acquire the shared lease before a client transaction lock."""
 
-        if deadline is None:
-            # A startup or poll burst may legitimately queue several purifiers.
-            # Each holder gets its own bounded BLE deadlines after it reaches the
-            # front of this fair queue.
-            await self._lock.acquire()
-        else:
-            try:
-                await _async_wait_until(self._lock.acquire(), deadline)
-            except (TimeoutError, asyncio.TimeoutError) as err:
-                raise GoveeBleClientError(
-                    "Timed out waiting for another purifier's Bluetooth connection"
-                ) from err
+        started = asyncio.get_running_loop().time()
+        queue_deadline = deadline or (started + CONNECTION_LEASE_TIMEOUT)
+        _LOGGER.debug("%s waiting for shared BLE connection lease", client._log_label)
+        # Each holder gets a separate GATT deadline only after it reaches the
+        # front of this queue.  The queue itself must still be bounded so an
+        # unavailable peer cannot leave Home Assistant setup initializing.
+        try:
+            await _async_wait_until(self._lock.acquire(), queue_deadline)
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            _LOGGER.debug(
+                "%s timed out waiting for shared BLE connection lease after %.2f "
+                "seconds",
+                client._log_label,
+                asyncio.get_running_loop().time() - started,
+            )
+            raise GoveeBleClientError(
+                "Timed out waiting for another purifier's Bluetooth connection"
+            ) from err
         try:
             owner = self._owner
             if owner is not None and owner is not client:
@@ -125,6 +134,11 @@ class GoveeConnectionArbiter:
                     asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT
                 )
             self._owner = client
+            _LOGGER.debug(
+                "%s acquired shared BLE connection lease after %.2f seconds",
+                client._log_label,
+                asyncio.get_running_loop().time() - started,
+            )
         except BaseException:
             self._lock.release()
             raise
@@ -835,6 +849,7 @@ class GoveeBleClient:
         """Release a lease acquired before a client transaction lock."""
 
         if self._connection_arbiter is not None:
+            _LOGGER.debug("%s releasing shared BLE connection lease", self._log_label)
             self._connection_arbiter.release()
 
     async def _async_with_connection_unarbitrated(

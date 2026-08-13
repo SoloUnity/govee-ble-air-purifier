@@ -1550,6 +1550,38 @@ async def test_connection_arbiter_queue_does_not_consume_connection_timeout(
 
 
 @pytest.mark.asyncio
+async def test_connection_arbiter_bounds_a_stalled_lease_holder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled peer cannot leave another config entry initializing forever."""
+
+    arbiter = GoveeConnectionArbiter()
+    first = GoveeBleClient(None, "AA:BB:CC:DD:EE:01")
+    second = GoveeBleClient(None, "AA:BB:CC:DD:EE:02")
+    started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def hold_lease() -> None:
+        started.set()
+        await release_first.wait()
+
+    async def no_op() -> None:
+        return None
+
+    monkeypatch.setattr(client_module, "CONNECTION_LEASE_TIMEOUT", 0.01)
+    first_task = asyncio.create_task(arbiter.async_run(first, hold_lease))
+    await started.wait()
+    with pytest.raises(
+        GoveeBleClientError,
+        match="Timed out waiting for another purifier's Bluetooth connection",
+    ):
+        await arbiter.async_run(second, no_op)
+
+    release_first.set()
+    await first_task
+
+
+@pytest.mark.asyncio
 async def test_connection_arbiter_never_waits_for_lease_while_holding_client_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
