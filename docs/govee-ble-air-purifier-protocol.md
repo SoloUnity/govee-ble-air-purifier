@@ -31,6 +31,13 @@ brightness, RGB control, and state queries. A further H7129 capture from
 night-light queries, power, brightness, and RGB control; every post-handshake
 frame decrypted to a checksum-valid plaintext frame.
 
+An H7124 iPhone PacketLogger capture from 2026-08-13 (SHA-256
+`1f71ead53c29bd2d24493619e44502e2197faa91f12bf8c31b5c90aeda66c242`)
+recorded unsolicited notifications while the physical mode and night-light
+controls were operated. It confirms push layouts for every supported fan mode
+and for night-light power changes without a preceding application control
+write.
+
 ## Device And GATT
 
 | Item | UUID |
@@ -212,8 +219,10 @@ Validation:
   purifier through `Low -> Medium -> High -> Sleep -> Auto -> Turbo -> Low`.
 - Every H7129 command decrypted with a valid checksum, and its command echoes
   decrypted to the expected plaintext.
-- Low, Medium, and High did not produce `ee 05` push notifications in either
-  capture.
+- The earlier app-command captures did not show `ee 05` pushes for Low,
+  Medium, or High. A later H7124 capture made while operating the purifier's
+  physical controls did produce unambiguous manual-mode pushes for all three
+  speeds; see [EE 05: Mode Change Push](#ee-05-mode-change-push).
 
 H7129 also offers Quiet and High Efficiency Auto behaviors in addition to
 Default. Their command parameters have not yet been captured. The known
@@ -532,12 +541,17 @@ Use `aa 19` for normal status polling. Use `33 18` only when specifically testin
 
 ### EE 05: Mode Change Push
 
-After any required H7129 decryption, `ee 05` appears for Sleep, Auto, and Turbo
-mode changes on both models.
+After any required H7129 decryption, `ee 05` reports fan-mode changes. Sleep,
+Auto, and Turbo pushes have been observed on both models. A 2026-08-13 H7124
+capture additionally confirms that physical Low, Medium, and High selections
+produce the manual-mode form `ee 05 01 <level>`.
 
 Examples:
 
 ```text
+ee 05 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 eb   Manual Low, H7124
+ee 05 01 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 e8   Manual Medium, H7124
+ee 05 01 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 e9   Manual High, H7124
 ee 05 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ee   Sleep, both
 ee 05 03 00 00 14 00 00 00 00 00 00 00 00 00 00 00 00 00 fc   H7124 Auto Default
 ee 05 03 00 00 12 00 00 00 00 00 00 00 00 00 00 00 00 00 fa   H7129 Auto Default
@@ -550,14 +564,68 @@ Byte map:
 |------|-------|--------|
 | 0 | Prefix high | `0xee` |
 | 1 | Prefix low | `0x05` |
-| 2 | Mode ID | `0x03` Auto, `0x05` Sleep, `0x07` Turbo |
-| 3-4 | Unknown | `0x00` in captures |
+| 2 | Mode group / special mode ID | `0x01` manual fan level, `0x03` Auto, `0x05` Sleep, `0x07` Turbo |
+| 3 | Manual fan level | `0x01` Low, `0x02` Medium, `0x03` High; `0x00` for known non-manual modes |
+| 4 | Unknown | `0x00` in captures |
 | 5 | Mode parameter | `0x14` for H7124 Auto Default, `0x12` for H7129 Auto Default, otherwise `0x00` in known captures |
 | 6-18 | Unknown/padding | `0x00` in captures |
 | 19 | XOR checksum | XOR of bytes 0-18 |
 
-Low, Medium, and High do not generate `ee 05` pushes in current captures. The
-H7129 Quiet and High Efficiency Auto parameters remain uncaptured.
+Captured H7124 physical-control sequence:
+
+| Time UTC | Notification | Decoded change |
+| --- | --- | --- |
+| `2026-08-13T17:33:04.051` | `ee 05 01 02 ... e8` | Manual Medium |
+| `2026-08-13T17:33:08.131` | `ee 05 01 03 ... e9` | Manual High |
+| `2026-08-13T17:33:11.521` | `ee 05 01 01 ... eb` | Manual Low |
+| `2026-08-13T17:33:14.821` | `ee 05 01 02 ... e8` | Manual Medium |
+| `2026-08-13T17:33:17.491` | `ee 05 01 03 ... e9` | Manual High |
+| `2026-08-13T17:33:22.891` | `ee 05 07 00 ... ec` | Turbo |
+| `2026-08-13T17:33:25.861` | `ee 05 03 00 00 14 ... fc` | Auto Default |
+| `2026-08-13T17:33:29.221` | `ee 05 05 00 ... ee` | Sleep |
+
+These were ATT notifications from value handle `0x0012`. No matching fan-mode
+write preceded them; the iPhone app was only issuing an `aa 01` state query
+approximately every three seconds. Each mode notification was followed about
+270-330 ms later by an unsolicited `aa 01` state notification. Those `aa 01`
+frames confirmed that the purifier remained powered on, but their payload did
+not distinguish the selected mode. The `ee 05` notification is therefore the
+authoritative mode-change evidence in this sequence.
+
+The manual-mode push form is currently confirmed only on H7124. Earlier H7129
+captures confirm Sleep, Auto Default, and Turbo pushes, but do not prove whether
+physical Low, Medium, and High selections emit the same manual form. The H7129
+Quiet and High Efficiency Auto parameters remain uncaptured.
+
+### EE 1B: Night-Light Power Push
+
+The same 2026-08-13 H7124 physical-control capture produced unsolicited
+night-light power notifications:
+
+```text
+ee 1b 01 01 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 91   On, 100%
+ee 1b 01 00 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 90   Off, retained 100%
+```
+
+Byte map:
+
+| Byte | Field | Values / decoding |
+| --- | --- | --- |
+| 0 | Prefix high | `0xee` |
+| 1 | Prefix low | `0x1b` |
+| 2 | Night-light property | `0x01` power/brightness |
+| 3 | Power | `0x01` on, `0x00` off |
+| 4 | Brightness percent | `0x64` = 100% in this capture |
+| 5-18 | Unknown/padding | `0x00` in this capture |
+| 19 | XOR checksum | XOR of bytes 0-18 |
+
+The on push arrived at `2026-08-13T17:33:34.624`; the off push arrived at
+`2026-08-13T17:33:36.482`. Neither followed a night-light command or query.
+Each was followed roughly 330-360 ms later by an unsolicited `aa 01` state
+notification. This proves that an H7124 can report physical night-light power
+changes without replaying the `aa 1b` queries that made routine H7124 polling
+unreliable. No physical brightness adjustment or RGB-change push was captured,
+and this `ee 1b` push layout has not yet been confirmed on H7129.
 
 ### EE 19: Status Push
 
@@ -743,7 +811,7 @@ These may change state. Do not use broad sweeps against a normal room purifier u
 | --- | --- | --- |
 | `H7124` | iPhone sysdiagnose PacketLogger file | Captured official app `3a 05` writes for all six app modes |
 | `H7124` | Manual BLE replay | `3a 05` sequence cycled `Low -> Medium -> High -> Sleep -> Auto -> Turbo -> Low` successfully |
-| `H7124` | App mode pushes | Sleep, Auto Default, and Turbo captured as `ee 05` pushes |
+| `H7124` | Physical-control PacketLogger session | Low, Medium, High, Sleep, Auto Default, and Turbo captured as unsolicited `ee 05` pushes; each was followed by an `aa 01` powered-state notification |
 | `H7124` | Earlier `33 05` probes | Showed an alternate/non-app path with partial physical effects |
 | `H7129` | Decrypted official-app PacketLogger session | Captured Low, Medium, High, Sleep, Auto Default, and Turbo commands with valid checksums and matching command echoes |
 | `H7129` | Decrypted app mode pushes | Sleep, Auto Default, and Turbo captured as `ee 05` pushes |
@@ -768,6 +836,7 @@ H7129 values are consistent with the same response layout.
 | --- | --- | --- |
 | `H7124` | Official-app PacketLogger session | Captured power on/off, brightness 50% and 1%, green and blue RGB writes, matching notifications, and power/brightness and RGB state queries |
 | `H7124` | Queried state before and after controls | Reported initial on/100%/red state and final off/1%/blue state |
+| `H7124` | Physical-control PacketLogger session | Captured unsolicited `ee 1b 01` power pushes for physical night-light on and off, retaining 100% brightness |
 | `H7129` | Decrypted official-app PacketLogger session | Captured power/brightness and color queries, power on/off, brightness 100%, 50%, and 1% writes, and red, yellow, green, and blue RGB writes, all checksum-valid after decryption |
 | `H7129` | Notification behavior | Power/brightness notifications used the normalized state layout with retained brightness; every color notification was an exact echo and no color was independently re-queried |
 
