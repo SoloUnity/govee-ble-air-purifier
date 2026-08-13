@@ -876,11 +876,19 @@ class GoveeBleClient:
                 "BLE connection", "establishing transport", started, deadline
             )
             self._clear_connection_state()
-            client = await transport.async_establish_connection(
-                self._hass,
-                self._address,
-                self._handle_disconnect,
-                deadline=deadline,
+            # ``asyncio.wait_for`` inside a transport helper can wait forever for
+            # cancellation acknowledgement from a stuck proxy connection attempt.
+            # Keep that attempt owned and cancel it without waiting so it cannot
+            # monopolize the integration-wide connection lease.
+            client = await self._async_wait_for_connection(
+                transport.async_establish_connection(
+                    self._hass,
+                    self._address,
+                    self._handle_disconnect,
+                    deadline=deadline,
+                ),
+                None,
+                deadline,
             )
             self._client = client
             self._disconnect_signal = asyncio.Event()

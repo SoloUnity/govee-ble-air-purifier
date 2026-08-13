@@ -13,6 +13,7 @@ from . import GoveeBleClientError
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
 _ACTIVE_SCAN_TASKS: set[asyncio.Task[None]] = set()
+_ABANDONED_CONNECTION_ATTEMPTS: set[asyncio.Task[Any]] = set()
 FRESH_ADVERTISEMENT_TIMEOUT = 10
 FRESH_ADVERTISEMENT_POLL_INTERVAL = 0.1
 CONNECTION_TIMEOUT = 25.0
@@ -40,6 +41,39 @@ async def _async_wait_until(awaitable: Awaitable[_T], deadline: float) -> _T:
 
     remaining = max(0.0, deadline - asyncio.get_running_loop().time())
     return await asyncio.wait_for(awaitable, remaining)
+
+
+def _observe_abandoned_connection_attempt(task: asyncio.Task[Any]) -> None:
+    """Observe a late connection result without leaking a proxy slot."""
+
+    _ABANDONED_CONNECTION_ATTEMPTS.discard(task)
+    if task.cancelled():
+        return
+    try:
+        client = task.result()
+    except Exception:
+        _LOGGER.debug("Late BLE connection attempt ended after cancellation", exc_info=True)
+        return
+
+    async def disconnect_late_client() -> None:
+        await async_disconnect(
+            client,
+            deadline=asyncio.get_running_loop().time() + CONNECTION_TIMEOUT,
+        )
+
+    cleanup = asyncio.create_task(disconnect_late_client())
+    _ACTIVE_SCAN_TASKS.add(cleanup)
+    cleanup.add_done_callback(_ACTIVE_SCAN_TASKS.discard)
+
+
+def _abandon_connection_attempt(task: asyncio.Task[Any]) -> None:
+    """Cancel a non-cooperative connection attempt without awaiting it."""
+
+    if task.done():
+        return
+    _ABANDONED_CONNECTION_ATTEMPTS.add(task)
+    task.add_done_callback(_observe_abandoned_connection_attempt)
+    task.cancel()
 
 
 def clear_advertisement_history(hass: Any, address: str) -> None:
@@ -238,16 +272,21 @@ async def async_establish_connection(
         await _async_wait_until(close_stale_connections(ble_device), deadline)
         stage = "establishing a new connection"
         _LOGGER.debug("BLE connection stage: %s (device %s)", stage, log_id)
-        client = await _async_wait_until(
+        attempt = asyncio.create_task(
             establish_connection(
                 client_class=BleakClientWithServiceCache,
                 device=ble_device,
                 name=ble_device.name or address,
                 disconnected_callback=disconnected_callback,
                 max_attempts=MAX_CONNECTION_ATTEMPTS,
-            ),
-            deadline,
+            )
         )
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        done, _pending = await asyncio.wait((attempt,), timeout=remaining)
+        if attempt not in done:
+            _abandon_connection_attempt(attempt)
+            raise TimeoutError
+        client = await attempt
         _LOGGER.debug(
             "BLE connection established in %.2f seconds (device %s)",
             asyncio.get_running_loop().time() - started,
@@ -265,6 +304,10 @@ async def async_establish_connection(
         raise GoveeBleClientError(
             "Timed out establishing Bluetooth connection"
         ) from err
+    except asyncio.CancelledError:
+        if "attempt" in locals():
+            _abandon_connection_attempt(attempt)
+        raise
 
 
 async def async_disconnect(client: Any, *, deadline: float) -> None:

@@ -109,7 +109,7 @@ async def test_connection_stages_run_in_order_with_one_deadline(
     )
 
     assert events == ["lookup", "close_stale", "establish"]
-    assert deadlines == [deadline, deadline]
+    assert deadlines == [deadline]
     assert len(disconnected_callbacks) == 1
     assert establish_calls[0]["max_attempts"] == transport.MAX_CONNECTION_ATTEMPTS
 
@@ -164,6 +164,54 @@ async def test_stage_timeout_is_translated_without_extending_deadline(
     assert deadlines == [42.0]
     assert events == ["lookup"]
     assert "BLE connection timed out while closing stale connections" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_noncooperative_connection_attempt_does_not_extend_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proxy connection attempt that ignores cancellation cannot block callers."""
+
+    events: list[str] = []
+    _install_connection_modules(monkeypatch, events)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def establish_connection(**_kwargs: Any) -> FakeClient:
+        events.append("establish")
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        return FakeClient(events)
+
+    install_modules(
+        monkeypatch,
+        {
+            "bleak_retry_connector": {
+                "BleakClientWithServiceCache": object,
+                "close_stale_connections": lambda _device: asyncio.sleep(0),
+                "establish_connection": establish_connection,
+            },
+            "homeassistant.components.bluetooth": {
+                "async_ble_device_from_address": lambda *_args, **_kwargs: SimpleNamespace(
+                    name="Purifier"
+                ),
+            },
+        },
+    )
+
+    deadline = asyncio.get_running_loop().time() + 0.01
+    with pytest.raises(GoveeBleClientError, match="Timed out establishing"):
+        await transport.async_establish_connection(
+            object(), "AA:BB:CC:DD:EE:FF", lambda _client: None, deadline=deadline
+        )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    release.set()
+    await asyncio.sleep(0.01)
+    assert events == ["establish", "disconnect"]
 
 
 @pytest.mark.asyncio
