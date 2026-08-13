@@ -79,6 +79,22 @@ def _abandon_connection_attempt(task: asyncio.Task[Any]) -> None:
     task.cancel()
 
 
+def _connection_reachability_diagnostics(
+    bluetooth: Any, hass: Any, address: str
+) -> str | None:
+    """Return Home Assistant's human-readable connection diagnosis, if available."""
+
+    diagnostics = getattr(bluetooth, "async_address_reachability_diagnostics", None)
+    intent = getattr(bluetooth, "BluetoothReachabilityIntent", None)
+    if diagnostics is None or intent is None:
+        return None
+    try:
+        return diagnostics(hass, address, intent.CONNECTION)
+    except Exception:
+        _LOGGER.debug("Unable to collect Bluetooth reachability diagnostics", exc_info=True)
+        return None
+
+
 def clear_advertisement_history(hass: Any, address: str) -> None:
     """Allow the first unchanged advertisement after a GATT session to dispatch."""
 
@@ -304,9 +320,12 @@ async def async_establish_connection(
             log_id,
             exc_info=True,
         )
-        raise GoveeBleClientError(
-            "Timed out establishing Bluetooth connection"
-        ) from err
+        message = "Timed out establishing Bluetooth connection"
+        if diagnostics := _connection_reachability_diagnostics(
+            bluetooth, hass, address
+        ):
+            message = f"{message}: {diagnostics}"
+        raise GoveeBleClientError(message) from err
     except asyncio.CancelledError:
         if "attempt" in locals():
             _abandon_connection_attempt(attempt)

@@ -167,6 +167,56 @@ async def test_stage_timeout_is_translated_without_extending_deadline(
 
 
 @pytest.mark.asyncio
+async def test_connection_timeout_includes_reachability_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Connection errors explain the scanner path Home Assistant selected."""
+
+    events: list[str] = []
+    _install_connection_modules(monkeypatch, events)
+
+    async def timeout_wait_until(awaitable: Any, _deadline: float) -> Any:
+        awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(transport, "_async_wait_until", timeout_wait_until)
+    connection_intent = object()
+    install_modules(
+        monkeypatch,
+        {
+            "homeassistant.components.bluetooth": {
+                "async_ble_device_from_address": lambda *_args, **_kwargs: SimpleNamespace(
+                    name="Purifier"
+                ),
+                "BluetoothReachabilityIntent": SimpleNamespace(
+                    CONNECTION=connection_intent
+                ),
+                "async_address_reachability_diagnostics": (
+                    lambda hass, address, intent: (
+                        "adapter hci0, RSSI -72 dBm, 1/5 connection slots"
+                        if hass is not None
+                        and address == "AA:BB:CC:DD:EE:FF"
+                        and intent is connection_intent
+                        else "unexpected diagnostics arguments"
+                    )
+                ),
+            }
+        },
+    )
+
+    with pytest.raises(
+        GoveeBleClientError,
+        match="adapter hci0, RSSI -72 dBm, 1/5 connection slots",
+    ):
+        await transport.async_establish_connection(
+            object(),
+            "AA:BB:CC:DD:EE:FF",
+            lambda _client: None,
+            deadline=42.0,
+        )
+
+
+@pytest.mark.asyncio
 async def test_noncooperative_connection_attempt_does_not_extend_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
