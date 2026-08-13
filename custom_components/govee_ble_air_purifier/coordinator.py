@@ -131,6 +131,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
             except Exception as err:  # pragma: no cover - depends on HA runtime
                 self.last_poll_success = False
                 self.last_pm25_update_success = False
+                LOGGER.warning("Govee BLE Air Purifier update failed: %s", err)
                 raise UpdateFailed(str(err)) from err
             self.last_poll_success = True
             self.poll_revision += 1
