@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from enum import Enum
 import logging
 import time
 from typing import Any
@@ -44,6 +47,7 @@ DISCONNECT_TIMEOUT = 5.0
 CONNECTION_LEASE_TIMEOUT = (
     transport.CONNECTION_TIMEOUT + HANDSHAKE_TIMEOUT + POLL_TIMEOUT + DISCONNECT_TIMEOUT
 )
+MAX_PRIORITY_COMMAND_BURST = 3
 ADVERTISEMENT_RETRY_DELAYS = (60.0, 120.0, 300.0)
 _LOGGER = logging.getLogger(__name__)
 _ABANDONED_OPERATION_FUTURES: set[asyncio.Future[Any]] = set()
@@ -83,70 +87,161 @@ def connection_idle_timeout_for_polling_interval(
     return CONNECTION_IDLE_GRACE
 
 
+class _ConnectionLeasePriority(Enum):
+    """Scheduling priority for integration-wide Bluetooth work."""
+
+    COMMAND = "command"
+    POLL = "poll"
+
+
+@dataclass(slots=True)
+class _ConnectionLeaseWaiter:
+    """One task waiting for the integration-wide Bluetooth lease."""
+
+    client: GoveeBleClient
+    priority: _ConnectionLeasePriority
+    future: asyncio.Future[None]
+    granted: bool = False
+
+
 class GoveeConnectionArbiter:
-    """Share one retained GATT connection fairly across purifier entries."""
+    """Share one retained GATT connection across purifier entries."""
 
     def __init__(self) -> None:
-        self._lock = asyncio.Lock()
+        self._lease_held = False
         self._owner: GoveeBleClient | None = None
+        self._command_waiters: deque[_ConnectionLeaseWaiter] = deque()
+        self._poll_waiters: deque[_ConnectionLeaseWaiter] = deque()
+        self._consecutive_priority_commands = 0
 
     async def async_run(
         self,
         client: GoveeBleClient,
         operation: Callable[[], Awaitable[Any]],
         deadline: float | None = None,
+        *,
+        priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
     ) -> Any:
         """Run one client's work after releasing a different idle owner."""
 
-        await self.async_acquire(client, deadline)
+        await self.async_acquire(client, deadline, priority=priority)
         try:
             return await operation()
         finally:
             self.release()
 
     async def async_acquire(
-        self, client: GoveeBleClient, deadline: float | None = None
+        self,
+        client: GoveeBleClient,
+        deadline: float | None = None,
+        *,
+        priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
     ) -> None:
         """Acquire the shared lease before a client transaction lock."""
 
-        started = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         queue_deadline = deadline or (started + CONNECTION_LEASE_TIMEOUT)
-        _LOGGER.debug("%s waiting for shared BLE connection lease", client._log_label)
+        waiter = _ConnectionLeaseWaiter(client, priority, loop.create_future())
+        _LOGGER.debug(
+            "%s waiting for %s shared BLE connection lease",
+            client._log_label,
+            priority.value,
+        )
         # Each holder gets a separate GATT deadline only after it reaches the
         # front of this queue.  The queue itself must still be bounded so an
         # unavailable peer cannot leave Home Assistant setup initializing.
+        if not self._lease_held:
+            self._lease_held = True
+            waiter.granted = True
+        else:
+            self._queue_for(priority).append(waiter)
         try:
-            await _async_wait_until(self._lock.acquire(), queue_deadline)
+            if not waiter.granted:
+                await _async_wait_until(asyncio.shield(waiter.future), queue_deadline)
         except (TimeoutError, asyncio.TimeoutError) as err:
+            self._cancel_waiter(waiter)
             _LOGGER.debug(
-                "%s timed out waiting for shared BLE connection lease after %.2f "
-                "seconds",
+                "%s timed out waiting for %s shared BLE connection lease after "
+                "%.2f seconds",
                 client._log_label,
-                asyncio.get_running_loop().time() - started,
+                priority.value,
+                loop.time() - started,
             )
             raise GoveeBleClientError(
                 "Timed out waiting for another purifier's Bluetooth connection"
             ) from err
+        except BaseException:
+            self._cancel_waiter(waiter)
+            raise
         try:
             owner = self._owner
             if owner is not None and owner is not client:
                 await owner._async_release_for_connection_switch(
-                    asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT
+                    loop.time() + DISCONNECT_TIMEOUT
                 )
             self._owner = client
             _LOGGER.debug(
-                "%s acquired shared BLE connection lease after %.2f seconds",
+                "%s acquired %s shared BLE connection lease after %.2f seconds",
                 client._log_label,
-                asyncio.get_running_loop().time() - started,
+                priority.value,
+                loop.time() - started,
             )
         except BaseException:
-            self._lock.release()
+            self.release()
             raise
 
     def release(self) -> None:
         """Release a lease acquired by :meth:`async_acquire`."""
 
-        self._lock.release()
+        if not self._lease_held:
+            raise RuntimeError("Shared BLE connection lease is not held")
+        waiter = self._next_waiter()
+        if waiter is None:
+            self._lease_held = False
+            return
+        waiter.granted = True
+        waiter.future.set_result(None)
+
+    def _queue_for(
+        self, priority: _ConnectionLeasePriority
+    ) -> deque[_ConnectionLeaseWaiter]:
+        """Return the FIFO queue for one class of Bluetooth work."""
+
+        if priority is _ConnectionLeasePriority.COMMAND:
+            return self._command_waiters
+        return self._poll_waiters
+
+    def _cancel_waiter(self, waiter: _ConnectionLeaseWaiter) -> None:
+        """Remove or relinquish a waiter after timeout or cancellation."""
+
+        if waiter.granted:
+            self.release()
+            return
+        queue = self._queue_for(waiter.priority)
+        try:
+            queue.remove(waiter)
+        except ValueError:
+            return
+        waiter.future.cancel()
+
+    def _next_waiter(self) -> _ConnectionLeaseWaiter | None:
+        """Select the next waiter, prioritizing commands without starving polls."""
+
+        if self._command_waiters and self._poll_waiters:
+            if self._consecutive_priority_commands >= MAX_PRIORITY_COMMAND_BURST:
+                self._consecutive_priority_commands = 0
+                return self._poll_waiters.popleft()
+            self._consecutive_priority_commands += 1
+            return self._command_waiters.popleft()
+        if self._command_waiters:
+            self._consecutive_priority_commands = 0
+            return self._command_waiters.popleft()
+        if self._poll_waiters:
+            self._consecutive_priority_commands = 0
+            return self._poll_waiters.popleft()
+        self._consecutive_priority_commands = 0
+        return None
 
     def connection_released(self, client: GoveeBleClient) -> None:
         """Forget an owner after its retained connection is gone."""
@@ -234,6 +329,7 @@ class GoveeBleClient:
                     timeout=POLL_TIMEOUT,
                     optional_requests=optional_requests,
                     optional_timeout=night_light_poll_timeout,
+                    lease_priority=_ConnectionLeasePriority.POLL,
                 )
                 power_frame, status_frame = frames[:2]
                 assert power_frame is not None and status_frame is not None
@@ -454,6 +550,7 @@ class GoveeBleClient:
             tuple[bytes, Callable[[bytes], bool]], ...
         ] = (),
         optional_timeout: float = 0.0,
+        lease_priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
     ) -> tuple[bytes | None, ...]:
         loop = asyncio.get_running_loop()
         total_request_count = len(requests) + len(optional_requests)
@@ -467,7 +564,7 @@ class GoveeBleClient:
         self._cancel_idle_disconnect()
         await self._async_wait_for_idle_disconnect()
         await self._async_prepare_connection()
-        await self._async_acquire_connection_lease()
+        await self._async_acquire_connection_lease(lease_priority)
         started = loop.time()
         deadline = started + timeout
         self._log_stage("BLE transaction", stage, started, deadline)
@@ -816,6 +913,7 @@ class GoveeBleClient:
         operation: Callable[[Any], Any],
         *,
         deadline: float | None = None,
+        priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
     ) -> Any:
         """Run an operation through the shared reusable Bluetooth connection."""
 
@@ -832,6 +930,7 @@ class GoveeBleClient:
                     ),
                 ),
                 deadline,
+                priority=priority,
             )
         if deadline is None:
             deadline = asyncio.get_running_loop().time() + transport.CONNECTION_TIMEOUT
@@ -839,11 +938,14 @@ class GoveeBleClient:
             operation, deadline=deadline
         )
 
-    async def _async_acquire_connection_lease(self) -> None:
+    async def _async_acquire_connection_lease(
+        self,
+        priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
+    ) -> None:
         """Acquire the integration lease before this client's transaction lock."""
 
         if self._connection_arbiter is not None:
-            await self._connection_arbiter.async_acquire(self)
+            await self._connection_arbiter.async_acquire(self, priority=priority)
 
     def _release_connection_lease(self) -> None:
         """Release a lease acquired before a client transaction lock."""

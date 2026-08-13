@@ -422,7 +422,9 @@ must not be exposed.
   that idle connection before connecting. This prevents the integration from
   permanently occupying every connection slot on a Bluetooth proxy. Unexpected
   disconnects and failed transactions clear the connection, and entry unload
-  always closes it.
+  always closes it. Queued state-changing commands take priority over routine
+  polling, with FIFO ordering inside each class and one poll after at most three
+  consecutive priority commands.
 - GATT notifications provide query responses and command confirmation.
 - Connection establishment, encrypted negotiation, and application responses
   use separate bounded deadlines, so a slow BlueZ connection does not consume

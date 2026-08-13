@@ -137,6 +137,8 @@ uses `<=`; only a valid reading above that boundary resets its timer.
   the same purifier still reuse its healthy connection, but another purifier
   can release that idle connection before connecting. This prevents configured
   purifiers from permanently consuming every Bluetooth proxy connection slot.
+  Queued controls take priority over routine polls, while one poll is allowed
+  after every three priority commands so background state cannot starve.
 - If setup or controls do not respond, close the Govee app and try again. The
   purifier may only allow one Bluetooth connection at a time, so the app may
   also be unable to connect while Home Assistant is actively polling.

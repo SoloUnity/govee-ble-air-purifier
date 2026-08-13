@@ -150,6 +150,7 @@ class _RecordingTimeoutClient(GoveeBleClient):
         self.timeout: float | None = None
         self.optional_timeout: float | None = None
         self.optional_requests: tuple[tuple[bytes, Any], ...] = ()
+        self.lease_priority: Any = None
 
     async def _async_write_and_wait_many(
         self,
@@ -158,10 +159,12 @@ class _RecordingTimeoutClient(GoveeBleClient):
         timeout: float = 10.0,
         optional_requests: tuple[tuple[bytes, Any], ...] = (),
         optional_timeout: float = 0.0,
+        lease_priority: Any = None,
     ) -> tuple[bytes | None, ...]:
         self.timeout = timeout
         self.optional_timeout = optional_timeout
         self.optional_requests = optional_requests
+        self.lease_priority = lease_priority
         return (
             build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01")),
             build_frame(bytes.fromhex("aa 19 81 00 2a 00 00 55")),
@@ -188,6 +191,7 @@ class _RetryingStateClient(GoveeBleClient):
         timeout: float = 10.0,
         optional_requests: tuple[tuple[bytes, Any], ...] = (),
         optional_timeout: float = 0.0,
+        lease_priority: Any = None,
     ) -> tuple[bytes | None, ...]:
         self.calls += 1
         if self.always_disconnect or self.calls == 1:
@@ -891,6 +895,7 @@ async def test_get_state_uses_shorter_poll_timeout() -> None:
     assert client.timeout == 5.0
     assert client.optional_requests == ()
     assert client.optional_timeout == 0.0
+    assert client.lease_priority is client_module._ConnectionLeasePriority.POLL
 
 
 @pytest.mark.asyncio
@@ -1486,6 +1491,169 @@ async def test_connection_arbiter_shares_one_slot_across_four_purifiers(
 
     await asyncio.gather(*(client.async_close() for client in clients))
     assert not active
+
+
+@pytest.mark.asyncio
+async def test_connection_arbiter_prioritizes_control_over_queued_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user command queued after a poll gets the next available BLE lease."""
+
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    arbiter = GoveeConnectionArbiter()
+    blocker = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:01", connection_arbiter=arbiter
+    )
+    poller = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:02", connection_arbiter=arbiter
+    )
+    commander = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:03", connection_arbiter=arbiter
+    )
+    connection_order: list[str] = []
+
+    async def async_establish_connection(
+        _hass: Any,
+        address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        connection_order.append(address)
+        return FakeBleakClient()
+
+    async def async_disconnect(passed_client: FakeBleakClient, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+
+    blocker_started = asyncio.Event()
+    release_blocker = asyncio.Event()
+
+    async def hold_connection(_client: Any) -> None:
+        blocker_started.set()
+        await release_blocker.wait()
+
+    blocker_task = asyncio.create_task(blocker._async_with_connection(hold_connection))
+    await blocker_started.wait()
+    poll_task = asyncio.create_task(poller.async_get_state())
+    await asyncio.sleep(0)
+    command_task = asyncio.create_task(commander.async_set_power(True))
+    await asyncio.sleep(0)
+
+    assert len(arbiter._poll_waiters) == 1
+    assert len(arbiter._command_waiters) == 1
+    release_blocker.set()
+
+    await asyncio.wait_for(blocker_task, timeout=1)
+    assert await asyncio.wait_for(command_task, timeout=1) is True
+    assert (await asyncio.wait_for(poll_task, timeout=1)).is_on is True
+    assert connection_order == [
+        "AA:BB:CC:DD:EE:01",
+        "AA:BB:CC:DD:EE:03",
+        "AA:BB:CC:DD:EE:02",
+    ]
+
+    await asyncio.gather(
+        blocker.async_close(), poller.async_close(), commander.async_close()
+    )
+
+
+@pytest.mark.asyncio
+async def test_connection_arbiter_limits_priority_burst_to_protect_polling() -> None:
+    """Continuous controls cannot starve a queued routine poll."""
+
+    arbiter = GoveeConnectionArbiter()
+    clients = [
+        GoveeBleClient(None, f"AA:BB:CC:DD:EE:{index:02X}")
+        for index in range(6)
+    ]
+    operation_order: list[str] = []
+    blocker_started = asyncio.Event()
+    release_blocker = asyncio.Event()
+
+    async def hold_lease() -> None:
+        blocker_started.set()
+        await release_blocker.wait()
+
+    async def record(label: str) -> None:
+        operation_order.append(label)
+
+    blocker_task = asyncio.create_task(arbiter.async_run(clients[0], hold_lease))
+    await blocker_started.wait()
+    poll_task = asyncio.create_task(
+        arbiter.async_run(
+            clients[1],
+            lambda: record("poll"),
+            priority=client_module._ConnectionLeasePriority.POLL,
+        )
+    )
+    await asyncio.sleep(0)
+    command_tasks = []
+    for index, client in enumerate(clients[2:]):
+        command_tasks.append(
+            asyncio.create_task(
+                arbiter.async_run(client, lambda index=index: record(f"command-{index}"))
+            )
+        )
+        await asyncio.sleep(0)
+
+    release_blocker.set()
+    await asyncio.wait_for(
+        asyncio.gather(blocker_task, poll_task, *command_tasks), timeout=1
+    )
+
+    assert operation_order == ["command-0", "command-1", "command-2", "poll", "command-3"]
+
+
+@pytest.mark.asyncio
+async def test_connection_arbiter_removes_cancelled_priority_waiter() -> None:
+    """Cancelling a queued control cannot strand the lease scheduler."""
+
+    arbiter = GoveeConnectionArbiter()
+    clients = [
+        GoveeBleClient(None, f"AA:BB:CC:DD:EE:{index:02X}")
+        for index in range(3)
+    ]
+    blocker_started = asyncio.Event()
+    release_blocker = asyncio.Event()
+    poll_ran = asyncio.Event()
+
+    async def hold_lease() -> None:
+        blocker_started.set()
+        await release_blocker.wait()
+
+    async def record_poll() -> None:
+        poll_ran.set()
+
+    async def no_op() -> None:
+        return None
+
+    blocker_task = asyncio.create_task(arbiter.async_run(clients[0], hold_lease))
+    await blocker_started.wait()
+    command_task = asyncio.create_task(arbiter.async_run(clients[1], no_op))
+    await asyncio.sleep(0)
+    poll_task = asyncio.create_task(
+        arbiter.async_run(
+            clients[2],
+            record_poll,
+            priority=client_module._ConnectionLeasePriority.POLL,
+        )
+    )
+    await asyncio.sleep(0)
+
+    command_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await command_task
+    assert not arbiter._command_waiters
+
+    release_blocker.set()
+    await asyncio.wait_for(asyncio.gather(blocker_task, poll_task), timeout=1)
+    assert poll_ran.is_set()
 
 
 @pytest.mark.asyncio

@@ -160,7 +160,7 @@ connectable path. A post-disconnect connection requires an advertisement newer
 than the disconnect. An already-running idle release gets its own 5-second
 preflight cleanup wait, and fresh-advertisement recovery gets up to 10 seconds.
 Neither consumes the subsequent lock or application budget. Connection and
-service discovery then have a separate 25-second deadline. A newly connected
+service discovery then have a separate 45-second deadline. A newly connected
 H7129 has a separate 10-second handshake deadline. Transaction-lock waiting and
 the mandatory application exchange use the operation's normal budget: 5 seconds
 for the two-response power/status poll and 2 seconds for command confirmation.
@@ -179,6 +179,10 @@ before establishing its own. Connection establishment and application work are
 serialized across entries, preventing several entries from permanently holding
 all Bluetooth proxy connection slots. Same-purifier command bursts and delayed
 refreshes retain their existing connection and, for H7129, encrypted session.
+The lease maintains separate FIFO queues for state-changing commands and
+routine polls. Commands bypass waiting polls for responsive controls, but a
+queued poll runs after at most three consecutive priority commands. Active BLE
+transactions are never interrupted.
 
 Every successful operation resets an idle timer derived from the configured
 polling interval. Intervals from 5 through 25 seconds use the interval plus a

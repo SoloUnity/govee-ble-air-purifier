@@ -108,7 +108,9 @@ bluetooth/
   advertisements, retries one read-only poll, negotiates and clears
   connection-specific encrypted sessions when selected by the profile, derives
   adaptive idle release from the polling interval, and serializes that release
-  with explicit shutdown. Lifecycle logs use a stable short hashed device label.
+  with explicit shutdown. The shared lease prioritizes queued controls while
+  bounding command bursts so routine polls cannot starve. Lifecycle logs use a
+  stable short hashed device label.
 - `bluetooth/transport.py` owns Home Assistant advertisement and per-scanner
   path preparation, best-effort Home Assistant 2026.6+ temporary
   Automatic-to-Active requests only during new-advertisement waits, BLE-device
