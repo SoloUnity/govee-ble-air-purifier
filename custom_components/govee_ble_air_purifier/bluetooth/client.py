@@ -36,6 +36,7 @@ from .transport import _async_wait_until
 
 DEFAULT_TIMEOUT = 10.0
 POLL_TIMEOUT = 5.0
+OPTIONAL_POLL_TIMEOUT = 1.0
 COMMAND_CONFIRMATION_TIMEOUT = 2.0
 HANDSHAKE_TIMEOUT = 10.0
 CONNECTION_IDLE_GRACE = 5.0
@@ -122,7 +123,7 @@ class GoveeBleClient:
         attempt = 0
         while True:
             try:
-                requests: list[tuple[bytes, Callable[[bytes], bool]]] = [
+                requests = (
                     (
                         self._profile.state_query_command,
                         self._profile.is_power_state_response,
@@ -131,34 +132,50 @@ class GoveeBleClient:
                         self._profile.status_query_command,
                         self._profile.is_status_response,
                     ),
-                ]
+                )
+                optional_requests: tuple[
+                    tuple[bytes, Callable[[bytes], bool]], ...
+                ] = ()
                 if (night_light := self._profile.night_light) is not None:
-                    requests.extend(
+                    optional_requests = (
                         (
-                            (
-                                night_light.power_brightness_query_command,
-                                is_night_light_power_brightness_response,
-                            ),
-                            (
-                                night_light.rgb_state_query_command,
-                                is_night_light_rgb_state_response,
-                            ),
-                        )
+                            night_light.power_brightness_query_command,
+                            is_night_light_power_brightness_response,
+                        ),
+                        (
+                            night_light.rgb_state_query_command,
+                            is_night_light_rgb_state_response,
+                        ),
                     )
                 frames = await self._async_write_and_wait_many(
-                    tuple(requests),
+                    requests,
                     timeout=POLL_TIMEOUT,
+                    optional_requests=optional_requests,
+                    optional_timeout=OPTIONAL_POLL_TIMEOUT,
                 )
                 power_frame, status_frame = frames[:2]
+                assert power_frame is not None and status_frame is not None
                 status = self._profile.decode_status(status_frame)
                 night_light_state = None
                 if night_light is not None:
-                    power_brightness = decode_night_light_power_brightness(frames[2])
-                    night_light_state = NightLightState(
-                        is_on=power_brightness.is_on,
-                        brightness_percent=power_brightness.brightness_percent,
-                        rgb_color=decode_night_light_rgb_state(frames[3]),
-                    )
+                    power_brightness_frame, rgb_frame = frames[2:]
+                    if power_brightness_frame is not None or rgb_frame is not None:
+                        power_brightness = (
+                            decode_night_light_power_brightness(
+                                power_brightness_frame
+                            )
+                            if power_brightness_frame is not None
+                            else NightLightState()
+                        )
+                        night_light_state = NightLightState(
+                            is_on=power_brightness.is_on,
+                            brightness_percent=power_brightness.brightness_percent,
+                            rgb_color=(
+                                decode_night_light_rgb_state(rgb_frame)
+                                if rgb_frame is not None
+                                else None
+                            ),
+                        )
                 return PurifierState(
                     is_on=self._profile.decode_power_state(power_frame),
                     pm25=status.pm25,
@@ -263,6 +280,8 @@ class GoveeBleClient:
             ),
             timeout=COMMAND_CONFIRMATION_TIMEOUT,
         )
+        if power_frame is None:  # Mandatory requests always produce a frame.
+            raise GoveeBleClientError("Purifier response was unavailable")
         return PurifierState(
             is_on=self._profile.decode_power_state(power_frame),
             fan_mode=mode,
@@ -327,20 +346,28 @@ class GoveeBleClient:
         frames = await self._async_write_and_wait_many(
             ((command, matcher),), timeout=timeout
         )
-        return frames[0]
+        frame = frames[0]
+        if frame is None:  # Mandatory requests always produce a frame.
+            raise GoveeBleClientError("Purifier response was unavailable")
+        return frame
 
     async def _async_write_and_wait_many(
         self,
         requests: tuple[tuple[bytes, Callable[[bytes], bool]], ...],
         *,
         timeout: float = DEFAULT_TIMEOUT,
-    ) -> tuple[bytes, ...]:
+        optional_requests: tuple[
+            tuple[bytes, Callable[[bytes], bool]], ...
+        ] = (),
+        optional_timeout: float = 0.0,
+    ) -> tuple[bytes | None, ...]:
         loop = asyncio.get_running_loop()
+        total_request_count = len(requests) + len(optional_requests)
         stage = "waiting for transaction lock"
         _LOGGER.debug(
             "%s BLE transaction started with %d requests (%.2f second timeout)",
             self._log_label,
-            len(requests),
+            total_request_count,
             timeout,
         )
         self._cancel_idle_disconnect()
@@ -357,8 +384,11 @@ class GoveeBleClient:
                 "Timed out waiting for BLE transaction lock"
             ) from err
         try:
-            frames: list[bytes] = []
+            frames: list[bytes | None] = [None] * total_request_count
             future: asyncio.Future[bytes] | None = None
+            optional_futures: list[asyncio.Future[bytes]] = []
+            collecting_optional = False
+            initiated_optional_count = 0
             discard_connection = False
             current_request_index = 0
             request_started: float | None = None
@@ -367,11 +397,12 @@ class GoveeBleClient:
             nonmatching_notification_count = 0
 
             def notification_handler(_sender: Any, data: bytearray | bytes) -> None:
+                nonlocal collecting_optional
                 nonlocal future
                 nonlocal ignored_handshake_count
                 nonlocal nonmatching_notification_count
                 nonlocal notification_count
-                if future is None or len(frames) >= len(requests):
+                if future is None and not collecting_optional:
                     return
                 notification_count += 1
                 session_key_available = self._session_key is not None
@@ -397,25 +428,49 @@ class GoveeBleClient:
                             "not a valid late e7 01/e7 02 handshake notification",
                             self._log_label,
                         )
-                    if not future.done():
+                    if collecting_optional:
+                        nonmatching_notification_count += 1
+                    elif future is not None and not future.done():
                         future.set_exception(err)
-                    return
-                matcher = requests[len(frames)][1]
-                if not matcher(frame):
-                    nonmatching_notification_count += 1
                     return
                 try:
                     validate_frame(frame)
                 except ProtocolError as err:
-                    if not future.done():
+                    if collecting_optional:
+                        nonmatching_notification_count += 1
+                    elif future is not None and not future.done():
                         future.set_exception(err)
                     return
-                if not future.done():
+
+                if collecting_optional:
+                    for index, ((_command, matcher), optional_future) in enumerate(
+                        zip(
+                            optional_requests[:initiated_optional_count],
+                            optional_futures[:initiated_optional_count],
+                            strict=True,
+                        ),
+                        start=len(requests),
+                    ):
+                        if optional_future.done() or not matcher(frame):
+                            continue
+                        frames[index] = frame
+                        optional_future.set_result(frame)
+                        return
+                    nonmatching_notification_count += 1
+                    return
+
+                matcher = requests[current_request_index - 1][1]
+                if not matcher(frame):
+                    nonmatching_notification_count += 1
+                    return
+                if future is not None and not future.done():
                     future.set_result(frame)
 
-            async def operation(client: Any) -> tuple[bytes, ...]:
+            async def operation(client: Any) -> tuple[bytes | None, ...]:
+                nonlocal collecting_optional
                 nonlocal current_request_index
                 nonlocal deadline, discard_connection, future
+                nonlocal initiated_optional_count
                 nonlocal ignored_handshake_count
                 nonlocal nonmatching_notification_count
                 nonlocal notification_count, request_started, stage, started
@@ -440,7 +495,7 @@ class GoveeBleClient:
                         notification_count = 0
                         ignored_handshake_count = 0
                         nonmatching_notification_count = 0
-                        stage = f"writing request {index}/{len(requests)}"
+                        stage = f"writing request {index}/{total_request_count}"
                         self._log_stage("BLE transaction", stage, started, deadline)
                         await self._async_wait_for_connection(
                             client.write_gatt_char(
@@ -455,27 +510,123 @@ class GoveeBleClient:
                             "%s BLE request %d/%d write completed in %.2f seconds",
                             self._log_label,
                             index,
-                            len(requests),
+                            total_request_count,
                             loop.time() - request_started,
                         )
-                        stage = f"waiting for response {index}/{len(requests)}"
+                        stage = f"waiting for response {index}/{total_request_count}"
                         self._log_stage("BLE transaction", stage, started, deadline)
                         frame = await self._async_wait_for_connection(
                             future, disconnect_signal, deadline
                         )
-                        frames.append(frame)
+                        frames[index - 1] = frame
                         _LOGGER.debug(
                             "%s BLE response %d/%d received %.2f seconds after "
                             "write started (notifications: %d, stale handshakes: %d, "
                             "nonmatching: %d)",
                             self._log_label,
                             index,
-                            len(requests),
+                            total_request_count,
                             loop.time() - request_started,
                             notification_count,
                             ignored_handshake_count,
                             nonmatching_notification_count,
                         )
+                    if optional_requests:
+                        collecting_optional = True
+                        future = None
+                        optional_futures.extend(
+                            loop.create_future() for _request in optional_requests
+                        )
+                        optional_started = loop.time()
+                        optional_deadline = optional_started + optional_timeout
+                        for offset, (command, _matcher) in enumerate(
+                            optional_requests, start=len(requests) + 1
+                        ):
+                            initiated_optional_count = offset - len(requests)
+                            current_request_index = offset
+                            request_started = loop.time()
+                            stage = (
+                                f"writing optional request {offset}/"
+                                f"{total_request_count}"
+                            )
+                            self._log_stage(
+                                "BLE transaction", stage, started, optional_deadline
+                            )
+                            try:
+                                await self._async_wait_for_connection(
+                                    client.write_gatt_char(
+                                        self._profile.write_char_uuid,
+                                        self._encode_application_frame(command),
+                                        response=False,
+                                    ),
+                                    disconnect_signal,
+                                    optional_deadline,
+                                )
+                            except GoveeBleDisconnectedError:
+                                discard_connection = True
+                                _LOGGER.debug(
+                                    "%s optional BLE telemetry stopped after "
+                                    "disconnection",
+                                    self._log_label,
+                                )
+                                return tuple(frames)
+                            except Exception:
+                                discard_connection = True
+                                _LOGGER.debug(
+                                    "%s optional BLE telemetry write failed; "
+                                    "preserving core poll result",
+                                    self._log_label,
+                                    exc_info=True,
+                                )
+                                return tuple(frames)
+                            _LOGGER.debug(
+                                "%s optional BLE request %d/%d write completed in "
+                                "%.2f seconds",
+                                self._log_label,
+                                offset,
+                                total_request_count,
+                                loop.time() - request_started,
+                            )
+
+                        stage = "collecting optional responses"
+                        self._log_stage(
+                            "BLE transaction", stage, optional_started, optional_deadline
+                        )
+                        pending = {
+                            optional_future
+                            for optional_future in optional_futures
+                            if not optional_future.done()
+                        }
+                        if pending:
+                            try:
+                                await self._async_wait_for_connection(
+                                    asyncio.gather(*pending),
+                                    disconnect_signal,
+                                    optional_deadline,
+                                )
+                            except GoveeBleDisconnectedError:
+                                discard_connection = True
+                                _LOGGER.debug(
+                                    "%s optional BLE telemetry stopped after "
+                                    "disconnection",
+                                    self._log_label,
+                                )
+                            except (TimeoutError, asyncio.TimeoutError):
+                                pass
+                        received_count = sum(
+                            optional_future.done()
+                            and not optional_future.cancelled()
+                            for optional_future in optional_futures
+                        )
+                        _LOGGER.debug(
+                            "%s optional BLE telemetry received %d/%d responses in "
+                            "%.2f seconds",
+                            self._log_label,
+                            received_count,
+                            len(optional_requests),
+                            loop.time() - optional_started,
+                        )
+                        deadline = loop.time() + COMMAND_CONFIRMATION_TIMEOUT
                     return tuple(frames)
                 except (TimeoutError, asyncio.TimeoutError) as err:
                     if (
@@ -488,7 +639,7 @@ class GoveeBleClient:
                             "stale handshakes: %d, nonmatching: %d)",
                             self._log_label,
                             current_request_index,
-                            len(requests),
+                            total_request_count,
                             loop.time() - request_started,
                             notification_count,
                             ignored_handshake_count,
@@ -512,10 +663,19 @@ class GoveeBleClient:
                 finally:
                     if future is not None and not future.done():
                         future.cancel()
+                    for optional_future in optional_futures:
+                        if not optional_future.done():
+                            optional_future.cancel()
                     connection_disconnected = (
                         disconnect_signal is not None and disconnect_signal.is_set()
                     ) or not client.is_connected
-                    if primary_error is None and not connection_disconnected:
+                    if connection_disconnected:
+                        discard_connection = True
+                    if (
+                        primary_error is None
+                        and not connection_disconnected
+                        and not discard_connection
+                    ):
                         try:
                             stage = "stopping application notifications"
                             self._log_stage("BLE transaction", stage, started, deadline)

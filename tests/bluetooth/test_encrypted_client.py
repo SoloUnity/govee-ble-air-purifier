@@ -843,7 +843,8 @@ async def test_h7129_ignores_duplicate_late_handshakes_for_each_poll_response(
     ]
     assert caplog.text.count(
         "notifications: 3, stale handshakes: 2, nonmatching: 0"
-    ) == 4
+    ) == 2
+    assert "optional BLE telemetry received 2/2 responses" in caplog.text
     assert len(fake.handshake_frames) == 2
     assert client._session_key == SESSION_KEY_1
     assert disconnects == []

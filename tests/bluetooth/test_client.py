@@ -146,14 +146,18 @@ class _RecordingTimeoutClient(GoveeBleClient):
     def __init__(self) -> None:
         super().__init__(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
         self.timeout: float | None = None
+        self.optional_timeout: float | None = None
 
     async def _async_write_and_wait_many(
         self,
         requests: tuple[tuple[bytes, Any], ...],
         *,
         timeout: float = 10.0,
-    ) -> tuple[bytes, ...]:
+        optional_requests: tuple[tuple[bytes, Any], ...] = (),
+        optional_timeout: float = 0.0,
+    ) -> tuple[bytes | None, ...]:
         self.timeout = timeout
+        self.optional_timeout = optional_timeout
         return (
             build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01")),
             build_frame(bytes.fromhex("aa 19 81 00 2a 00 00 55")),
@@ -178,7 +182,9 @@ class _RetryingStateClient(GoveeBleClient):
         requests: tuple[tuple[bytes, Any], ...],
         *,
         timeout: float = 10.0,
-    ) -> tuple[bytes, ...]:
+        optional_requests: tuple[tuple[bytes, Any], ...] = (),
+        optional_timeout: float = 0.0,
+    ) -> tuple[bytes | None, ...]:
         self.calls += 1
         if self.always_disconnect or self.calls == 1:
             raise GoveeBleDisconnectedError("Purifier disconnected")
@@ -188,6 +194,42 @@ class _RetryingStateClient(GoveeBleClient):
             build_frame(bytes.fromhex("aa 1b 01 01 64")),
             build_frame(bytes.fromhex("aa 1b 05 0d ff 00 00")),
         )
+
+
+class _BestEffortNightLightFake(FakeBleakClient):
+    def __init__(self, responses: tuple[str, ...], *, delay: float = 0.0) -> None:
+        super().__init__()
+        self.responses = responses
+        self.delay = delay
+        self.response_task: asyncio.Task[None] | None = None
+
+    async def write_gatt_char(
+        self, char_uuid: str, command: bytes, *, response: bool
+    ) -> None:
+        if command not in {
+            NIGHT_LIGHT.power_brightness_query_command,
+            NIGHT_LIGHT.rgb_state_query_command,
+        }:
+            await super().write_gatt_char(char_uuid, command, response=response)
+            return
+
+        self.writes.append((char_uuid, command, response))
+        if command != NIGHT_LIGHT.rgb_state_query_command or not self.responses:
+            return
+
+        async def send_responses() -> None:
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            assert self.notify_handler is not None
+            for response_name in self.responses:
+                frame = (
+                    build_frame(bytes.fromhex("aa 1b 01 01 64"))
+                    if response_name == "power"
+                    else build_frame(bytes.fromhex("aa 1b 05 0d ff 00 00"))
+                )
+                self.notify_handler(None, frame)
+
+        self.response_task = asyncio.create_task(send_responses())
 
 
 async def _cancellation_resistant_operation(
@@ -552,6 +594,249 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("responses", "expected_night_light"),
+    [
+        ((), None),
+        (
+            ("power",),
+            NightLightState(is_on=True, brightness_percent=100),
+        ),
+        (
+            ("rgb",),
+            NightLightState(rgb_color=(255, 0, 0)),
+        ),
+        (
+            ("rgb", "power"),
+            NightLightState(
+                is_on=True,
+                brightness_percent=100,
+                rgb_color=(255, 0, 0),
+            ),
+        ),
+    ],
+)
+async def test_get_state_preserves_core_state_with_best_effort_light_responses(
+    monkeypatch: pytest.MonkeyPatch,
+    responses: tuple[str, ...],
+    expected_night_light: NightLightState | None,
+) -> None:
+    monkeypatch.setattr(client_module, "OPTIONAL_POLL_TIMEOUT", 0.01)
+    fake = _BestEffortNightLightFake(responses)
+    client = _TestableGoveeBleClient(fake)
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+        night_light=expected_night_light,
+    )
+    assert [write[1] for write in fake.writes] == [
+        H7124_PROFILE.state_query_command,
+        H7124_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
+    ]
+    if fake.response_task is not None:
+        await fake.response_task
+
+
+@pytest.mark.asyncio
+async def test_get_state_collects_delayed_pipelined_light_responses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "OPTIONAL_POLL_TIMEOUT", 0.05)
+    fake = _BestEffortNightLightFake(("rgb", "power"), delay=0.01)
+    client = _TestableGoveeBleClient(fake)
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
+    )
+    assert fake.response_task is not None
+    await fake.response_task
+
+
+@pytest.mark.asyncio
+async def test_optional_response_is_not_matched_before_its_query() -> None:
+    class EarlyRgbFake(FakeBleakClient):
+        async def write_gatt_char(
+            self, char_uuid: str, command: bytes, *, response: bool
+        ) -> None:
+            if command == NIGHT_LIGHT.power_brightness_query_command:
+                self.writes.append((char_uuid, command, response))
+                assert self.notify_handler is not None
+                self.notify_handler(
+                    None, build_frame(bytes.fromhex("aa 1b 05 0d ff 00 00"))
+                )
+                self.notify_handler(
+                    None, build_frame(bytes.fromhex("aa 1b 01 01 64"))
+                )
+                return
+            if command == NIGHT_LIGHT.rgb_state_query_command:
+                self.writes.append((char_uuid, command, response))
+                assert self.notify_handler is not None
+                self.notify_handler(
+                    None, build_frame(bytes.fromhex("aa 1b 05 0d 00 00 ff"))
+                )
+                return
+            await super().write_gatt_char(char_uuid, command, response=response)
+
+    client = _TestableGoveeBleClient(EarlyRgbFake())
+
+    assert (await client.async_get_state()).night_light == NightLightState(
+        is_on=True,
+        brightness_percent=100,
+        rgb_color=(0, 0, 255),
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_light_telemetry_keeps_healthy_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    monkeypatch.setattr(client_module, "OPTIONAL_POLL_TIMEOUT", 0.01)
+    fake = _BestEffortNightLightFake(())
+    disconnects: list[Any] = []
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        disconnects.append(passed_client)
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+    )
+    assert client._client is fake
+    assert client._fresh_advertisement_after is None
+    assert disconnects == []
+
+    await client.async_close()
+    assert disconnects == [fake]
+
+
+@pytest.mark.asyncio
+async def test_optional_write_failure_preserves_core_state_and_drops_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    class FailingLightWriteFake(FakeBleakClient):
+        async def write_gatt_char(
+            self, char_uuid: str, command: bytes, *, response: bool
+        ) -> None:
+            if command == NIGHT_LIGHT.power_brightness_query_command:
+                raise RuntimeError("light query failed")
+            await super().write_gatt_char(char_uuid, command, response=response)
+
+    fake = FailingLightWriteFake()
+    disconnects: list[Any] = []
+
+    async def async_establish_connection(*args: Any, **kwargs: Any) -> FakeBleakClient:
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        disconnects.append(passed_client)
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+    )
+    assert fake.stopped_notify == []
+    assert disconnects == [fake]
+    assert client._client is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_wakes_optional_collection_and_preserves_core_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    class DisconnectingLightFake(_BestEffortNightLightFake):
+        def __init__(self) -> None:
+            super().__init__(())
+            self.disconnect_callback: Any = None
+            self.disconnect_task: asyncio.Task[None] | None = None
+
+        async def write_gatt_char(
+            self, char_uuid: str, command: bytes, *, response: bool
+        ) -> None:
+            await super().write_gatt_char(char_uuid, command, response=response)
+            if command != NIGHT_LIGHT.rgb_state_query_command:
+                return
+
+            async def disconnect_later() -> None:
+                await asyncio.sleep(0.01)
+                self.is_connected = False
+                self.disconnect_callback(self)
+
+            self.disconnect_task = asyncio.create_task(disconnect_later())
+
+    monkeypatch.setattr(client_module, "OPTIONAL_POLL_TIMEOUT", 0.2)
+    fake = DisconnectingLightFake()
+
+    async def async_establish_connection(
+        _hass: Any,
+        _address: str,
+        disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        fake.disconnect_callback = disconnected_callback
+        return fake
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+    started = asyncio.get_running_loop().time()
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+    )
+    assert asyncio.get_running_loop().time() - started < 0.1
+    assert client._client is None
+    assert client._fresh_advertisement_after is not None
+    assert fake.disconnect_task is not None
+    await fake.disconnect_task
+
+
+@pytest.mark.asyncio
 async def test_get_state_skips_night_light_queries_without_profile_capability() -> None:
     fake = FakeBleakClient()
     client = _TestableGoveeBleClient(fake)
@@ -583,6 +868,7 @@ async def test_get_state_uses_shorter_poll_timeout() -> None:
         ),
     )
     assert client.timeout == 5.0
+    assert client.optional_timeout == 1.0
 
 
 @pytest.mark.asyncio

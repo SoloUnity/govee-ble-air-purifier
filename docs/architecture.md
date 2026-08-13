@@ -162,9 +162,11 @@ preflight cleanup wait, and fresh-advertisement recovery gets up to 10 seconds.
 Neither consumes the subsequent lock or application budget. Connection and
 service discovery then have a separate 25-second deadline. A newly connected
 H7129 has a separate 10-second handshake deadline. Transaction-lock waiting and
-the application exchange use the operation's normal budget: 5 seconds for a
-two- or four-response poll and 2 seconds for command confirmation. The application
-budget starts after connection and handshake complete. Explicit disconnect
+the mandatory application exchange use the operation's normal budget: 5 seconds
+for the two-response power/status poll and 2 seconds for command confirmation.
+Profiles with a night light then get a separate 1-second best-effort telemetry
+budget. The application budget starts after connection and handshake complete.
+Explicit disconnect
 cleanup has its own 5-second bound. Timeout errors identify idle cleanup, lock
 waiting, a write/setup stage, or an actual purifier response rather than
 claiming a response timeout before a request was sent.
@@ -209,13 +211,17 @@ the same counts so missing callbacks can be distinguished from unexpected
 traffic without exposing frame contents.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
-notification subscription to issue purifier power and status queries in
-sequence. Profiles with a night light add power/brightness and RGB state
-queries to the same transaction.
+notification subscription to issue the mandatory purifier power and status
+queries in sequence. Profiles with a night light then write the power/brightness
+and RGB state queries back-to-back. Their responses are matched independently,
+may arrive in either order, and are collected within a short shared grace
+period. Missing, partial, malformed, or late optional telemetry does not discard
+the core purifier state or invalidate an otherwise healthy connection.
 The underlying connection may have been retained from an earlier transaction.
-The notification handler ignores identified stale handshake traffic, accepts
-only the matcher for the current request, validates the frame, and resolves its
-pending future. Ignored traffic neither consumes a response slot nor resends a
+The notification handler ignores identified stale handshake traffic and
+validates every candidate frame. During the mandatory phase it accepts only the
+current request's matcher; during optional collection it checks every unresolved
+light matcher. Ignored traffic neither consumes a response slot nor resends a
 request. Commands use the same serialized path and publish no success merely
 because a write completed; they wait for a matching confirmation. Power-on plus
 mode can be sent in one locked transaction. Notification cleanup failure
