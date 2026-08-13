@@ -133,14 +133,15 @@ uses `<=`; only a valid reading above that boundary resets its timer.
 - H7124 routine polling uses only its proven power and status queries; recurring
   night-light telemetry is disabled without removing its confirmed controls.
   H7129 retains its reliable encrypted night-light polling.
-- Purifier entries share a connection lease. Related commands and refreshes for
-  the same purifier still reuse its healthy connection, but another purifier
-  can release that idle connection before connecting. This prevents configured
-  purifiers from permanently consuming every Bluetooth proxy connection slot.
-  Controls enter this priority scheduler before advertisement recovery and BLE
-  connection setup, bypassing routine polls that have not started active BLE
-  work. One poll is allowed after every three priority commands so background
-  state cannot starve.
+- Each purifier retains its own reusable Bluetooth connection by default for
+  faster controls. If the adapter or proxy has too few GATT connection slots,
+  turn on `Share a Bluetooth connection slot` in the Options of at least two
+  purifiers. Only opted-in entries share one connection lane; for example, two
+  dedicated entries plus two shared entries occupy three slots. Shared controls
+  enter the priority scheduler before advertisement recovery and BLE connection
+  setup, bypassing routine polls that have not started active BLE work. One poll
+  is allowed after every three priority commands so background state cannot
+  starve.
 - If setup or controls do not respond, close the Govee app and try again. The
   purifier may only allow one Bluetooth connection at a time, so the app may
   also be unable to connect while Home Assistant is actively polling.

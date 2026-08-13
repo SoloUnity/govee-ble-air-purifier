@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_ADDRESS, CONF_NAME, DOMAIN
+from .setup_helpers import connection_sharing_from_options
 
 
 async def async_get_config_entry_diagnostics(
@@ -49,9 +50,13 @@ async def async_get_config_entry_diagnostics(
                 else None
             ),
         }
+    options = dict(getattr(entry, "options", {}))
     return {
         "entry": data,
-        "options": dict(getattr(entry, "options", {})),
+        "options": options,
+        "connection_mode": (
+            "shared" if connection_sharing_from_options(options) else "dedicated"
+        ),
         "state": state,
         "custom_auto": controller.diagnostics() if controller is not None else None,
         "auto_resume": auto_resume.diagnostics() if auto_resume is not None else None,

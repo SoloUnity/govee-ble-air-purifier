@@ -17,6 +17,7 @@ from custom_components.govee_ble_air_purifier.custom_auto.config import (
 from custom_components.govee_ble_air_purifier.setup_helpers import (
     MANUAL_DEVICE_VALUE,
     build_discovered_device_options,
+    connection_sharing_from_options,
     polling_interval_from_options,
     validate_polling_interval_seconds,
 )
@@ -164,6 +165,22 @@ def test_polling_interval_from_options_defaults_when_missing_or_invalid() -> Non
         )
         == 3
     )
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, False),
+        ({"share_bluetooth_connection": False}, False),
+        ({"share_bluetooth_connection": True}, True),
+        ({"share_bluetooth_connection": "true"}, False),
+        ({"share_bluetooth_connection": 1}, False),
+    ],
+)
+def test_connection_sharing_from_options_is_explicitly_opt_in(
+    options: dict[str, object], expected: bool
+) -> None:
+    assert connection_sharing_from_options(options) is expected
 
 
 def test_custom_auto_options_default_for_existing_entries() -> None:

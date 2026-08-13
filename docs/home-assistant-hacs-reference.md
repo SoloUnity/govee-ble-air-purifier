@@ -173,6 +173,7 @@ H7129.
 ```text
 Polling
 |-- Polling interval in seconds
+|-- Share a Bluetooth connection slot
 `-- Submit
 ```
 
@@ -298,6 +299,7 @@ button on the entry or in its overflow menu. It opens one form:
 ```text
 Purifier Options
 |-- Polling interval in seconds
+|-- Share a Bluetooth connection slot
 |-- Increase confirmation delay [when Custom Auto is supported]
 |-- Excellent to Good (20% / 40%) [when Custom Auto is supported]
 |-- Good to Fair (40% / 60%) [when Custom Auto is supported]
@@ -309,8 +311,11 @@ Purifier Options
 For profiles that support Custom Auto, the confirmation delay and each
 air-quality section contain the same fields shown during setup. Existing values
 are prefilled and the same ranges and ordering rules apply. Narrower profiles
-show only polling. Saving options reloads the config entry so the polling
-interval and any Custom Auto controller use the new settings consistently.
+show polling and connection sharing. Sharing defaults off so a purifier retains
+its own connection. Enable it for at least two entries when the adapter or proxy
+has too few GATT slots; all opted-in entries rotate through one prioritized
+slot. Saving options reloads the config entry so connection ownership, polling
+interval, and any Custom Auto controller use the new settings consistently.
 
 The BLE address, stored device name, and model profile are setup data and are
 not edited by this options form. To replace the physical device, remove the
@@ -417,10 +422,10 @@ must not be exposed.
   discovery is needed.
 - Transactions are asynchronous and serialized per purifier so commands and
   polls cannot overlap.
-- Purifier entries share one integration-owned connection lease. A healthy GATT
-  connection is reused for the same purifier, but a different purifier releases
-  that idle connection before connecting. This prevents the integration from
-  permanently occupying every connection slot on a Bluetooth proxy. Unexpected
+- Purifiers retain dedicated reusable connections by default. Entries with the
+  connection-sharing option enabled join one integration-owned connection
+  lease. A healthy connection is reused for the same shared purifier, but a
+  different shared purifier releases it before connecting. Unexpected
   disconnects and failed transactions clear the connection, and entry unload
   always closes it. Queued state-changing commands take priority over routine
   polling, with FIFO ordering inside each class and one poll after at most three

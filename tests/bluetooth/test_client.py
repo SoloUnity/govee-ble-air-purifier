@@ -1494,6 +1494,83 @@ async def test_connection_arbiter_shares_one_slot_across_four_purifiers(
 
 
 @pytest.mark.asyncio
+async def test_two_dedicated_and_two_shared_purifiers_use_three_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only opted-in purifiers rotate through the shared connection slot."""
+
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    arbiter = GoveeConnectionArbiter()
+    dedicated = [
+        GoveeBleClient(None, f"AA:BB:CC:DD:EE:{index:02X}")
+        for index in range(2)
+    ]
+    shared = [
+        GoveeBleClient(
+            None,
+            f"AA:BB:CC:DD:EE:{index:02X}",
+            connection_arbiter=arbiter,
+        )
+        for index in range(2, 4)
+    ]
+    active: set[FakeBleakClient] = set()
+    peak_active = 0
+    established_by_address: dict[str, int] = {}
+
+    async def async_establish_connection(
+        _hass: Any,
+        address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        nonlocal peak_active
+        if len(active) >= 3:
+            raise GoveeBleClientError("Bluetooth proxy has no free connection slots")
+        connected = FakeBleakClient()
+        active.add(connected)
+        peak_active = max(peak_active, len(active))
+        established_by_address[address] = established_by_address.get(address, 0) + 1
+        return connected
+
+    async def async_disconnect(passed_client: FakeBleakClient, *, deadline: float) -> None:
+        await passed_client.disconnect()
+        active.discard(passed_client)
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+
+    assert all(
+        state.is_on is True
+        for state in await asyncio.gather(
+            *(client.async_get_state() for client in dedicated)
+        )
+    )
+    for _round in range(2):
+        assert all(
+            state.is_on is True
+            for state in await asyncio.gather(
+                *(client.async_get_state() for client in shared)
+            )
+        )
+        assert len(active) == 3
+
+    assert peak_active == 3
+    assert established_by_address == {
+        "AA:BB:CC:DD:EE:00": 1,
+        "AA:BB:CC:DD:EE:01": 1,
+        "AA:BB:CC:DD:EE:02": 2,
+        "AA:BB:CC:DD:EE:03": 2,
+    }
+
+    await asyncio.gather(*(client.async_close() for client in [*dedicated, *shared]))
+    assert not active
+
+
+@pytest.mark.asyncio
 async def test_connection_arbiter_prioritizes_control_over_queued_poll(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

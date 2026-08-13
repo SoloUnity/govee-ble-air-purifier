@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from .const import (
     CONF_POLLING_INTERVAL,
+    CONF_SHARE_BLUETOOTH_CONNECTION,
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
@@ -93,6 +94,12 @@ def polling_interval_from_options(
         )
     except ValueError:
         return profile_default
+
+
+def connection_sharing_from_options(options: Mapping[str, Any]) -> bool:
+    """Return whether this entry opts into the shared Bluetooth connection lane."""
+
+    return options.get(CONF_SHARE_BLUETOOTH_CONNECTION) is True
 
 
 def _format_device_label(service_info: Any, name: str, address: str) -> str:

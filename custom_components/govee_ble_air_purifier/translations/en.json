@@ -17,10 +17,12 @@
         "title": "Polling",
         "description": "Configure how often Home Assistant reads this purifier. The default is selected for the detected model.",
         "data": {
-          "polling_interval": "Polling interval in seconds"
+          "polling_interval": "Polling interval in seconds",
+          "share_bluetooth_connection": "Share a Bluetooth connection slot"
         },
         "data_description": {
-          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, filter life, and profile-enabled night-light state."
+          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, filter life, and profile-enabled night-light state.",
+          "share_bluetooth_connection": "Leave off to retain a dedicated connection for faster controls. Turn on for at least two purifiers when your Bluetooth adapter or proxy does not have enough GATT connection slots; opted-in purifiers share one prioritized connection lane."
         }
       },
       "custom_auto": {
@@ -94,9 +96,10 @@
     "step": {
       "init": {
         "title": "Purifier Options",
-        "description": "Configure polling and, when supported by the model profile, Custom Auto increase confirmation and air-quality boundaries.",
+        "description": "Configure polling, Bluetooth connection sharing, and, when supported by the model profile, Custom Auto increase confirmation and air-quality boundaries.",
         "data": {
           "polling_interval": "Polling interval in seconds",
+          "share_bluetooth_connection": "Share a Bluetooth connection slot",
           "custom_auto_confirmation_delay": "Increase confirmation delay",
           "custom_auto_threshold_40": "Excellent / Good boundary",
           "custom_auto_delay_20": "Good to Excellent: time at or below",
@@ -109,6 +112,7 @@
         },
         "data_description": {
           "polling_interval": "Use a longer interval if Bluetooth is unreliable or shared with other BLE devices.",
+          "share_bluetooth_connection": "Leave off to retain a dedicated connection for faster controls. Turn on for at least two purifiers when your Bluetooth adapter or proxy does not have enough GATT connection slots; opted-in purifiers share one prioritized connection lane.",
           "custom_auto_confirmation_delay": "Wait this many seconds before requesting a confirming PM2.5 reading. Set to 0 to increase immediately from the first valid reading."
         },
         "sections": {

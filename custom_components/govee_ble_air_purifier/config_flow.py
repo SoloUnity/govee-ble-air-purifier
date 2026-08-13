@@ -12,6 +12,7 @@ from homeassistant.components import bluetooth
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.data_entry_flow import FlowResult, section as data_entry_section
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -30,6 +31,7 @@ from .const import (
     CONF_DISCOVERED_DEVICE,
     CONF_POLLING_INTERVAL,
     CONF_PROFILE,
+    CONF_SHARE_BLUETOOTH_CONNECTION,
     DOMAIN,
     LEGACY_CONF_USE_CUSTOM_AUTO,
     MAX_POLLING_INTERVAL_SECONDS,
@@ -55,6 +57,7 @@ from .setup_helpers import (
     MANUAL_DEVICE_VALUE,
     DiscoveredDeviceOption,
     build_discovered_device_options,
+    connection_sharing_from_options,
     polling_interval_from_options,
     validate_polling_interval_seconds,
 )
@@ -201,7 +204,12 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             polling_interval = validate_polling_interval_seconds(
                 user_input[CONF_POLLING_INTERVAL]
             )
-            self._pending_options = {CONF_POLLING_INTERVAL: polling_interval}
+            self._pending_options = {
+                CONF_POLLING_INTERVAL: polling_interval,
+                CONF_SHARE_BLUETOOTH_CONNECTION: (
+                    user_input.get(CONF_SHARE_BLUETOOTH_CONNECTION, False) is True
+                ),
+            }
             if not profile.supports_custom_auto:
                 return self._create_pending_entry()
             self._custom_auto_defaults = custom_auto_defaults(
@@ -211,7 +219,10 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="polling",
-            data_schema=_polling_schema(profile.polling_interval_seconds),
+            data_schema=_polling_schema(
+                profile.polling_interval_seconds,
+                share_bluetooth_connection_default=False,
+            ),
         )
 
     async def async_step_custom_auto(
@@ -291,10 +302,16 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
         polling_default = polling_interval_from_options(
             self._config_entry.options, profile.polling_interval_seconds
         )
+        share_bluetooth_connection_default = connection_sharing_from_options(
+            self._config_entry.options
+        )
         submitted_values: dict[str, int] | None = None
         if user_input is not None:
             polling_default = validate_polling_interval_seconds(
                 user_input[CONF_POLLING_INTERVAL]
+            )
+            share_bluetooth_connection_default = (
+                user_input.get(CONF_SHARE_BLUETOOTH_CONNECTION, False) is True
             )
             if supports_custom_auto:
                 try:
@@ -319,6 +336,9 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
                     if key != LEGACY_CONF_USE_CUSTOM_AUTO
                 }
                 options[CONF_POLLING_INTERVAL] = polling_default
+                options[CONF_SHARE_BLUETOOTH_CONNECTION] = (
+                    share_bluetooth_connection_default
+                )
                 if submitted_values is not None:
                     options.update(submitted_values)
                 return self.async_create_entry(title="", data=options)
@@ -329,6 +349,9 @@ class GoveeBleAirPurifierOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=_options_schema(
                 polling_default=polling_default,
+                share_bluetooth_connection_default=(
+                    share_bluetooth_connection_default
+                ),
                 custom_auto_defaults=defaults,
                 supports_custom_auto=supports_custom_auto,
             ),
@@ -387,7 +410,9 @@ def _user_schema(
     )
 
 
-def _polling_schema(polling_default: int) -> vol.Schema:
+def _polling_schema(
+    polling_default: int, *, share_bluetooth_connection_default: bool = False
+) -> vol.Schema:
     """Build the profile-aware polling form."""
 
     return vol.Schema(
@@ -395,7 +420,11 @@ def _polling_schema(polling_default: int) -> vol.Schema:
             vol.Required(
                 CONF_POLLING_INTERVAL,
                 default=polling_default,
-            ): _polling_interval_schema_value()
+            ): _polling_interval_schema_value(),
+            vol.Required(
+                CONF_SHARE_BLUETOOTH_CONNECTION,
+                default=share_bluetooth_connection_default,
+            ): BooleanSelector(),
         }
     )
 
@@ -403,6 +432,7 @@ def _polling_schema(polling_default: int) -> vol.Schema:
 def _options_schema(
     *,
     polling_default: int,
+    share_bluetooth_connection_default: bool,
     custom_auto_defaults: Mapping[str, Any],
     supports_custom_auto: bool = True,
 ) -> vol.Schema:
@@ -414,6 +444,10 @@ def _options_schema(
                 CONF_POLLING_INTERVAL,
                 default=polling_default,
             ): _polling_interval_schema_value(),
+            vol.Required(
+                CONF_SHARE_BLUETOOTH_CONNECTION,
+                default=share_bluetooth_connection_default,
+            ): BooleanSelector(),
             **(
                 _custom_auto_sections(custom_auto_defaults)
                 if supports_custom_auto

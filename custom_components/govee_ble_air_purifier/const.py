@@ -9,6 +9,7 @@ CONF_ADDRESS = "address"
 CONF_DISCOVERED_DEVICE = "discovered_device"
 CONF_NAME = "name"
 CONF_POLLING_INTERVAL = "polling_interval"
+CONF_SHARE_BLUETOOTH_CONNECTION = "share_bluetooth_connection"
 CONF_PROFILE = "profile"
 # Retained only to remove the former settings toggle from existing options.
 LEGACY_CONF_USE_CUSTOM_AUTO = "use_custom_auto"

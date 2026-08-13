@@ -329,7 +329,10 @@ async def test_integration_setup_and_unload_lifecycle(
             "name": "Bedroom Purifier",
             "profile": "h7124",
         }
-        options = {"polling_interval": 20}
+        options = {
+            "polling_interval": 20,
+            "share_bluetooth_connection": True,
+        }
         runtime_data = None
 
         def __init__(self) -> None:

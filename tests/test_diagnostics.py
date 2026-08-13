@@ -48,7 +48,11 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
     )
     entry = SimpleNamespace(
         data={"address": "aa:bb:cc:dd:ee:ff", "name": "GVH7124ABCD"},
-        options={"use_custom_auto": True, "custom_auto_threshold_40": 3},
+        options={
+            "use_custom_auto": True,
+            "custom_auto_threshold_40": 3,
+            "share_bluetooth_connection": True,
+        },
         entry_id="entry-1",
         runtime_data=SimpleNamespace(
             coordinator=runtime_coordinator,
@@ -76,7 +80,12 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
 
     assert result == {
         "entry": {"address": "XX:XX:XX:XX:XX:XX", "name": "REDACTED"},
-        "options": {"use_custom_auto": True, "custom_auto_threshold_40": 3},
+        "options": {
+            "use_custom_auto": True,
+            "custom_auto_threshold_40": 3,
+            "share_bluetooth_connection": True,
+        },
+        "connection_mode": "shared",
         "state": {
             "is_on": True,
             "fan_mode": "Auto",
@@ -130,6 +139,7 @@ async def test_diagnostics_redacts_arbitrary_user_provided_name(
     assert result == {
         "entry": {"address": "XX:XX:XX:XX:XX:XX", "name": "REDACTED"},
         "options": {},
+        "connection_mode": "dedicated",
         "state": None,
         "custom_auto": None,
         "auto_resume": None,

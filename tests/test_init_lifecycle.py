@@ -62,6 +62,7 @@ async def test_setup_failure_stops_controller_and_coordinator(
     expected_calls: list[str],
 ) -> None:
     calls: list[str] = []
+    connection_arbiters: list[object | None] = []
 
     class FakeClient:
         def __init__(
@@ -73,6 +74,7 @@ async def test_setup_failure_stops_controller_and_coordinator(
             polling_interval_seconds,
             connection_arbiter,
         ) -> None:
+            connection_arbiters.append(connection_arbiter)
             return None
 
     class FakeCoordinator:
@@ -141,4 +143,5 @@ async def test_setup_failure_stops_controller_and_coordinator(
         await integration.async_setup_entry(hass, entry)
 
     assert calls == expected_calls
+    assert connection_arbiters == [None]
     assert entry.runtime_data is None

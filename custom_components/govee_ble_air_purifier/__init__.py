@@ -13,7 +13,10 @@ from .coordinator import GoveeCoordinator, GoveeRuntimeData
 from .custom_auto.config import CustomAutoConfig, custom_auto_defaults
 from .custom_auto.controller import CustomAutoController
 from .profiles import get_profile
-from .setup_helpers import polling_interval_from_options
+from .setup_helpers import (
+    connection_sharing_from_options,
+    polling_interval_from_options,
+)
 
 CONNECTION_ARBITER = "connection_arbiter"
 
@@ -33,12 +36,15 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
     polling_interval_seconds = polling_interval_from_options(
         entry.options, profile.polling_interval_seconds
     )
+    share_bluetooth_connection = connection_sharing_from_options(entry.options)
     client = GoveeBleClient(
         hass,
         address,
         profile=profile,
         polling_interval_seconds=polling_interval_seconds,
-        connection_arbiter=_connection_arbiter(hass),
+        connection_arbiter=(
+            _connection_arbiter(hass) if share_bluetooth_connection else None
+        ),
     )
     coordinator = GoveeCoordinator(
         hass,

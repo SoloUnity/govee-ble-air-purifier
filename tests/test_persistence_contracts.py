@@ -21,6 +21,7 @@ from custom_components.govee_ble_air_purifier.const import (
     CONF_NAME,
     CONF_POLLING_INTERVAL,
     CONF_PROFILE,
+    CONF_SHARE_BLUETOOTH_CONNECTION,
     LEGACY_CONF_USE_CUSTOM_AUTO,
     PLATFORMS,
 )
@@ -37,6 +38,7 @@ from custom_components.govee_ble_air_purifier.profiles import (
 def test_config_entry_and_option_storage_keys_are_stable() -> None:
     assert (CONF_ADDRESS, CONF_NAME, CONF_PROFILE) == ("address", "name", "profile")
     assert LEGACY_CONF_USE_CUSTOM_AUTO == "use_custom_auto"
+    assert CONF_SHARE_BLUETOOTH_CONNECTION == "share_bluetooth_connection"
     assert (CONF_POLLING_INTERVAL, *CUSTOM_AUTO_OPTION_KEYS) == (
         "polling_interval",
         "custom_auto_confirmation_delay",

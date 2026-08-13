@@ -8,6 +8,7 @@ import pytest
 
 from custom_components.govee_ble_air_purifier.const import (
     CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
+    CONF_SHARE_BLUETOOTH_CONNECTION,
 )
 from custom_components.govee_ble_air_purifier.custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
@@ -389,6 +390,10 @@ async def test_custom_auto_form_uses_bounded_box_number_selectors(
 
     assert result["step_id"] == "polling"
     assert polling_fields["polling_interval"][0].default == 10
+    assert polling_fields[CONF_SHARE_BLUETOOTH_CONNECTION][0].default is False
+    assert isinstance(
+        polling_fields[CONF_SHARE_BLUETOOTH_CONNECTION][1], _BooleanSelector
+    )
 
     result = await flow.async_step_polling({"polling_interval": 15})
     fields = _schema_by_key(result["data_schema"])
@@ -461,6 +466,7 @@ async def test_setup_stores_custom_confirmation_delay_and_reports_cross_field_er
     assert result["type"] == "create_entry"
     assert result["options"] == {
         "polling_interval": 15,
+        CONF_SHARE_BLUETOOTH_CONNECTION: False,
         **submitted,
     }
 
@@ -560,10 +566,18 @@ async def test_profile_without_custom_auto_modes_skips_policy_setup(
     )
 
     assert result["step_id"] == "polling"
-    result = await flow.async_step_polling({"polling_interval": 15})
+    result = await flow.async_step_polling(
+        {
+            "polling_interval": 15,
+            CONF_SHARE_BLUETOOTH_CONNECTION: True,
+        }
+    )
     assert result["type"] == "create_entry"
     assert result["data"]["profile"] == "h7126"
-    assert result["options"] == {"polling_interval": 15}
+    assert result["options"] == {
+        "polling_interval": 15,
+        CONF_SHARE_BLUETOOTH_CONNECTION: True,
+    }
 
 
 @pytest.mark.asyncio
@@ -584,9 +598,15 @@ async def test_options_hide_custom_auto_for_profile_without_required_modes(
 
     result = await options_flow.async_step_init()
 
-    assert list(_schema_by_key(result["data_schema"])) == ["polling_interval"]
+    assert list(_schema_by_key(result["data_schema"])) == [
+        "polling_interval",
+        CONF_SHARE_BLUETOOTH_CONNECTION,
+    ]
     saved = await options_flow.async_step_init({"polling_interval": 30})
-    assert saved["data"] == {"polling_interval": 30}
+    assert saved["data"] == {
+        "polling_interval": 30,
+        CONF_SHARE_BLUETOOTH_CONNECTION: False,
+    }
 
 
 @pytest.mark.asyncio
@@ -732,6 +752,7 @@ async def test_options_show_all_custom_auto_sections_on_initial_page(
     assert form["step_id"] == "init"
     assert list(fields) == [
         "polling_interval",
+        CONF_SHARE_BLUETOOTH_CONNECTION,
         CONF_CUSTOM_AUTO_CONFIRMATION_DELAY,
         "excellent_good",
         "good_fair",
@@ -743,7 +764,7 @@ async def test_options_show_all_custom_auto_sections_on_initial_page(
             CONF_CUSTOM_AUTO_CONFIRMATION_DELAY
         ][0].default
     }
-    for section_key in list(fields)[2:]:
+    for section_key in list(fields)[3:]:
         section_value = fields[section_key][1]
         displayed_defaults.update(
             {
@@ -752,6 +773,37 @@ async def test_options_show_all_custom_auto_sections_on_initial_page(
             }
         )
     assert displayed_defaults == CUSTOM_AUTO_DEFAULTS
+    assert fields[CONF_SHARE_BLUETOOTH_CONNECTION][0].default is False
+
+
+@pytest.mark.asyncio
+async def test_options_enable_and_preserve_shared_connection_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    options_flow = config_flow.GoveeBleAirPurifierOptionsFlow(
+        SimpleNamespace(
+            options={
+                "polling_interval": 10,
+                CONF_SHARE_BLUETOOTH_CONNECTION: True,
+            }
+        )
+    )
+
+    form = await options_flow.async_step_init()
+    fields = _schema_by_key(form["data_schema"])
+    assert fields[CONF_SHARE_BLUETOOTH_CONNECTION][0].default is True
+
+    saved = await options_flow.async_step_init(
+        {
+            "polling_interval": 10,
+            CONF_SHARE_BLUETOOTH_CONNECTION: True,
+            **_sectioned_values(config_flow, CUSTOM_AUTO_DEFAULTS),
+        }
+    )
+    assert saved["data"][CONF_SHARE_BLUETOOTH_CONNECTION] is True
 
 
 @pytest.mark.asyncio
@@ -768,7 +820,7 @@ async def test_h7129_options_use_profile_threshold_defaults(
     form = await options_flow.async_step_init()
     fields = _schema_by_key(form["data_schema"])
     displayed_thresholds = []
-    for section_key in list(fields)[2:]:
+    for section_key in list(fields)[3:]:
         section_fields = _schema_by_key(fields[section_key][1].schema)
         threshold_key = next(key for key in section_fields if "threshold" in key)
         displayed_thresholds.append(section_fields[threshold_key][0].default)

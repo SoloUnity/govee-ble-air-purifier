@@ -78,9 +78,10 @@ effect after an update and restart. Existing entries without a stored profile
 and existing `h7124` entries resolve to H7124, and the BLE address remains the
 unique ID. Setup resolves the profile before displaying polling, allowing the
 form to use the profile-defined default (10 seconds for H7124/fallback and 3
-seconds for H7129). Options contain the polling interval and, when the profile
-supports the required modes, Custom Auto thresholds and delays. Saving options
-reloads the entry so the coordinator interval and controller configuration are
+seconds for H7129). Options contain the polling interval, the default-off
+shared-connection toggle, and, when the profile supports the required modes,
+Custom Auto thresholds and delays. Saving options reloads the entry so
+connection ownership, coordinator interval, and controller configuration are
 rebuilt consistently.
 
 `custom_auto/config.py` combines profile-defined PM2.5 boundaries with shared
@@ -172,12 +173,12 @@ errors identify idle cleanup, lock waiting, a write/setup stage, or an actual
 purifier response rather than claiming a response timeout before a request was
 sent.
 
-The integration also owns one shared connection lease across all configured
-purifiers. The current purifier may cache a healthy GATT connection across
-transactions, but a different purifier first releases that idle connection
-before establishing its own. Connection establishment and application work are
-serialized across entries, preventing several entries from permanently holding
-all Bluetooth proxy connection slots. Same-purifier command bursts and delayed
+Each entry retains its own healthy GATT connection by default. An entry whose
+`share_bluetooth_connection` option is true instead joins one integration-owned
+connection lease with the other opted-in entries. The current shared purifier
+may cache a connection across transactions, but a different shared purifier
+first releases it before connecting. Thus two dedicated entries plus two shared
+entries occupy three GATT slots. Same-purifier command bursts and delayed
 refreshes retain their existing connection and, for H7129, encrypted session.
 The lease maintains separate FIFO queues for state-changing commands and
 routine polls. Commands bypass waiting polls for responsive controls, but a
