@@ -16,8 +16,11 @@ _ACTIVE_SCAN_TASKS: set[asyncio.Task[None]] = set()
 _ABANDONED_CONNECTION_ATTEMPTS: set[asyncio.Task[Any]] = set()
 FRESH_ADVERTISEMENT_TIMEOUT = 10
 FRESH_ADVERTISEMENT_POLL_INTERVAL = 0.1
-CONNECTION_TIMEOUT = 25.0
-MAX_CONNECTION_ATTEMPTS = 2
+# A distant purifier may need several connection intervals before its GATT
+# session is established.  Keep this finite: callers use the deadline to let
+# the shared arbiter move on if a device remains unavailable.
+CONNECTION_TIMEOUT = 45.0
+MAX_CONNECTION_ATTEMPTS = 3
 RECOVERY_ACTIVE_SCAN_DURATION = FRESH_ADVERTISEMENT_TIMEOUT + CONNECTION_TIMEOUT
 
 
