@@ -133,10 +133,10 @@ uses `<=`; only a valid reading above that boundary resets its timer.
 - H7124 routine polling uses only its proven power and status queries; recurring
   night-light telemetry is disabled without removing its confirmed controls.
   H7129 retains its reliable encrypted night-light polling.
-- The integration adapts healthy-connection reuse to the polling interval. For
-  intervals up to 25 seconds, it retains the connection for the interval plus a
-  5-second margin, capped at 30 seconds. Longer intervals use a 5-second grace
-  for related commands and refreshes before releasing the connection.
+- Purifier entries share a connection lease. Related commands and refreshes for
+  the same purifier still reuse its healthy connection, but another purifier
+  can release that idle connection before connecting. This prevents configured
+  purifiers from permanently consuming every Bluetooth proxy connection slot.
 - If setup or controls do not respond, close the Govee app and try again. The
   purifier may only allow one Bluetooth connection at a time, so the app may
   also be unable to connect while Home Assistant is actively polling.

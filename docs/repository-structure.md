@@ -102,7 +102,8 @@ bluetooth/
   transform and handshake frame helpers without owning model commands.
 - `bluetooth/client.py` owns the per-purifier transaction lock, writes,
   notification subscription and cleanup, response futures, matching, and shared
-  phase deadlines. It also retains a healthy connection, uses an exact-client
+  phase deadlines. It also coordinates one retained connection across all
+  purifier entries, reuses it for same-device activity, uses an exact-client
   disconnect signal to wake pending waits, waits for fresh post-disconnect
   advertisements, retries one read-only poll, negotiates and clears
   connection-specific encrypted sessions when selected by the profile, derives

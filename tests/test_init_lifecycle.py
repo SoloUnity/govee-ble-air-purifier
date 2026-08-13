@@ -6,6 +6,14 @@ import custom_components.govee_ble_air_purifier as integration
 from custom_components.govee_ble_air_purifier import async_unload_entry
 
 
+def test_connection_arbiter_is_shared_by_config_entries() -> None:
+    hass = SimpleNamespace(data={})
+
+    assert integration._connection_arbiter(hass) is integration._connection_arbiter(
+        hass
+    )
+
+
 @pytest.mark.asyncio
 async def test_successful_unload_stops_controller_and_coordinator() -> None:
     calls: list[str] = []
@@ -57,7 +65,13 @@ async def test_setup_failure_stops_controller_and_coordinator(
 
     class FakeClient:
         def __init__(
-            self, hass, address, *, profile, polling_interval_seconds
+            self,
+            hass,
+            address,
+            *,
+            profile,
+            polling_interval_seconds,
+            connection_arbiter,
         ) -> None:
             return None
 
@@ -117,7 +131,10 @@ async def test_setup_failure_stops_controller_and_coordinator(
     monkeypatch.setattr(integration, "AutoResumeManager", FakeAutoResume)
     entry = FakeEntry()
     hass = SimpleNamespace(
-        config_entries=SimpleNamespace(async_forward_entry_setups=forward_entry_setups)
+        data={},
+        config_entries=SimpleNamespace(
+            async_forward_entry_setups=forward_entry_setups
+        )
     )
 
     with pytest.raises(RuntimeError, match="setup failed"):

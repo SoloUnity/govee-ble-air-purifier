@@ -270,11 +270,20 @@ async def test_integration_setup_and_unload_lifecycle(
     events: list[object] = []
 
     class FakeClient:
-        def __init__(self, hass, address, *, profile, polling_interval_seconds) -> None:
+        def __init__(
+            self,
+            hass,
+            address,
+            *,
+            profile,
+            polling_interval_seconds,
+            connection_arbiter,
+        ) -> None:
             self.hass = hass
             self.address = address
             self.profile = profile
             self.polling_interval_seconds = polling_interval_seconds
+            self.connection_arbiter = connection_arbiter
 
     class FakeCoordinator:
         def __init__(self, hass, client, *, profile, polling_interval) -> None:
@@ -351,12 +360,15 @@ async def test_integration_setup_and_unload_lifecycle(
     monkeypatch.setattr(integration, "CustomAutoController", FakeController)
     monkeypatch.setattr(integration, "AutoResumeManager", FakeAutoResume)
     entry = FakeEntry()
-    hass = SimpleNamespace(config_entries=FakeConfigEntries())
+    hass = SimpleNamespace(data={}, config_entries=FakeConfigEntries())
 
     assert await integration.async_setup_entry(hass, entry) is True
     assert entry.runtime_data.profile.key == "h7124"
     assert entry.runtime_data.coordinator.client.address == "AA:BB:CC:DD:EE:FF"
     assert entry.runtime_data.coordinator.client.polling_interval_seconds == 20
+    assert entry.runtime_data.coordinator.client.connection_arbiter is (
+        integration._connection_arbiter(hass)
+    )
     assert entry.runtime_data.coordinator.polling_interval.total_seconds() == 20
     assert entry.runtime_data.controller.coordinator is entry.runtime_data.coordinator
     assert entry.update_listener is integration._async_update_listener

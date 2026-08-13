@@ -9,7 +9,10 @@ from custom_components.govee_ble_air_purifier.bluetooth import (
     GoveeBleClientError,
     GoveeBleDisconnectedError,
 )
-from custom_components.govee_ble_air_purifier.bluetooth.client import GoveeBleClient
+from custom_components.govee_ble_air_purifier.bluetooth.client import (
+    GoveeBleClient,
+    GoveeConnectionArbiter,
+)
 from custom_components.govee_ble_air_purifier.bluetooth.framing import (
     ProtocolError,
     build_frame,
@@ -352,6 +355,59 @@ async def test_h7129_reuses_shared_protocol_after_one_handshake(
     assert disconnects == [fake]
     assert client._disconnect_signal is None
     assert client._session_key is None
+
+
+@pytest.mark.asyncio
+async def test_h7129_reconnects_cleanly_after_another_purifier_uses_shared_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbiter = GoveeConnectionArbiter()
+    first_h7129 = EncryptedFakeBleakClient(SESSION_KEY_1)
+    other_purifier = EncryptedFakeBleakClient(SESSION_KEY_1)
+    second_h7129 = EncryptedFakeBleakClient(SESSION_KEY_2)
+    _callbacks, disconnects = _install_connections(
+        monkeypatch, [first_h7129, other_purifier, second_h7129]
+    )
+    h7129 = GoveeBleClient(
+        None,
+        "AA:BB:CC:DD:EE:29",
+        profile=H7129_PROFILE,
+        connection_arbiter=arbiter,
+    )
+    h7124 = GoveeBleClient(
+        None,
+        "AA:BB:CC:DD:EE:24",
+        connection_arbiter=arbiter,
+    )
+
+    first_state = await h7129.async_get_state()
+    assert await h7129.async_set_power(True) is True
+    await h7124._async_with_connection(lambda _client: asyncio.sleep(0))
+    second_state = await h7129.async_get_state()
+
+    assert first_state == second_state
+    expected_poll = [
+        H7129_PROFILE.state_query_command,
+        H7129_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
+    ]
+    assert first_h7129.application_frames == [
+        *expected_poll,
+        H7129_PROFILE.power_on_command,
+    ]
+    assert second_h7129.application_frames == expected_poll
+    assert [frame[:2] for frame in first_h7129.handshake_frames] == [
+        b"\xe7\x01",
+        b"\xe7\x02",
+    ]
+    assert [frame[:2] for frame in second_h7129.handshake_frames] == [
+        b"\xe7\x01",
+        b"\xe7\x02",
+    ]
+    assert disconnects[:2] == [first_h7129, other_purifier]
+
+    await asyncio.gather(h7129.async_close(), h7124.async_close())
 
 
 @pytest.mark.asyncio

@@ -417,12 +417,11 @@ must not be exposed.
   discovery is needed.
 - Transactions are asynchronous and serialized per purifier so commands and
   polls cannot overlap.
-- A healthy GATT connection is reused. Successful activity resets an adaptive
-  idle timeout; unexpected disconnects and failed transactions clear it, and
-  the next poll or command reconnects through Home Assistant.
-- Polling intervals from 5 through 25 seconds retain the connection for the
-  interval plus a 5-second margin, up to 30 seconds. Longer intervals retain it
-  for only a 5-second command-and-refresh grace before release. Entry unload
+- Purifier entries share one integration-owned connection lease. A healthy GATT
+  connection is reused for the same purifier, but a different purifier releases
+  that idle connection before connecting. This prevents the integration from
+  permanently occupying every connection slot on a Bluetooth proxy. Unexpected
+  disconnects and failed transactions clear the connection, and entry unload
   always closes it.
 - GATT notifications provide query responses and command confirmation.
 - Connection establishment, encrypted negotiation, and application responses

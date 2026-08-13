@@ -7,13 +7,22 @@ from datetime import timedelta
 from typing import Any
 
 from .auto_resume import AutoResumeManager
-from .bluetooth.client import GoveeBleClient
-from .const import CONF_ADDRESS, CONF_PROFILE, PLATFORMS
+from .bluetooth.client import GoveeBleClient, GoveeConnectionArbiter
+from .const import CONF_ADDRESS, CONF_PROFILE, DOMAIN, PLATFORMS
 from .coordinator import GoveeCoordinator, GoveeRuntimeData
 from .custom_auto.config import CustomAutoConfig, custom_auto_defaults
 from .custom_auto.controller import CustomAutoController
 from .profiles import get_profile
 from .setup_helpers import polling_interval_from_options
+
+CONNECTION_ARBITER = "connection_arbiter"
+
+
+def _connection_arbiter(hass: Any) -> GoveeConnectionArbiter:
+    """Return the connection arbiter shared by every purifier config entry."""
+
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    return domain_data.setdefault(CONNECTION_ARBITER, GoveeConnectionArbiter())
 
 
 async def async_setup_entry(hass: Any, entry: Any) -> bool:
@@ -29,6 +38,7 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         address,
         profile=profile,
         polling_interval_seconds=polling_interval_seconds,
+        connection_arbiter=_connection_arbiter(hass),
     )
     coordinator = GoveeCoordinator(
         hass,

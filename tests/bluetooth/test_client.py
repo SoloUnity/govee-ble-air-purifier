@@ -10,6 +10,7 @@ from custom_components.govee_ble_air_purifier.bluetooth import client as client_
 from custom_components.govee_ble_air_purifier.bluetooth.client import (
     GoveeBleClient,
     GoveeBleClientError,
+    GoveeConnectionArbiter,
     connection_idle_timeout_for_polling_interval,
 )
 from custom_components.govee_ble_air_purifier.bluetooth import (
@@ -1423,6 +1424,68 @@ def test_client_uses_profile_polling_interval_for_idle_timeout() -> None:
     )
 
     assert client._connection_idle_timeout == 8.0
+
+
+@pytest.mark.asyncio
+async def test_connection_arbiter_shares_one_slot_across_four_purifiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    arbiter = GoveeConnectionArbiter()
+    clients = [
+        GoveeBleClient(
+            None,
+            f"AA:BB:CC:DD:EE:{index:02X}",
+            connection_arbiter=arbiter,
+        )
+        for index in range(4)
+    ]
+    active: set[FakeBleakClient] = set()
+    peak_active = 0
+    connected_by_address: dict[str, list[FakeBleakClient]] = {}
+
+    async def async_establish_connection(
+        _hass: Any,
+        address: str,
+        _disconnected_callback: Any,
+        *,
+        deadline: float,
+    ) -> FakeBleakClient:
+        nonlocal peak_active
+        if active:
+            raise GoveeBleClientError("Bluetooth proxy has no free connection slots")
+        connected = FakeBleakClient()
+        active.add(connected)
+        peak_active = max(peak_active, len(active))
+        connected_by_address.setdefault(address, []).append(connected)
+        return connected
+
+    async def async_disconnect(passed_client: FakeBleakClient, *, deadline: float) -> None:
+        await passed_client.disconnect()
+        active.discard(passed_client)
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+
+    for _round in range(2):
+        states = await asyncio.gather(*(client.async_get_state() for client in clients))
+        assert all(state.is_on is True for state in states)
+        assert len(active) == 1
+
+    assert peak_active == 1
+    assert all(len(connections) == 2 for connections in connected_by_address.values())
+    assert all(
+        [write[1] for write in connection.writes]
+        == [H7124_PROFILE.state_query_command, H7124_PROFILE.status_query_command]
+        for connections in connected_by_address.values()
+        for connection in connections
+    )
+
+    await asyncio.gather(*(client.async_close() for client in clients))
+    assert not active
 
 
 @pytest.mark.asyncio

@@ -164,17 +164,25 @@ service discovery then have a separate 25-second deadline. A newly connected
 H7129 has a separate 10-second handshake deadline. Transaction-lock waiting and
 the mandatory application exchange use the operation's normal budget: 5 seconds
 for the two-response power/status poll and 2 seconds for command confirmation.
-Profiles with a night light then get a separate model-specific best-effort
-telemetry budget: 2 seconds for H7124 and 1 second for H7129. The application
-budget starts after connection and handshake complete. Explicit disconnect
-cleanup has its own 5-second bound. Timeout errors identify idle cleanup, lock
-waiting, a write/setup stage, or an actual purifier response rather than
-claiming a response timeout before a request was sent.
+Profiles with enabled night-light polling then get a separate model-specific
+best-effort telemetry budget. H7124 disables recurring light telemetry; H7129
+uses 1 second. The application budget starts after connection and handshake
+complete. Explicit disconnect cleanup has its own 5-second bound. Timeout
+errors identify idle cleanup, lock waiting, a write/setup stage, or an actual
+purifier response rather than claiming a response timeout before a request was
+sent.
 
-The client caches a healthy GATT connection across transactions. Every
-successful operation resets an idle timer derived from the configured polling
-interval. Intervals from 5 through 25 seconds use the interval plus a 5-second
-margin, retaining the connection through the next expected poll without
+The integration also owns one shared connection lease across all configured
+purifiers. The current purifier may cache a healthy GATT connection across
+transactions, but a different purifier first releases that idle connection
+before establishing its own. Connection establishment and application work are
+serialized across entries, preventing several entries from permanently holding
+all Bluetooth proxy connection slots. Same-purifier command bursts and delayed
+refreshes retain their existing connection and, for H7129, encrypted session.
+
+Every successful operation resets an idle timer derived from the configured
+polling interval. Intervals from 5 through 25 seconds use the interval plus a
+5-second margin, retaining the connection through the next expected poll without
 exceeding 30 seconds. Longer intervals use a 5-second grace for command bursts
 and the coordinator's delayed refresh, then release the connection rather than
 occupying a Bluetooth slot without reaching the next poll. Idle cleanup

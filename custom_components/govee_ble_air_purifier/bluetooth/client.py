@@ -80,6 +80,43 @@ def connection_idle_timeout_for_polling_interval(
     return CONNECTION_IDLE_GRACE
 
 
+class GoveeConnectionArbiter:
+    """Share one retained GATT connection fairly across purifier entries."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner: GoveeBleClient | None = None
+
+    async def async_run(
+        self,
+        client: GoveeBleClient,
+        operation: Callable[[], Awaitable[Any]],
+        deadline: float,
+    ) -> Any:
+        """Run one client's work after releasing a different idle owner."""
+
+        try:
+            await _async_wait_until(self._lock.acquire(), deadline)
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            raise GoveeBleClientError(
+                "Timed out waiting for another purifier's Bluetooth connection"
+            ) from err
+        try:
+            owner = self._owner
+            if owner is not None and owner is not client:
+                await owner._async_release_for_connection_switch(deadline)
+            self._owner = client
+            return await operation()
+        finally:
+            self._lock.release()
+
+    def connection_released(self, client: GoveeBleClient) -> None:
+        """Forget an owner after its retained connection is gone."""
+
+        if self._owner is client:
+            self._owner = None
+
+
 class GoveeBleClient:
     """Small serialized request/response BLE client."""
 
@@ -90,6 +127,7 @@ class GoveeBleClient:
         *,
         profile: ModelProfile = H7124_PROFILE,
         polling_interval_seconds: float | None = None,
+        connection_arbiter: GoveeConnectionArbiter | None = None,
     ) -> None:
         self._hass = hass
         self._address = address
@@ -101,6 +139,7 @@ class GoveeBleClient:
         self._connection_idle_timeout = connection_idle_timeout_for_polling_interval(
             polling_interval_seconds
         )
+        self._connection_arbiter = connection_arbiter
         self._lock = asyncio.Lock()
         self._client: Any = None
         self._disconnect_signal: asyncio.Event | None = None
@@ -720,6 +759,26 @@ class GoveeBleClient:
 
         if deadline is None:
             deadline = asyncio.get_running_loop().time() + transport.CONNECTION_TIMEOUT
+        if self._connection_arbiter is not None:
+            return await self._connection_arbiter.async_run(
+                self,
+                lambda: self._async_with_connection_unarbitrated(
+                    operation, deadline=deadline
+                ),
+                deadline,
+            )
+        return await self._async_with_connection_unarbitrated(
+            operation, deadline=deadline
+        )
+
+    async def _async_with_connection_unarbitrated(
+        self,
+        operation: Callable[[Any], Any],
+        *,
+        deadline: float,
+    ) -> Any:
+        """Run an operation while the integration-wide connection lease is held."""
+
         if self._closed:
             raise GoveeBleClientError("BLE client is closed")
         for future in tuple(self._abandoned_connection_operations):
@@ -855,6 +914,30 @@ class GoveeBleClient:
             self._schedule_idle_disconnect()
         return result
 
+    async def _async_release_for_connection_switch(self, deadline: float) -> None:
+        """Release an idle cached connection so another purifier can connect."""
+
+        self._cancel_idle_disconnect()
+        task = self._idle_disconnect_task
+        if task is not None and task is not asyncio.current_task():
+            try:
+                await _async_wait_until(asyncio.shield(task), deadline)
+            except (TimeoutError, asyncio.TimeoutError) as err:
+                raise GoveeBleClientError(
+                    "Timed out releasing another purifier's Bluetooth connection"
+                ) from err
+
+        try:
+            await _async_wait_until(self._lock.acquire(), deadline)
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            raise GoveeBleClientError(
+                "Timed out releasing another purifier's Bluetooth connection"
+            ) from err
+        try:
+            await self._async_drop_connection(deadline)
+        finally:
+            self._lock.release()
+
     async def _async_drop_after_error(
         self, client: Any, disconnect_revision: int
     ) -> bool:
@@ -903,6 +986,8 @@ class GoveeBleClient:
             if disconnect_signal is not None:
                 disconnect_signal.set()
             self._clear_connection_state()
+            if self._connection_arbiter is not None:
+                self._connection_arbiter.connection_released(self)
             self._unexpected_disconnect_revision += 1
             self._mark_connection_stale()
 
@@ -1318,6 +1403,8 @@ class GoveeBleClient:
             else None
         )
         self._clear_connection_state()
+        if self._connection_arbiter is not None:
+            self._connection_arbiter.connection_released(self)
         if client is not None:
             _LOGGER.debug(
                 "%s releasing cached BLE connection%s%s",
