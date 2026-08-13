@@ -164,9 +164,9 @@ service discovery then have a separate 25-second deadline. A newly connected
 H7129 has a separate 10-second handshake deadline. Transaction-lock waiting and
 the mandatory application exchange use the operation's normal budget: 5 seconds
 for the two-response power/status poll and 2 seconds for command confirmation.
-Profiles with a night light then get a separate 1-second best-effort telemetry
-budget. The application budget starts after connection and handshake complete.
-Explicit disconnect
+Profiles with a night light then get a separate model-specific best-effort
+telemetry budget: 2 seconds for H7124 and 1 second for H7129. The application
+budget starts after connection and handshake complete. Explicit disconnect
 cleanup has its own 5-second bound. Timeout errors identify idle cleanup, lock
 waiting, a write/setup stage, or an actual purifier response rather than
 claiming a response timeout before a request was sent.

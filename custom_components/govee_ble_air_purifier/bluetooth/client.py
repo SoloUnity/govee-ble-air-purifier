@@ -36,7 +36,6 @@ from .transport import _async_wait_until
 
 DEFAULT_TIMEOUT = 10.0
 POLL_TIMEOUT = 5.0
-OPTIONAL_POLL_TIMEOUT = 1.0
 COMMAND_CONFIRMATION_TIMEOUT = 2.0
 HANDSHAKE_TIMEOUT = 10.0
 CONNECTION_IDLE_GRACE = 5.0
@@ -151,7 +150,11 @@ class GoveeBleClient:
                     requests,
                     timeout=POLL_TIMEOUT,
                     optional_requests=optional_requests,
-                    optional_timeout=OPTIONAL_POLL_TIMEOUT,
+                    optional_timeout=(
+                        night_light.poll_timeout_seconds
+                        if night_light is not None
+                        else 0.0
+                    ),
                 )
                 power_frame, status_frame = frames[:2]
                 assert power_frame is not None and status_frame is not None

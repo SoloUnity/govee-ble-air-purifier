@@ -47,6 +47,7 @@ _COMMAND_KEYS = {
     "fan_modes",
 }
 _NIGHT_LIGHT_KEYS = {
+    "poll_timeout_seconds",
     "power_off",
     "power_on",
     "power_brightness_query",
@@ -95,6 +96,7 @@ class _FrameTemplate:
 class NightLightProfile:
     """Profile-defined commands for an optional purifier night light."""
 
+    poll_timeout_seconds: int
     power_off_command: bytes
     power_on_command: bytes
     power_brightness_query_command: bytes
@@ -265,6 +267,9 @@ def _parse_night_light(value: Any, *, source: str) -> NightLightProfile:
     """Parse one optional night-light capability block."""
 
     commands = _require_object(value, _NIGHT_LIGHT_KEYS, source=source)
+    poll_timeout_seconds = commands["poll_timeout_seconds"]
+    if type(poll_timeout_seconds) is not int or not 1 <= poll_timeout_seconds <= 5:
+        raise ValueError(f"{source}.poll_timeout_seconds must be from 1 to 5 seconds")
     power_off = _parse_frame(commands["power_off"], source=f"{source}.power_off")
     power_on = _parse_frame(commands["power_on"], source=f"{source}.power_on")
     power_brightness_query = _parse_frame(
@@ -314,6 +319,7 @@ def _parse_night_light(value: Any, *, source: str) -> NightLightProfile:
     ):
         raise ValueError(f"{source}.rgb_template has an unexpected night-light layout")
     return NightLightProfile(
+        poll_timeout_seconds=poll_timeout_seconds,
         power_off_command=power_off,
         power_on_command=power_on,
         power_brightness_query_command=power_brightness_query,

@@ -65,6 +65,7 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     }
     assert H7124_PROFILE.key == "h7124"
     assert H7124_PROFILE.polling_interval_seconds == 10
+    assert H7124_PROFILE.night_light.poll_timeout_seconds == 2
     assert H7124_PROFILE.custom_auto_thresholds == (3, 5, 9, 15)
     assert get_profile(None) is H7124_PROFILE
     assert get_profile("h7124") is H7124_PROFILE

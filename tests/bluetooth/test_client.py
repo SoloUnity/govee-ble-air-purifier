@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import logging
 import time
 from typing import Any
@@ -617,13 +618,15 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
     ],
 )
 async def test_get_state_preserves_core_state_with_best_effort_light_responses(
-    monkeypatch: pytest.MonkeyPatch,
     responses: tuple[str, ...],
     expected_night_light: NightLightState | None,
 ) -> None:
-    monkeypatch.setattr(client_module, "OPTIONAL_POLL_TIMEOUT", 0.01)
     fake = _BestEffortNightLightFake(responses)
     client = _TestableGoveeBleClient(fake)
+    client._profile = replace(
+        H7124_PROFILE,
+        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.01),
+    )
 
     assert await client.async_get_state() == PurifierState(
         is_on=True,
@@ -643,11 +646,13 @@ async def test_get_state_preserves_core_state_with_best_effort_light_responses(
 
 @pytest.mark.asyncio
 async def test_get_state_collects_delayed_pipelined_light_responses(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(client_module, "OPTIONAL_POLL_TIMEOUT", 0.05)
     fake = _BestEffortNightLightFake(("rgb", "power"), delay=0.01)
     client = _TestableGoveeBleClient(fake)
+    client._profile = replace(
+        H7124_PROFILE,
+        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.05),
+    )
 
     assert await client.async_get_state() == PurifierState(
         is_on=True,
@@ -703,7 +708,6 @@ async def test_missing_light_telemetry_keeps_healthy_connection(
 ) -> None:
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
-    monkeypatch.setattr(client_module, "OPTIONAL_POLL_TIMEOUT", 0.01)
     fake = _BestEffortNightLightFake(())
     disconnects: list[Any] = []
 
@@ -725,6 +729,10 @@ async def test_missing_light_telemetry_keeps_healthy_connection(
     )
     monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+    client._profile = replace(
+        H7124_PROFILE,
+        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.01),
+    )
 
     assert await client.async_get_state() == PurifierState(
         is_on=True,
@@ -805,7 +813,6 @@ async def test_disconnect_wakes_optional_collection_and_preserves_core_state(
 
             self.disconnect_task = asyncio.create_task(disconnect_later())
 
-    monkeypatch.setattr(client_module, "OPTIONAL_POLL_TIMEOUT", 0.2)
     fake = DisconnectingLightFake()
 
     async def async_establish_connection(
@@ -822,6 +829,10 @@ async def test_disconnect_wakes_optional_collection_and_preserves_core_state(
         transport, "async_establish_connection", async_establish_connection
     )
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+    client._profile = replace(
+        H7124_PROFILE,
+        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.2),
+    )
     started = asyncio.get_running_loop().time()
 
     assert await client.async_get_state() == PurifierState(
@@ -868,7 +879,7 @@ async def test_get_state_uses_shorter_poll_timeout() -> None:
         ),
     )
     assert client.timeout == 5.0
-    assert client.optional_timeout == 1.0
+    assert client.optional_timeout == 2.0
 
 
 @pytest.mark.asyncio

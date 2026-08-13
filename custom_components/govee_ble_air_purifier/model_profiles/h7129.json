@@ -25,6 +25,7 @@
     "thresholds": [7, 9, 13, 19]
   },
   "night_light": {
+    "poll_timeout_seconds": 1,
     "power_off": "3a 1b 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 21",
     "power_on": "3a 1b 01 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20",
     "power_brightness_query": "aa 1b 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 b0",

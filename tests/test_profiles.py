@@ -90,6 +90,8 @@ def test_observed_ihoment_h7129_name_uses_exact_encrypted_profile() -> None:
     assert profile.supports_custom_auto is True
     assert profile.custom_auto_thresholds == (7, 9, 13, 19)
     assert profile.night_light is not None
+    assert profile.night_light.poll_timeout_seconds == 1
+    assert H7124_PROFILE.night_light.poll_timeout_seconds == 2
     assert (
         profile.night_light.power_on_command
         == H7124_PROFILE.night_light.power_on_command
@@ -259,6 +261,15 @@ def test_profile_schema_rejects_incomplete_night_light() -> None:
     del data["night_light"]["rgb_state_query"]
 
     with pytest.raises(ValueError, match="missing rgb_state_query"):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize("value", [0, 6, True, 1.5])
+def test_profile_schema_rejects_invalid_night_light_poll_timeout(value: object) -> None:
+    data = _profile_data()
+    data["night_light"]["poll_timeout_seconds"] = value
+
+    with pytest.raises(ValueError, match="poll_timeout_seconds must be from 1 to 5"):
         _parse_profile_definition(data, source="test.json")
 
 
