@@ -251,11 +251,10 @@ async def test_setting_fan_mode_updates_data_without_full_refresh(
 
 
 @pytest.mark.asyncio
-async def test_poll_preserves_command_confirmed_rgb_when_query_is_unknown() -> None:
+async def test_disabled_telemetry_preserves_confirmed_light_state() -> None:
     from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
 
     client = FakeClient()
-    client.night_light = NightLightState(is_on=True, brightness_percent=50)
     coordinator = GoveeCoordinator(FakeHass(), client)
     coordinator.data = PurifierState(
         night_light=NightLightState(
@@ -269,7 +268,7 @@ async def test_poll_preserves_command_confirmed_rgb_when_query_is_unknown() -> N
 
     assert data.night_light == NightLightState(
         is_on=True,
-        brightness_percent=50,
+        brightness_percent=100,
         rgb_color=(255, 255, 0),
     )
 

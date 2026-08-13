@@ -212,11 +212,14 @@ traffic without exposing frame contents.
 
 For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
 notification subscription to issue the mandatory purifier power and status
-queries in sequence. Profiles with a night light then write the power/brightness
-and RGB state queries back-to-back. Their responses are matched independently,
-may arrive in either order, and are collected within a short shared grace
-period. Missing, partial, malformed, or late optional telemetry does not discard
-the core purifier state or invalidate an otherwise healthy connection.
+queries in sequence. A positive profile-defined night-light poll timeout enables
+the optional power/brightness and RGB queries. H7124 sets that timeout to zero,
+restoring its reliable two-query core poll while retaining command-confirmed
+light controls. H7129 retains its reliable back-to-back optional queries; their
+responses are matched independently, may arrive in either order, and use a short
+shared grace period. Missing, partial, malformed, or late optional telemetry does
+not discard the core purifier state or invalidate an otherwise healthy
+connection. H7124 command-confirmed light state remains cached across core polls.
 The underlying connection may have been retained from an earlier transaction.
 The notification handler ignores identified stale handshake traffic and
 validates every candidate frame. During the mandatory phase it accepts only the

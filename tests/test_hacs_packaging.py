@@ -83,6 +83,8 @@ def test_integration_packages_bundled_model_profiles() -> None:
     assert default["polling_interval_seconds"] == 10
     assert h7124["polling_interval_seconds"] == 10
     assert h7129["polling_interval_seconds"] == 3
+    assert h7124["night_light"]["poll_timeout_seconds"] == 0
+    assert h7129["night_light"]["poll_timeout_seconds"] == 1
     assert default["encryption"] == "none"
     assert h7129["encryption"] == "govee_v1"
 

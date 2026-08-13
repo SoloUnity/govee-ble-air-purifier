@@ -83,6 +83,8 @@ bluetooth/
   mode. H7124 and H7129 additionally contain an optional `night_light` block
   with static calls and variable brightness/RGB templates. `default.json` omits
   that block, preventing unverified fallback models from exposing a light.
+  A zero night-light poll timeout keeps controls enabled while disabling routine
+  telemetry; H7124 uses this reliability mode, while H7129 continues polling.
   Future model files are complete definitions, not partial inheritance over
   another file.
 - Root `protocol.py` retains shared frame validation, response and confirmation

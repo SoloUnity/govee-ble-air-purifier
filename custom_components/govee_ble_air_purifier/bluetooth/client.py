@@ -135,7 +135,13 @@ class GoveeBleClient:
                 optional_requests: tuple[
                     tuple[bytes, Callable[[bytes], bool]], ...
                 ] = ()
-                if (night_light := self._profile.night_light) is not None:
+                night_light = self._profile.night_light
+                night_light_poll_timeout = (
+                    night_light.poll_timeout_seconds if night_light is not None else 0.0
+                )
+                poll_night_light = night_light_poll_timeout > 0
+                if poll_night_light:
+                    assert night_light is not None
                     optional_requests = (
                         (
                             night_light.power_brightness_query_command,
@@ -150,17 +156,13 @@ class GoveeBleClient:
                     requests,
                     timeout=POLL_TIMEOUT,
                     optional_requests=optional_requests,
-                    optional_timeout=(
-                        night_light.poll_timeout_seconds
-                        if night_light is not None
-                        else 0.0
-                    ),
+                    optional_timeout=night_light_poll_timeout,
                 )
                 power_frame, status_frame = frames[:2]
                 assert power_frame is not None and status_frame is not None
                 status = self._profile.decode_status(status_frame)
                 night_light_state = None
-                if night_light is not None:
+                if poll_night_light:
                     power_brightness_frame, rgb_frame = frames[2:]
                     if power_brightness_frame is not None or rgb_frame is not None:
                         power_brightness = (

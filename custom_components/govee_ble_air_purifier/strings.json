@@ -20,7 +20,7 @@
           "polling_interval": "Polling interval in seconds"
         },
         "data_description": {
-          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, filter life, and supported night-light state."
+          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, filter life, and profile-enabled night-light state."
         }
       },
       "custom_auto": {

@@ -386,6 +386,10 @@ must not be exposed.
 - The night light advertises only RGB color mode, which includes separate
   brightness support. Profiles without the optional capability block create no
   light entity.
+- H7124 disables recurring night-light telemetry for BLE reliability while
+  retaining command-confirmed controls and cached state. Its light state starts
+  unknown after restart until Home Assistant receives a command confirmation.
+  H7129 continues automatic night-light polling.
 - The PM2.5 sensor uses Home Assistant's PM2.5 device class, concentration unit,
   and measurement state class.
 - The fan declares only supported Home Assistant fan features: speed and preset

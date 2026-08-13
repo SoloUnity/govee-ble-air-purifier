@@ -69,6 +69,9 @@ while H7129 uses its connection-specific encrypted session. H7129 accepts the
 same RGB state query, but the captured `0xfc` response does not identify a
 color. Its color therefore remains unknown after restart until a query returns
 an RGB payload or Home Assistant receives an exact echo for a color command.
+For BLE reliability, routine H7124 polls do not query night-light state; its
+state starts unknown after restart and is updated from confirmed Home Assistant
+commands. H7129 continues to poll its night-light state automatically.
 
 ## Custom Auto
 
@@ -127,6 +130,9 @@ uses `<=`; only a valid reading above that boundary resets its timer.
   negotiation, application polling, command confirmation, and disconnect
   cleanup use separate bounded timeouts. Idle cleanup also completes before a
   poll or command begins its normal queue and response budgets.
+- H7124 routine polling uses only its proven power and status queries; recurring
+  night-light telemetry is disabled without removing its confirmed controls.
+  H7129 retains its reliable encrypted night-light polling.
 - The integration adapts healthy-connection reuse to the polling interval. For
   intervals up to 25 seconds, it retains the connection for the interval plus a
   5-second margin, capped at 30 seconds. Longer intervals use a 5-second grace

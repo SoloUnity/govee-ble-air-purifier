@@ -244,6 +244,12 @@ layouts were identical to H7124. The captures prove the commands, device
 notifications, and their order; HCI traffic does not by itself verify physical
 light output.
 
+Implementation note: the integration intentionally does not replay the H7124
+`aa 1b` state queries during routine polling. Adding those reads to every poll
+made the previously reliable H7124 core path unreliable. H7124 light controls
+remain available and their matching notifications update cached state. H7129's
+automatic encrypted night-light polling remains enabled.
+
 H7124 writes used ATT Write Command `0x52` on handle `0x0015`, and
 notifications used ATT Notification `0x1b` on handle `0x0012`. H7129 used the
 same GATT service and characteristic UUIDs, with notify value handle `0x0016`

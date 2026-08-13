@@ -96,6 +96,7 @@ class _FrameTemplate:
 class NightLightProfile:
     """Profile-defined commands for an optional purifier night light."""
 
+    # Zero keeps controls enabled while disabling automatic telemetry polling.
     poll_timeout_seconds: int
     power_off_command: bytes
     power_on_command: bytes
@@ -268,8 +269,8 @@ def _parse_night_light(value: Any, *, source: str) -> NightLightProfile:
 
     commands = _require_object(value, _NIGHT_LIGHT_KEYS, source=source)
     poll_timeout_seconds = commands["poll_timeout_seconds"]
-    if type(poll_timeout_seconds) is not int or not 1 <= poll_timeout_seconds <= 5:
-        raise ValueError(f"{source}.poll_timeout_seconds must be from 1 to 5 seconds")
+    if type(poll_timeout_seconds) is not int or not 0 <= poll_timeout_seconds <= 5:
+        raise ValueError(f"{source}.poll_timeout_seconds must be from 0 to 5 seconds")
     power_off = _parse_frame(commands["power_off"], source=f"{source}.power_off")
     power_on = _parse_frame(commands["power_on"], source=f"{source}.power_on")
     power_brightness_query = _parse_frame(
