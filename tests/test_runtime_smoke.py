@@ -254,6 +254,7 @@ async def test_real_config_flow_creates_complete_entry(
     }
     assert result["options"] == {
         "polling_interval": 20,
+        "share_bluetooth_connection": False,
         **CUSTOM_AUTO_DEFAULTS,
     }
 
@@ -295,6 +296,12 @@ async def test_integration_setup_and_unload_lifecycle(
         async def async_config_entry_first_refresh(self) -> None:
             events.append("first_refresh")
 
+        def async_enable_push_updates(self, handler) -> None:
+            events.append("push_enable")
+
+        async def async_disable_push_updates(self) -> None:
+            events.append("push_disable")
+
         async def async_shutdown(self) -> None:
             events.append("shutdown")
 
@@ -317,6 +324,9 @@ async def test_integration_setup_and_unload_lifecycle(
 
         async def async_restore_from_hass(self, unique_id: str) -> None:
             events.append(("restore", unique_id))
+
+        async def async_handle_physical_fan_mode(self, mode: str) -> None:
+            return None
 
         async def async_stop(self) -> None:
             events.append("auto_resume_stop")
@@ -379,6 +389,7 @@ async def test_integration_setup_and_unload_lifecycle(
     assert events == [
         "first_refresh",
         ("restore", "aabbccddeeff"),
+        "push_enable",
         ("forward", tuple(integration.PLATFORMS)),
     ]
 
@@ -386,8 +397,9 @@ async def test_integration_setup_and_unload_lifecycle(
     assert events[-1] == ("reload", "runtime-entry")
 
     assert await integration.async_unload_entry(hass, entry) is True
-    assert events[-4:] == [
+    assert events[-5:] == [
         ("unload", tuple(integration.PLATFORMS)),
+        "push_disable",
         "auto_resume_stop",
         "controller_stop",
         "shutdown",
