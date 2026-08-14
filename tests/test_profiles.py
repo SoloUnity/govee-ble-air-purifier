@@ -7,6 +7,8 @@ import pytest
 from custom_components.govee_ble_air_purifier.profiles import (
     EncryptionMode,
     H7124_PROFILE,
+    NightLightPollingCadence,
+    NightLightPollingRequestOrder,
     PROFILE_SCHEMA_VERSION,
     _build_profile,
     _load_profile_definitions,
@@ -95,13 +97,26 @@ def test_observed_ihoment_h7129_name_uses_exact_encrypted_profile() -> None:
     assert profile.supports_custom_auto is True
     assert profile.custom_auto_thresholds == (7, 9, 13, 19)
     assert profile.night_light is not None
-    assert profile.night_light.poll_timeout_seconds == 1
+    assert profile.night_light.polling.cadence is NightLightPollingCadence.EVERY_POLL
+    assert profile.night_light.polling.interval_seconds == 3
+    assert profile.night_light.polling.timeout_seconds == 1
+    assert (
+        profile.night_light.polling.request_order
+        is NightLightPollingRequestOrder.PIPELINED
+    )
     assert profile.push_notifications is not None
     assert profile.push_notifications.enabled is True
     assert profile.push_notifications.power_state is True
     assert profile.push_notifications.fan_mode is True
     assert profile.push_notifications.night_light_power_brightness is True
-    assert H7124_PROFILE.night_light.poll_timeout_seconds == 0
+    h7124_polling = H7124_PROFILE.night_light.polling
+    assert h7124_polling.cadence is NightLightPollingCadence.PERIODIC
+    assert h7124_polling.interval_seconds == 300
+    assert h7124_polling.timeout_seconds == 1
+    assert (
+        h7124_polling.request_order is NightLightPollingRequestOrder.SEQUENTIAL
+    )
+    assert h7124_polling.max_backoff_seconds == 1800
     assert (
         profile.night_light.power_on_command
         == H7124_PROFILE.night_light.power_on_command
@@ -203,8 +218,8 @@ def test_profile_loader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
     _write_profile(tmp_path / "default.json", data)
     _write_profile(tmp_path / "h7124.json", data)
     duplicate = json.dumps(data).replace(
-        '"schema_version": 3',
-        '"schema_version": 3, "schema_version": 3',
+        '"schema_version": 4',
+        '"schema_version": 4, "schema_version": 4',
         1,
     )
     (tmp_path / "h7126.json").write_text(duplicate, encoding="utf-8")
@@ -312,12 +327,69 @@ def test_profile_schema_rejects_incomplete_night_light() -> None:
         _parse_profile_definition(data, source="test.json")
 
 
-@pytest.mark.parametrize("value", [-1, 6, True, 1.5])
+def test_profile_schema_rejects_incomplete_night_light_polling() -> None:
+    data = _profile_data()
+    del data["night_light"]["polling"]["request_order"]
+
+    with pytest.raises(ValueError, match="missing request_order"):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize("value", [0, 6, True, 1.5])
 def test_profile_schema_rejects_invalid_night_light_poll_timeout(value: object) -> None:
     data = _profile_data()
-    data["night_light"]["poll_timeout_seconds"] = value
+    data["night_light"]["polling"]["timeout_seconds"] = value
 
-    with pytest.raises(ValueError, match="poll_timeout_seconds must be from 0 to 5"):
+    with pytest.raises(ValueError, match="timeout_seconds must be from 1 to 5"):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize("value", [2, 3601, True, 3.0])
+def test_profile_schema_rejects_invalid_night_light_poll_interval(
+    value: object,
+) -> None:
+    data = _profile_data()
+    data["night_light"]["polling"]["interval_seconds"] = value
+
+    with pytest.raises(ValueError, match="interval_seconds must be from 3 to 3600"):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize("value", [299, 86401, True, 1800.0])
+def test_profile_schema_rejects_invalid_night_light_poll_backoff(
+    value: object,
+) -> None:
+    data = _profile_data()
+    data["night_light"]["polling"]["max_backoff_seconds"] = value
+
+    with pytest.raises(ValueError, match="max_backoff_seconds"):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("cadence", "sometimes", "cadence must be one of"),
+        ("cadence", True, "cadence must be one of"),
+        ("request_order", "parallel", "request_order must be one of"),
+        ("request_order", False, "request_order must be one of"),
+    ],
+)
+def test_profile_schema_rejects_invalid_night_light_poll_strategy(
+    key: str, value: object, message: str
+) -> None:
+    data = _profile_data()
+    data["night_light"]["polling"][key] = value
+
+    with pytest.raises(ValueError, match=message):
+        _parse_profile_definition(data, source="test.json")
+
+
+def test_profile_schema_rejects_unknown_night_light_polling_key() -> None:
+    data = _profile_data()
+    data["night_light"]["polling"]["jitter_seconds"] = 5
+
+    with pytest.raises(ValueError, match="unknown jitter_seconds"):
         _parse_profile_definition(data, source="test.json")
 
 
@@ -412,12 +484,12 @@ def test_profile_schema_rejects_invalid_frames(frame: str) -> None:
         _parse_profile_definition(data, source="test.json")
 
 
-@pytest.mark.parametrize("schema_version", [True, 0, 1, 2, 4, "3"])
+@pytest.mark.parametrize("schema_version", [True, 0, 1, 2, 3, 5, "4"])
 def test_profile_schema_rejects_unsupported_versions(schema_version: object) -> None:
     data = _profile_data()
     data["schema_version"] = schema_version
 
-    with pytest.raises(ValueError, match="schema_version must be 3"):
+    with pytest.raises(ValueError, match="schema_version must be 4"):
         _parse_profile_definition(data, source="test.json")
 
 

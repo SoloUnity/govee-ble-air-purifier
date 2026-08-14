@@ -73,10 +73,13 @@ while H7129 uses its connection-specific encrypted session. H7129 accepts the
 same RGB state query, but the captured `0xfc` response does not identify a
 color. Its color therefore remains unknown after restart until a query returns
 an RGB payload or Home Assistant receives an exact echo for a color command.
-For BLE reliability, routine H7124 polls do not query night-light state; its
-state starts unknown after restart and is updated from physical pushes or
-confirmed Home Assistant commands. H7129 continues to poll its night-light
-state automatically.
+H7124 performs one best-effort light reconciliation at startup and then every
+five minutes. Its power/brightness and RGB queries are response-paced instead
+of written back-to-back, and incomplete reads automatically back off as far as
+30 minutes without failing the core purifier poll. Physical pushes and
+confirmed Home Assistant commands update the cached state between those reads.
+H7129 retains its existing back-to-back encrypted light queries on every
+three-second poll.
 
 ## Custom Auto
 
@@ -138,9 +141,11 @@ uses `<=`; only a valid reading above that boundary resets its timer.
   negotiation, application polling, command confirmation, and disconnect
   cleanup use separate bounded timeouts. Idle cleanup also completes before a
   poll or command begins its normal queue and response budgets.
-- H7124 routine polling uses only its proven power and status queries; recurring
-  night-light telemetry is disabled without removing its confirmed controls.
-  H7129 retains its reliable encrypted night-light polling.
+- H7124 keeps its proven power and status queries every 10 seconds and adds
+  response-paced, best-effort light reconciliation at startup and every five
+  minutes. Missing light telemetry backs off without making the purifier
+  unavailable. H7129 retains its reliable encrypted light queries on every
+  three-second poll.
 - Each purifier retains its own reusable Bluetooth connection by default for
   faster controls and push updates. Push-enabled dedicated H7124 and H7129
   connections remain subscribed until failure, reload, or shutdown, even with
@@ -170,7 +175,8 @@ From the integration's page in **Settings > Devices & services**, select
 to download the log. Debug output identifies connection, encrypted-handshake,
 notification, request, response, connection-release, and Bluetooth allocator
 stages. Diagnostics also report listener state, reconnect generation, recognized
-push counts by type, ignored profile-mismatched pushes, and last-push age. The
+push counts by type, ignored profile-mismatched pushes, last-push age, and
+night-light reconciliation attempts, outcomes, backoff, and last-success age. The
 integration's stage messages do not include BLE addresses, packet
 payloads, or encryption keys. They include a stable short hashed device label
 so same-model purifiers can be distinguished without exposing a full address.

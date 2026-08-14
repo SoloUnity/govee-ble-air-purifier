@@ -336,10 +336,12 @@ offer the config-entry diagnostics when device-specific diagnostics are not
 implemented.
 
 Diagnostics include config entry data, options, the current purifier snapshot,
-and Custom Auto controller state. The integration always redacts the stored
-name and BLE address. New diagnostic fields must follow Home Assistant's rule
-that credentials, personal information, addresses, and other sensitive data
-must not be exposed.
+Custom Auto controller state, and BLE listener/polling health. Night-light
+diagnostics include the profile cadence and request order, attempt outcomes,
+consecutive failures, last-success age, and time until the next periodic
+attempt. The integration always redacts the stored name and BLE address. New
+diagnostic fields must follow Home Assistant's rule that credentials, personal
+information, addresses, and other sensitive data must not be exposed.
 
 ## Home Assistant Standards Used
 
@@ -391,11 +393,11 @@ must not be exposed.
 - The night light advertises only RGB color mode, which includes separate
   brightness support. Profiles without the optional capability block create no
   light entity.
-- H7124 disables recurring night-light telemetry for BLE reliability while
-  retaining command-confirmed controls and cached state. Its light state starts
-  unknown after restart until Home Assistant receives a physical push or
-  command confirmation.
-  H7129 continues automatic night-light polling.
+- H7124 keeps its 10-second core poll and performs response-paced night-light
+  reconciliation at startup and every five minutes. Missing or partial light
+  replies preserve core state and back subsequent attempts off to at most 30
+  minutes. H7129 continues its existing automatic back-to-back night-light
+  queries on every three-second poll.
 - The PM2.5 sensor uses Home Assistant's PM2.5 device class, concentration unit,
   and measurement state class.
 - The fan declares only supported Home Assistant fan features: speed and preset
@@ -450,7 +452,8 @@ must not be exposed.
 
 - Config-entry diagnostics are implemented and sensitive identifiers are
   redacted. Listener activity, reconnect generation, recognized push counts,
-  ignored push count, and last-push age contain no raw frames, keys, or address.
+  ignored push count, last-push age, and night-light reconciliation health
+  contain no raw frames, keys, or address.
 - English source strings and the bundled English translation remain identical;
   additional locales belong under `translations/`.
 - User-facing names use Home Assistant's entity naming and translation model.
@@ -503,7 +506,7 @@ validation are defined in `bluetooth/framing.py`.
 
 ### Model Profile Definitions
 
-Each file in `model_profiles/` is a complete schema-v3 definition of one model's
+Each file in `model_profiles/` is a complete schema-v4 definition of one model's
 transport encryption mode, GATT UUIDs, outbound command frames, and optional
 push capability flags. Selection
 loads the exact lowercase model file when it exists (including `h7129.json`);

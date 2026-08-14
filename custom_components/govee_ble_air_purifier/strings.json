@@ -21,7 +21,7 @@
           "share_bluetooth_connection": "Share a Bluetooth connection slot"
         },
         "data_description": {
-          "polling_interval": "How often Home Assistant actively connects over BLE to read power, PM2.5, filter life, and profile-enabled night-light state.",
+          "polling_interval": "How often Home Assistant actively connects over BLE to read core purifier state. Supported models may reconcile night-light state on a separate profile-defined schedule.",
           "share_bluetooth_connection": "Leave off to retain a dedicated connection for faster controls. Turn on for at least two purifiers when your Bluetooth adapter or proxy does not have enough GATT connection slots; opted-in purifiers share one prioritized connection lane."
         }
       },

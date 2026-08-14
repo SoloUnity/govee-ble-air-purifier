@@ -12,7 +12,14 @@ import time
 from typing import Any
 
 from ..models import NightLightState, PurifierPushUpdate, PurifierState
-from ..profiles import EncryptionMode, H7124_PROFILE, ModelProfile, NightLightProfile
+from ..profiles import (
+    EncryptionMode,
+    H7124_PROFILE,
+    ModelProfile,
+    NightLightPollingCadence,
+    NightLightPollingRequestOrder,
+    NightLightProfile,
+)
 from ..protocol import (
     decode_mode_push,
     decode_night_light_power_brightness,
@@ -309,6 +316,15 @@ class GoveeBleClient:
         self._push_counts = {"power": 0, "fan_mode": 0, "night_light": 0}
         self._ignored_push_count = 0
         self._last_push_at: float | None = None
+        self._monotonic: Callable[[], float] = time.monotonic
+        self._night_light_poll_next_at = 0.0
+        self._night_light_poll_last_at: float | None = None
+        self._night_light_poll_last_success_at: float | None = None
+        self._night_light_poll_attempt_count = 0
+        self._night_light_poll_success_count = 0
+        self._night_light_poll_partial_count = 0
+        self._night_light_poll_missed_count = 0
+        self._night_light_poll_consecutive_failures = 0
         self._closed = False
 
     @property
@@ -333,6 +349,9 @@ class GoveeBleClient:
             if self._last_push_at is not None
             else None
         )
+        now = self._monotonic()
+        night_light = self._profile.night_light
+        night_light_polling = night_light.polling if night_light is not None else None
         return {
             "persistent_notifications_enabled": self._persistent_notifications_enabled,
             "notifications_active": (
@@ -343,7 +362,102 @@ class GoveeBleClient:
             "push_counts": dict(self._push_counts),
             "ignored_push_count": self._ignored_push_count,
             "last_push_age_seconds": last_push_age,
+            "night_light_polling": (
+                {
+                    "cadence": night_light_polling.cadence.value,
+                    "interval_seconds": night_light_polling.interval_seconds,
+                    "request_order": night_light_polling.request_order.value,
+                    "attempt_count": self._night_light_poll_attempt_count,
+                    "success_count": self._night_light_poll_success_count,
+                    "partial_count": self._night_light_poll_partial_count,
+                    "missed_count": self._night_light_poll_missed_count,
+                    "consecutive_failures": (
+                        self._night_light_poll_consecutive_failures
+                    ),
+                    "last_attempt_age_seconds": (
+                        max(0.0, now - self._night_light_poll_last_at)
+                        if self._night_light_poll_last_at is not None
+                        else None
+                    ),
+                    "last_success_age_seconds": (
+                        max(0.0, now - self._night_light_poll_last_success_at)
+                        if self._night_light_poll_last_success_at is not None
+                        else None
+                    ),
+                    "next_attempt_in_seconds": (
+                        max(0.0, self._night_light_poll_next_at - now)
+                        if night_light_polling.cadence
+                        is NightLightPollingCadence.PERIODIC
+                        else 0.0
+                    ),
+                }
+                if night_light_polling is not None
+                else None
+            ),
         }
+
+    def _claim_night_light_poll(self, now: float) -> bool:
+        """Reserve one due light reconciliation before any transaction await."""
+
+        night_light = self._profile.night_light
+        if night_light is None:
+            return False
+        polling = night_light.polling
+        if (
+            polling.cadence is NightLightPollingCadence.PERIODIC
+            and now < self._night_light_poll_next_at
+        ):
+            return False
+        if polling.cadence is NightLightPollingCadence.PERIODIC:
+            # Reserve the next slot now so concurrent refresh requests cannot
+            # duplicate optional AA1B traffic before the transaction lock.
+            self._night_light_poll_next_at = now + polling.interval_seconds
+        return True
+
+    def _release_night_light_poll_claim(self) -> None:
+        """Make a periodic reconciliation due again when core polling failed."""
+
+        night_light = self._profile.night_light
+        if (
+            night_light is not None
+            and night_light.polling.cadence is NightLightPollingCadence.PERIODIC
+        ):
+            self._night_light_poll_next_at = 0.0
+
+    def _record_night_light_poll_result(
+        self, frames: tuple[bytes | None, bytes | None]
+    ) -> None:
+        """Record reconciliation health and schedule profile-defined backoff."""
+
+        night_light = self._profile.night_light
+        if night_light is None:
+            return
+        received_count = sum(frame is not None for frame in frames)
+        now = self._monotonic()
+        self._night_light_poll_attempt_count += 1
+        self._night_light_poll_last_at = now
+        if received_count == len(frames):
+            self._night_light_poll_success_count += 1
+            self._night_light_poll_consecutive_failures = 0
+            self._night_light_poll_last_success_at = now
+        else:
+            if received_count:
+                self._night_light_poll_partial_count += 1
+            else:
+                self._night_light_poll_missed_count += 1
+            self._night_light_poll_consecutive_failures += 1
+
+        polling = night_light.polling
+        if polling.cadence is not NightLightPollingCadence.PERIODIC:
+            return
+        interval = polling.interval_seconds
+        if received_count != len(frames):
+            interval = min(
+                polling.max_backoff_seconds,
+                interval
+                * (2 ** min(self._night_light_poll_consecutive_failures, 16)),
+            )
+        self._night_light_poll_next_at = now + interval
 
     async def async_get_state(self) -> PurifierState:
         """Poll power, PM2.5, and filter-life state."""
@@ -365,10 +479,7 @@ class GoveeBleClient:
                     tuple[bytes, Callable[[bytes], bool]], ...
                 ] = ()
                 night_light = self._profile.night_light
-                night_light_poll_timeout = (
-                    night_light.poll_timeout_seconds if night_light is not None else 0.0
-                )
-                poll_night_light = night_light_poll_timeout > 0
+                poll_night_light = self._claim_night_light_poll(self._monotonic())
                 if poll_night_light:
                     assert night_light is not None
                     optional_requests = (
@@ -381,19 +492,36 @@ class GoveeBleClient:
                             is_night_light_rgb_state_response,
                         ),
                     )
-                frames = await self._async_write_and_wait_many(
-                    requests,
-                    timeout=POLL_TIMEOUT,
-                    optional_requests=optional_requests,
-                    optional_timeout=night_light_poll_timeout,
-                    lease_priority=_ConnectionLeasePriority.POLL,
-                )
+                try:
+                    frames = await self._async_write_and_wait_many(
+                        requests,
+                        timeout=POLL_TIMEOUT,
+                        optional_requests=optional_requests,
+                        optional_timeout=(
+                            night_light.polling.timeout_seconds
+                            if night_light is not None
+                            else 0.0
+                        ),
+                        optional_request_order=(
+                            night_light.polling.request_order
+                            if night_light is not None
+                            else NightLightPollingRequestOrder.PIPELINED
+                        ),
+                        lease_priority=_ConnectionLeasePriority.POLL,
+                    )
+                except BaseException:
+                    if poll_night_light:
+                        self._release_night_light_poll_claim()
+                    raise
                 power_frame, status_frame = frames[:2]
                 assert power_frame is not None and status_frame is not None
                 status = self._profile.decode_status(status_frame)
                 night_light_state = None
                 if poll_night_light:
                     power_brightness_frame, rgb_frame = frames[2:]
+                    self._record_night_light_poll_result(
+                        (power_brightness_frame, rgb_frame)
+                    )
                     if power_brightness_frame is not None or rgb_frame is not None:
                         power_brightness = (
                             decode_night_light_power_brightness(
@@ -836,6 +964,9 @@ class GoveeBleClient:
             tuple[bytes, Callable[[bytes], bool]], ...
         ] = (),
         optional_timeout: float = 0.0,
+        optional_request_order: NightLightPollingRequestOrder = (
+            NightLightPollingRequestOrder.PIPELINED
+        ),
         lease_priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
     ) -> tuple[bytes | None, ...]:
         loop = asyncio.get_running_loop()
@@ -1054,15 +1185,59 @@ class GoveeBleClient:
                                 loop.time() - request_started,
                             )
 
+                            if (
+                                optional_request_order
+                                is NightLightPollingRequestOrder.SEQUENTIAL
+                            ):
+                                optional_future = optional_futures[
+                                    offset - len(requests) - 1
+                                ]
+                                stage = (
+                                    f"waiting for optional response {offset}/"
+                                    f"{total_request_count}"
+                                )
+                                self._log_stage(
+                                    "BLE transaction",
+                                    stage,
+                                    optional_started,
+                                    optional_deadline,
+                                )
+                                try:
+                                    await self._async_wait_for_connection(
+                                        optional_future,
+                                        disconnect_signal,
+                                        optional_deadline,
+                                    )
+                                except GoveeBleDisconnectedError:
+                                    discard_connection = True
+                                    _LOGGER.debug(
+                                        "%s sequential optional BLE telemetry "
+                                        "stopped after disconnection",
+                                        self._log_label,
+                                    )
+                                    return tuple(frames)
+                                except (TimeoutError, asyncio.TimeoutError):
+                                    _LOGGER.debug(
+                                        "%s sequential optional BLE telemetry "
+                                        "stopped after a missing response",
+                                        self._log_label,
+                                    )
+                                    break
+
                         stage = "collecting optional responses"
                         self._log_stage(
                             "BLE transaction", stage, optional_started, optional_deadline
                         )
-                        pending = {
-                            optional_future
-                            for optional_future in optional_futures
-                            if not optional_future.done()
-                        }
+                        pending = (
+                            {
+                                optional_future
+                                for optional_future in optional_futures
+                                if not optional_future.done()
+                            }
+                            if optional_request_order
+                            is NightLightPollingRequestOrder.PIPELINED
+                            else set()
+                        )
                         if pending:
                             try:
                                 await self._async_wait_for_connection(

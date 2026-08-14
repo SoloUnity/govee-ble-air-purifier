@@ -122,8 +122,8 @@ contains the capture-derived H7129 definition. Each file owns its GATT service
 and characteristic UUIDs, transport encryption selection, exact outbound
 20-byte power, query, and fan-mode command frames, and optional Custom Auto
 PM2.5 boundaries. Exact profiles may also own an optional `night_light`
-capability with static calls and variable brightness/RGB templates. Schema 3
-also permits a `push_notifications` capability block. It enables evidence by
+capability with static calls, variable brightness/RGB templates, and a polling
+policy. Schema 4 also permits a `push_notifications` capability block. It enables evidence by
 model while Python retains validation and interpretation. H7124 and H7129
 enable power, fan-mode, and night-light power/brightness pushes; the fallback
 profile enables none. The JSON does not own encryption mechanics or response
@@ -171,9 +171,10 @@ service discovery then have a separate 45-second deadline. A newly connected
 H7129 has a separate 10-second handshake deadline. Transaction-lock waiting and
 the mandatory application exchange use the operation's normal budget: 5 seconds
 for the two-response power/status poll and 2 seconds for command confirmation.
-Profiles with enabled night-light polling then get a separate model-specific
-best-effort telemetry budget. H7124 disables recurring light telemetry; H7129
-uses 1 second. The application budget starts after connection and handshake
+Profiles with night-light polling then get a separate model-specific
+best-effort telemetry budget. H7124 uses a 1-second response-paced budget when
+its five-minute reconciliation is due; H7129 uses its existing 1-second
+back-to-back collection budget on every poll. The application budget starts after connection and handshake
 complete. Explicit disconnect cleanup has its own 5-second bound. Timeout
 errors identify idle cleanup, lock waiting, a write/setup stage, or an actual
 purifier response rather than claiming a response timeout before a request was
@@ -244,15 +245,17 @@ and drops the connection through bounded recovery. Shared-owner switching and
 clean close stop notifications before disconnecting.
 
 `GoveeBleClient.async_get_state()` issues the mandatory purifier power and
-status queries in sequence without changing their frames or timing. A positive
-profile-defined night-light poll timeout enables
-the optional power/brightness and RGB queries. H7124 sets that timeout to zero,
-restoring its reliable two-query core poll while retaining command-confirmed
-light controls. H7129 retains its reliable back-to-back optional queries; their
-responses are matched independently, may arrive in either order, and use a short
-shared grace period. Missing, partial, malformed, or late optional telemetry does
-not discard the core purifier state or invalidate an otherwise healthy
-connection. H7124 command-confirmed light state remains cached across core polls.
+status queries in sequence without changing their frames or timing. The shared
+night-light scheduler reads cadence, interval, response budget, request order,
+and maximum backoff from the model profile instead of branching on a model
+name. H7124 reconciles at startup and every five minutes, waiting for the
+power/brightness response before writing its RGB query. An incomplete H7124
+read backs off exponentially to at most 30 minutes. H7129 retains its reliable
+back-to-back optional queries on every poll; their responses are matched
+independently and may arrive in either order. Missing, partial, malformed, or
+late optional telemetry does not discard the core purifier state or invalidate
+an otherwise healthy connection. Cached H7124 light state is retained across
+core-only polls.
 The underlying connection and listener may have been retained from an earlier
 transaction.
 The notification handler ignores identified stale handshake traffic and

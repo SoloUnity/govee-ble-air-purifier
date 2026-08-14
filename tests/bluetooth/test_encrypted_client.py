@@ -354,6 +354,37 @@ async def test_h7129_reuses_shared_protocol_after_one_handshake(
     await client.async_close()
 
     assert disconnects == [fake]
+
+
+@pytest.mark.asyncio
+async def test_h7129_retains_four_application_queries_on_every_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = EncryptedFakeBleakClient(SESSION_KEY_1)
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    expected_state = PurifierState(
+        is_on=True,
+        pm25=42,
+        filter_life=85,
+        night_light=NightLightState(is_on=True, brightness_percent=50),
+    )
+
+    assert await client.async_get_state() == expected_state
+    assert await client.async_get_state() == expected_state
+
+    expected_poll = [
+        H7129_PROFILE.state_query_command,
+        H7129_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
+    ]
+    assert fake.application_frames == expected_poll * 2
+    assert [frame[:2] for frame in fake.handshake_frames] == [b"\xe7\x01", b"\xe7\x02"]
+    assert len(fake.started_notify) == 2
+
+    await client.async_close()
+    assert disconnects == [fake]
     assert client._disconnect_signal is None
     assert client._session_key is None
 

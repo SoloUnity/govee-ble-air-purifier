@@ -254,11 +254,14 @@ layouts were identical to H7124. The captures prove the commands, device
 notifications, and their order; HCI traffic does not by itself verify physical
 light output.
 
-Implementation note: the integration intentionally does not replay the H7124
-`aa 1b` state queries during routine polling. Adding those reads to every poll
-made the previously reliable H7124 core path unreliable. H7124 light controls
-remain available and their matching notifications update cached state. H7129's
-automatic encrypted night-light polling remains enabled.
+Implementation note: replaying both H7124 `aa 1b` state queries every 10 seconds
+made the previously reliable core path unreliable. The integration now keeps
+the 10-second `aa 01`/`aa 19` poll unchanged, performs one response-paced light
+reconciliation at startup and every five minutes, and backs incomplete light
+reads off to at most 30 minutes without failing core state. This mirrors the
+captured app order in which each query received its notification before the
+next query was written. H7129 retains its automatic back-to-back encrypted
+night-light queries on every three-second poll.
 
 H7124 writes used ATT Write Command `0x52` on handle `0x0015`, and
 notifications used ATT Notification `0x1b` on handle `0x0012`. H7129 used the
@@ -542,7 +545,7 @@ Use `aa 19` for normal status polling. Use `33 18` only when specifically testin
 
 ### Integration Push Lifecycle
 
-The bundled schema-v3 H7124 and H7129 profiles enable unsolicited power,
+The bundled schema-v4 H7124 and H7129 profiles enable unsolicited power,
 fan-mode, and night-light power/brightness observations. A dedicated exact-model
 client keeps one application notification subscription for the lifetime of its
 retained connection. H7129 starts that listener only after completing the
@@ -558,11 +561,13 @@ accepting one model's Auto frame for the other. H7124's layouts are physically
 captured. H7129 manual Low/Medium/High and `ee 1b 01` support is inferred from
 its matching decrypted profile and remains physically unverified.
 
-Polling remains unchanged as reconciliation and startup state: H7124 sends only
+Core polling remains unchanged as reconciliation and startup state: H7124 sends
 `aa 01` and `aa 19` every 10 seconds by default, while H7129 sends `aa 01`,
-`aa 19`, `aa 1b 01`, and `aa 1b 05` every 3 seconds by default. Shared purifiers
-receive pushes only while they own the shared GATT slot and can therefore miss
-physical events while disconnected; the next poll reconciles those fields.
+`aa 19`, `aa 1b 01`, and `aa 1b 05` every 3 seconds by default. H7124 additionally
+performs its two `aa 1b` reads sequentially at startup and every five minutes.
+Shared purifiers receive pushes only while they own the shared GATT slot and can
+therefore miss physical events while disconnected; core state is reconciled by
+the next poll and H7124 light state by its next due light reconciliation.
 
 ### EE 05: Mode Change Push
 

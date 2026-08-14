@@ -83,11 +83,12 @@ bluetooth/
   the model's GATT service and characteristic UUIDs and the exact outbound
   20-byte power, query, and fan-mode command frames plus the transport encryption
   mode. H7124 and H7129 additionally contain an optional `night_light` block
-  with static calls and variable brightness/RGB templates. `default.json` omits
-  that block, preventing unverified fallback models from exposing a light.
-  A zero night-light poll timeout keeps controls enabled while disabling routine
-  telemetry; H7124 uses this reliability mode, while H7129 continues polling.
-  Schema 3 adds optional push-capability flags. H7124 and H7129 enable power,
+  with static calls, variable brightness/RGB templates, and a polling policy.
+  H7124 selects five-minute sequential reconciliation with exponential backoff;
+  H7129 explicitly selects its existing every-poll pipelined behavior.
+  `default.json` omits the block, preventing unverified fallback models from
+  exposing a light. Schema 4 includes the polling policy and optional
+  push-capability flags. H7124 and H7129 enable power,
   fan-mode, and night-light power/brightness pushes; `default.json` leaves them
   disabled.
   Future model files are complete definitions, not partial inheritance over

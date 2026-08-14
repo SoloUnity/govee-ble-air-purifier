@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "polling_interval_seconds": 3,
   "encryption": "govee_v1",
   "gatt": {
@@ -30,7 +30,13 @@
     "night_light_power_brightness": true
   },
   "night_light": {
-    "poll_timeout_seconds": 1,
+    "polling": {
+      "cadence": "every_poll",
+      "interval_seconds": 3,
+      "timeout_seconds": 1,
+      "request_order": "pipelined",
+      "max_backoff_seconds": 3
+    },
     "power_off": "3a 1b 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 21",
     "power_on": "3a 1b 01 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20",
     "power_brightness_query": "aa 1b 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 b0",

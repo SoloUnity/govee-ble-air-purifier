@@ -22,7 +22,7 @@ from .protocol import (
     is_status_response,
 )
 
-PROFILE_SCHEMA_VERSION = 3
+PROFILE_SCHEMA_VERSION = 4
 PROFILE_DIRECTORY = Path(__file__).with_name("model_profiles")
 DEFAULT_PROFILE_KEY = "default"
 H7124_PROFILE_KEY = "h7124"
@@ -47,13 +47,20 @@ _COMMAND_KEYS = {
     "fan_modes",
 }
 _NIGHT_LIGHT_KEYS = {
-    "poll_timeout_seconds",
+    "polling",
     "power_off",
     "power_on",
     "power_brightness_query",
     "brightness_template",
     "rgb_template",
     "rgb_state_query",
+}
+_NIGHT_LIGHT_POLLING_KEYS = {
+    "cadence",
+    "interval_seconds",
+    "timeout_seconds",
+    "request_order",
+    "max_backoff_seconds",
 }
 _PUSH_NOTIFICATION_KEYS = {
     "power_state",
@@ -74,6 +81,20 @@ class EncryptionMode(StrEnum):
 
     NONE = "none"
     GOVEE_V1 = "govee_v1"
+
+
+class NightLightPollingCadence(StrEnum):
+    """Supported night-light reconciliation schedules."""
+
+    EVERY_POLL = "every_poll"
+    PERIODIC = "periodic"
+
+
+class NightLightPollingRequestOrder(StrEnum):
+    """Supported night-light query dispatch strategies."""
+
+    PIPELINED = "pipelined"
+    SEQUENTIAL = "sequential"
 
 
 @dataclass(frozen=True)
@@ -98,11 +119,21 @@ class _FrameTemplate:
 
 
 @dataclass(frozen=True)
+class NightLightPollingProfile:
+    """Profile-defined night-light reconciliation behavior."""
+
+    cadence: NightLightPollingCadence
+    interval_seconds: int
+    timeout_seconds: int
+    request_order: NightLightPollingRequestOrder
+    max_backoff_seconds: int
+
+
+@dataclass(frozen=True)
 class NightLightProfile:
     """Profile-defined commands for an optional purifier night light."""
 
-    # Zero keeps controls enabled while disabling automatic telemetry polling.
-    poll_timeout_seconds: int
+    polling: NightLightPollingProfile
     power_off_command: bytes
     power_on_command: bytes
     power_brightness_query_command: bytes
@@ -290,9 +321,43 @@ def _parse_night_light(value: Any, *, source: str) -> NightLightProfile:
     """Parse one optional night-light capability block."""
 
     commands = _require_object(value, _NIGHT_LIGHT_KEYS, source=source)
-    poll_timeout_seconds = commands["poll_timeout_seconds"]
-    if type(poll_timeout_seconds) is not int or not 0 <= poll_timeout_seconds <= 5:
-        raise ValueError(f"{source}.poll_timeout_seconds must be from 0 to 5 seconds")
+    polling_source = f"{source}.polling"
+    polling = _require_object(
+        commands["polling"], _NIGHT_LIGHT_POLLING_KEYS, source=polling_source
+    )
+    try:
+        cadence = NightLightPollingCadence(polling["cadence"])
+    except (TypeError, ValueError) as err:
+        raise ValueError(
+            f"{polling_source}.cadence must be one of "
+            + ", ".join(value.value for value in NightLightPollingCadence)
+        ) from err
+    interval_seconds = polling["interval_seconds"]
+    if type(interval_seconds) is not int or not 3 <= interval_seconds <= 3600:
+        raise ValueError(
+            f"{polling_source}.interval_seconds must be from 3 to 3600 seconds"
+        )
+    timeout_seconds = polling["timeout_seconds"]
+    if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 5:
+        raise ValueError(
+            f"{polling_source}.timeout_seconds must be from 1 to 5 seconds"
+        )
+    try:
+        request_order = NightLightPollingRequestOrder(polling["request_order"])
+    except (TypeError, ValueError) as err:
+        raise ValueError(
+            f"{polling_source}.request_order must be one of "
+            + ", ".join(value.value for value in NightLightPollingRequestOrder)
+        ) from err
+    max_backoff_seconds = polling["max_backoff_seconds"]
+    if (
+        type(max_backoff_seconds) is not int
+        or not interval_seconds <= max_backoff_seconds <= 86400
+    ):
+        raise ValueError(
+            f"{polling_source}.max_backoff_seconds must be from "
+            f"{interval_seconds} to 86400 seconds"
+        )
     power_off = _parse_frame(commands["power_off"], source=f"{source}.power_off")
     power_on = _parse_frame(commands["power_on"], source=f"{source}.power_on")
     power_brightness_query = _parse_frame(
@@ -342,7 +407,13 @@ def _parse_night_light(value: Any, *, source: str) -> NightLightProfile:
     ):
         raise ValueError(f"{source}.rgb_template has an unexpected night-light layout")
     return NightLightProfile(
-        poll_timeout_seconds=poll_timeout_seconds,
+        polling=NightLightPollingProfile(
+            cadence=cadence,
+            interval_seconds=interval_seconds,
+            timeout_seconds=timeout_seconds,
+            request_order=request_order,
+            max_backoff_seconds=max_backoff_seconds,
+        ),
         power_off_command=power_off,
         power_on_command=power_on,
         power_brightness_query_command=power_brightness_query,

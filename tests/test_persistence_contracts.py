@@ -67,7 +67,7 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     }
     assert H7124_PROFILE.key == "h7124"
     assert H7124_PROFILE.polling_interval_seconds == 10
-    assert H7124_PROFILE.night_light.poll_timeout_seconds == 0
+    assert H7124_PROFILE.night_light.polling.interval_seconds == 300
     assert H7124_PROFILE.custom_auto_thresholds == (3, 5, 9, 15)
     assert H7124_PROFILE.push_notifications is not None
     assert H7124_PROFILE.push_notifications.enabled is True

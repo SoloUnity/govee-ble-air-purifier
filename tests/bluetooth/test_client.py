@@ -22,10 +22,27 @@ from custom_components.govee_ble_air_purifier.models import (
     PurifierPushUpdate,
     PurifierState,
 )
-from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE, get_profile
+from custom_components.govee_ble_air_purifier.profiles import (
+    H7124_PROFILE,
+    NightLightPollingCadence,
+    NightLightPollingRequestOrder,
+    get_profile,
+)
 
 NIGHT_LIGHT = H7124_PROFILE.night_light
 assert NIGHT_LIGHT is not None
+
+
+def _pipelined_night_light_with_timeout(timeout: float):
+    return replace(
+        NIGHT_LIGHT,
+        polling=replace(
+            NIGHT_LIGHT.polling,
+            cadence=NightLightPollingCadence.EVERY_POLL,
+            timeout_seconds=timeout,
+            request_order=NightLightPollingRequestOrder.PIPELINED,
+        ),
+    )
 
 
 class FakeBleakClient:
@@ -154,6 +171,7 @@ class _RecordingTimeoutClient(GoveeBleClient):
         self.timeout: float | None = None
         self.optional_timeout: float | None = None
         self.optional_requests: tuple[tuple[bytes, Any], ...] = ()
+        self.optional_request_order: Any = None
         self.lease_priority: Any = None
 
     async def _async_write_and_wait_many(
@@ -163,11 +181,13 @@ class _RecordingTimeoutClient(GoveeBleClient):
         timeout: float = 10.0,
         optional_requests: tuple[tuple[bytes, Any], ...] = (),
         optional_timeout: float = 0.0,
+        optional_request_order: Any = None,
         lease_priority: Any = None,
     ) -> tuple[bytes | None, ...]:
         self.timeout = timeout
         self.optional_timeout = optional_timeout
         self.optional_requests = optional_requests
+        self.optional_request_order = optional_request_order
         self.lease_priority = lease_priority
         return (
             build_frame(bytes.fromhex("aa 01 01 00 81 00 01 01")),
@@ -195,6 +215,7 @@ class _RetryingStateClient(GoveeBleClient):
         timeout: float = 10.0,
         optional_requests: tuple[tuple[bytes, Any], ...] = (),
         optional_timeout: float = 0.0,
+        optional_request_order: Any = None,
         lease_priority: Any = None,
     ) -> tuple[bytes | None, ...]:
         self.calls += 1
@@ -571,7 +592,7 @@ async def test_failed_transaction_drops_client_and_unlocks_before_inner_exit(
 
 
 @pytest.mark.asyncio
-async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
+async def test_first_h7124_poll_reconciles_night_light_in_one_subscription() -> None:
     fake = FakeBleakClient()
     client = _TestableGoveeBleClient(fake)
 
@@ -579,6 +600,11 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
         is_on=True,
         pm25=42,
         filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
     )
 
     assert client.connection_count == 1
@@ -587,28 +613,140 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
     assert fake.writes == [
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.state_query_command, False),
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.status_query_command, False),
+        (
+            H7124_PROFILE.write_char_uuid,
+            NIGHT_LIGHT.power_brightness_query_command,
+            False,
+        ),
+        (
+            H7124_PROFILE.write_char_uuid,
+            NIGHT_LIGHT.rgb_state_query_command,
+            False,
+        ),
     ]
 
 
 @pytest.mark.asyncio
-async def test_repeated_h7124_polls_never_query_night_light_state() -> None:
+async def test_h7124_reconciles_light_once_per_periodic_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake = FakeBleakClient()
     client = _TestableGoveeBleClient(fake)
+    now = 1000.0
+    monkeypatch.setattr(client, "_monotonic", lambda: now)
 
-    assert await client.async_get_state() == PurifierState(
-        is_on=True, pm25=42, filter_life=85
+    assert (await client.async_get_state()).night_light == NightLightState(
+        is_on=True,
+        brightness_percent=100,
+        rgb_color=(255, 0, 0),
     )
     assert await client.async_get_state() == PurifierState(
         is_on=True, pm25=42, filter_life=85
+    )
+    now = 1300.0
+    assert (await client.async_get_state()).night_light == NightLightState(
+        is_on=True,
+        brightness_percent=100,
+        rgb_color=(255, 0, 0),
     )
     assert [write[1] for write in fake.writes] == [
         H7124_PROFILE.state_query_command,
         H7124_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
         H7124_PROFILE.state_query_command,
         H7124_PROFILE.status_query_command,
+        H7124_PROFILE.state_query_command,
+        H7124_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
     ]
     assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
     assert fake.stopped_notify == []
+
+
+@pytest.mark.asyncio
+async def test_h7124_waits_for_first_light_response_before_second_query() -> None:
+    class ResponsePacedLightFake(FakeBleakClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.power_query_written = asyncio.Event()
+            self.release_power_response = asyncio.Event()
+            self.power_response_sent = False
+            self.response_task: asyncio.Task[None] | None = None
+
+        async def write_gatt_char(
+            self, char_uuid: str, command: bytes, *, response: bool
+        ) -> None:
+            if command == NIGHT_LIGHT.power_brightness_query_command:
+                self.writes.append((char_uuid, command, response))
+                self.power_query_written.set()
+
+                async def respond_later() -> None:
+                    await self.release_power_response.wait()
+                    self.power_response_sent = True
+                    assert self.notify_handler is not None
+                    self.notify_handler(
+                        None, build_frame(bytes.fromhex("aa 1b 01 01 64"))
+                    )
+
+                self.response_task = asyncio.create_task(respond_later())
+                return
+            if command == NIGHT_LIGHT.rgb_state_query_command:
+                assert self.power_response_sent is True
+            await super().write_gatt_char(char_uuid, command, response=response)
+
+    fake = ResponsePacedLightFake()
+    client = _TestableGoveeBleClient(fake)
+    poll = asyncio.create_task(client.async_get_state())
+    await asyncio.wait_for(fake.power_query_written.wait(), 0.1)
+
+    assert NIGHT_LIGHT.rgb_state_query_command not in [write[1] for write in fake.writes]
+    fake.release_power_response.set()
+    assert (await asyncio.wait_for(poll, 0.1)).night_light == NightLightState(
+        is_on=True,
+        brightness_percent=100,
+        rgb_color=(255, 0, 0),
+    )
+    assert fake.response_task is not None
+    await fake.response_task
+
+
+@pytest.mark.asyncio
+async def test_h7124_missing_light_response_backs_off_without_failing_core_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _BestEffortNightLightFake(())
+    client = _TestableGoveeBleClient(fake)
+    client._profile = replace(
+        H7124_PROFILE,
+        night_light=replace(
+            NIGHT_LIGHT,
+            polling=replace(NIGHT_LIGHT.polling, timeout_seconds=0.01),
+        ),
+    )
+    now = 1000.0
+    monkeypatch.setattr(client, "_monotonic", lambda: now)
+
+    assert await client.async_get_state() == PurifierState(
+        is_on=True, pm25=42, filter_life=85
+    )
+    diagnostics = client.diagnostics()["night_light_polling"]
+    assert diagnostics["attempt_count"] == 1
+    assert diagnostics["missed_count"] == 1
+    assert diagnostics["consecutive_failures"] == 1
+    assert diagnostics["next_attempt_in_seconds"] == 600
+    assert [write[1] for write in fake.writes] == [
+        H7124_PROFILE.state_query_command,
+        H7124_PROFILE.status_query_command,
+        NIGHT_LIGHT.power_brightness_query_command,
+    ]
+
+    now = 1300.0
+    assert await client.async_get_state() == PurifierState(
+        is_on=True, pm25=42, filter_life=85
+    )
+    assert client.diagnostics()["night_light_polling"]["attempt_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -761,7 +899,7 @@ async def test_get_state_preserves_core_state_with_best_effort_light_responses(
     client = _TestableGoveeBleClient(fake)
     client._profile = replace(
         H7124_PROFILE,
-        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.01),
+        night_light=_pipelined_night_light_with_timeout(0.01),
     )
 
     assert await client.async_get_state() == PurifierState(
@@ -787,7 +925,7 @@ async def test_get_state_collects_delayed_pipelined_light_responses(
     client = _TestableGoveeBleClient(fake)
     client._profile = replace(
         H7124_PROFILE,
-        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.05),
+        night_light=_pipelined_night_light_with_timeout(0.05),
     )
 
     assert await client.async_get_state() == PurifierState(
@@ -832,7 +970,7 @@ async def test_optional_response_is_not_matched_before_its_query() -> None:
     client = _TestableGoveeBleClient(EarlyRgbFake())
     client._profile = replace(
         H7124_PROFILE,
-        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.01),
+        night_light=_pipelined_night_light_with_timeout(0.01),
     )
 
     assert (await client.async_get_state()).night_light == NightLightState(
@@ -871,7 +1009,7 @@ async def test_missing_light_telemetry_keeps_healthy_connection(
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
     client._profile = replace(
         H7124_PROFILE,
-        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.01),
+        night_light=_pipelined_night_light_with_timeout(0.01),
     )
 
     assert await client.async_get_state() == PurifierState(
@@ -918,7 +1056,7 @@ async def test_optional_write_failure_preserves_core_state_and_drops_connection(
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
     client._profile = replace(
         H7124_PROFILE,
-        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.01),
+        night_light=_pipelined_night_light_with_timeout(0.01),
     )
 
     assert await client.async_get_state() == PurifierState(
@@ -975,7 +1113,7 @@ async def test_disconnect_wakes_optional_collection_and_preserves_core_state(
     client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
     client._profile = replace(
         H7124_PROFILE,
-        night_light=replace(NIGHT_LIGHT, poll_timeout_seconds=0.2),
+        night_light=_pipelined_night_light_with_timeout(0.2),
     )
     started = asyncio.get_running_loop().time()
 
@@ -1016,10 +1154,21 @@ async def test_get_state_uses_shorter_poll_timeout() -> None:
         is_on=True,
         pm25=42,
         filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
     )
     assert client.timeout == 5.0
-    assert client.optional_requests == ()
-    assert client.optional_timeout == 0.0
+    assert [request[0] for request in client.optional_requests] == [
+        NIGHT_LIGHT.power_brightness_query_command,
+        NIGHT_LIGHT.rgb_state_query_command,
+    ]
+    assert client.optional_timeout == 1
+    assert (
+        client.optional_request_order is NightLightPollingRequestOrder.SEQUENTIAL
+    )
     assert client.lease_priority is client_module._ConnectionLeasePriority.POLL
 
 
@@ -1031,6 +1180,11 @@ async def test_get_state_retries_once_after_a_disconnect() -> None:
         is_on=True,
         pm25=42,
         filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
     )
     assert client.calls == 2
 
@@ -1361,6 +1515,11 @@ async def test_extra_notification_after_batch_completion_is_ignored() -> None:
         is_on=True,
         pm25=42,
         filter_life=85,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=100,
+            rgb_color=(255, 0, 0),
+        ),
     )
 
 
@@ -1641,12 +1800,17 @@ async def test_connection_arbiter_shares_one_slot_across_four_purifiers(
 
     assert peak_active == 1
     assert all(len(connections) == 2 for connections in connected_by_address.values())
-    assert all(
-        [write[1] for write in connection.writes]
-        == [H7124_PROFILE.state_query_command, H7124_PROFILE.status_query_command]
-        for connections in connected_by_address.values()
-        for connection in connections
-    )
+    for connections in connected_by_address.values():
+        assert [write[1] for write in connections[0].writes] == [
+            H7124_PROFILE.state_query_command,
+            H7124_PROFILE.status_query_command,
+            NIGHT_LIGHT.power_brightness_query_command,
+            NIGHT_LIGHT.rgb_state_query_command,
+        ]
+        assert [write[1] for write in connections[1].writes] == [
+            H7124_PROFILE.state_query_command,
+            H7124_PROFILE.status_query_command,
+        ]
 
     await asyncio.gather(*(client.async_close() for client in clients))
     assert not active
