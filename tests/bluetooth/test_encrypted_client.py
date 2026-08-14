@@ -24,6 +24,7 @@ from custom_components.govee_ble_air_purifier.bluetooth.govee_v1 import (
 )
 from custom_components.govee_ble_air_purifier.models import (
     NightLightState,
+    PurifierPushUpdate,
     PurifierState,
 )
 from custom_components.govee_ble_air_purifier.profiles import get_profile
@@ -358,6 +359,42 @@ async def test_h7129_reuses_shared_protocol_after_one_handshake(
 
 
 @pytest.mark.asyncio
+async def test_h7129_persistent_encrypted_listener_routes_inferred_pushes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = EncryptedFakeBleakClient(SESSION_KEY_1)
+    _callbacks, disconnects = _install_connections(monkeypatch, [fake])
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7129_PROFILE)
+    updates: list[PurifierPushUpdate] = []
+    client.set_push_callback(updates.append)
+
+    await client.async_get_state()
+    await client.async_set_power(True)
+    assert updates == []
+    assert fake.notify_handler is not None
+
+    auto_command = H7129_PROFILE.fan_mode_commands["Auto"]
+    auto_push = build_frame(bytes((0xEE,)) + auto_command[1:19])
+    fake.notify_handler(None, encrypt_frame(auto_push, SESSION_KEY_1))
+    light_push = build_frame(bytes.fromhex("ee 1b 01 00 32"))
+    fake.notify_handler(None, encrypt_frame(light_push, SESSION_KEY_1))
+
+    assert updates == [
+        PurifierPushUpdate(fan_mode="Auto"),
+        PurifierPushUpdate(
+            night_light=NightLightState(is_on=False, brightness_percent=50)
+        ),
+    ]
+    assert len(fake.started_notify) == 2
+    assert len(fake.stopped_notify) == 1
+
+    await client.async_close()
+
+    assert len(fake.stopped_notify) == 2
+    assert disconnects == [fake]
+
+
+@pytest.mark.asyncio
 async def test_h7129_reconnects_cleanly_after_another_purifier_uses_shared_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -406,6 +443,7 @@ async def test_h7129_reconnects_cleanly_after_another_purifier_uses_shared_slot(
         b"\xe7\x02",
     ]
     assert disconnects[:2] == [first_h7129, other_purifier]
+    assert len(first_h7129.stopped_notify) == 2
 
     await asyncio.gather(h7129.async_close(), h7124.async_close())
 
@@ -1012,7 +1050,7 @@ async def test_h7129_response_diagnostic_counts_nonmatching_notifications(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    nonmatching = build_frame(b"\xee\x05\x03")
+    nonmatching = build_frame(b"\xee\x06\x03")
     fake = EncryptedFakeBleakClient(
         SESSION_KEY_1, application_notifications=(nonmatching,)
     )

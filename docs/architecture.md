@@ -91,7 +91,7 @@ ordering validation, and conversion between config-entry options and immutable
 
 ## Models And Protocol
 
-`models.py` defines three deliberately different immutable values:
+`models.py` defines four deliberately different immutable values:
 
 - `DecodedStatus` is the narrow result of decoding one status frame (the
   tested H7124 definition decodes an `aa19` frame). It contains PM2.5 and
@@ -101,6 +101,8 @@ ordering validation, and conversion between config-entry options and immutable
   power, the integration's known fan mode, and optional `NightLightState`.
 - `NightLightState` independently carries known light power, device brightness
   percentage, and queried or command-confirmed RGB color.
+- `PurifierPushUpdate` is a partial internal observation with optional power,
+  fan-mode, and night-light fields. It never represents PM2.5 or filter life.
 
 `bluetooth/framing.py` is generic frame infrastructure. It builds 20-byte Govee
 frames and validates frame length and XOR checksum. It does not know model
@@ -120,9 +122,13 @@ contains the capture-derived H7129 definition. Each file owns its GATT service
 and characteristic UUIDs, transport encryption selection, exact outbound
 20-byte power, query, and fan-mode command frames, and optional Custom Auto
 PM2.5 boundaries. Exact profiles may also own an optional `night_light`
-capability with static calls and variable brightness/RGB templates. The JSON
-does not own encryption mechanics or response interpretation. Future model
-files are complete definitions, not partial inheritance over another file.
+capability with static calls and variable brightness/RGB templates. Schema 3
+also permits a `push_notifications` capability block. It enables evidence by
+model while Python retains validation and interpretation. H7124 and H7129
+enable power, fan-mode, and night-light power/brightness pushes; the fallback
+profile enables none. The JSON does not own encryption mechanics or response
+interpretation. Future model files are complete definitions, not partial
+inheritance over another file.
 
 `profiles.py` searches advertised names case-insensitively for `H712` plus one
 ASCII letter or digit (for example `GVH7124`, `GVH712C`, or
@@ -187,14 +193,16 @@ transactions are never interrupted. Lease admission occurs before fresh-
 advertisement recovery and connection setup, so queued polls cannot perform
 slow preparation ahead of a later control.
 
-Every successful operation resets an idle timer derived from the configured
-polling interval. Intervals from 5 through 25 seconds use the interval plus a
-5-second margin, retaining the connection through the next expected poll without
-exceeding 30 seconds. Longer intervals use a 5-second grace for command bursts
-and the coordinator's delayed refresh, then release the connection rather than
-occupying a Bluetooth slot without reaching the next poll. Idle cleanup
-acquires the transaction lock, and entry shutdown cancels pending idle cleanup
-before closing the connection. An unexpected-disconnect callback clears only
+Push-enabled dedicated entries retain their healthy connection and application
+notification subscription indefinitely, including when the polling interval is
+longer than 25 seconds. They release it only after failure, reload, shutdown, or
+explicit close. Shared entries keep the existing handoff behavior: only the
+current owner remains connected and therefore only that purifier can deliver
+pushes. Non-push fallback profiles retain the adaptive idle timer: intervals
+from 5 through 25 seconds use the interval plus a 5-second margin, while longer
+intervals use a 5-second grace. Idle cleanup acquires the transaction lock, and
+entry shutdown cancels pending idle cleanup before closing the connection. An
+unexpected-disconnect callback clears only
 the client instance that raised it; identity checking prevents a delayed
 callback from clearing a replacement. The next poll or command reconnects
 through Home Assistant. Transaction failure invalidates the connection but does
@@ -225,9 +233,19 @@ ignored-handshake, and nonmatching notifications. Response timeouts report
 the same counts so missing callbacks can be distinguished from unexpected
 traffic without exposing frame contents.
 
-For polling, `GoveeBleClient.async_get_state()` uses one transaction-scoped
-notification subscription to issue the mandatory purifier power and status
-queries in sequence. A positive profile-defined night-light poll timeout enables
+For push-enabled profiles, each connection owns one persistent application
+notification listener. H7129 completes its encrypted handshake before starting
+that listener. Polls and commands install temporary response matchers in the
+central listener. A matching frame is consumed only as the transaction response;
+unmatched enabled `aa01`, `ee05`, and `ee1b01` observations are published as
+physical pushes. Connection identity and generation checks reject callbacks
+from replaced clients. Malformed application traffic invalidates the listener
+and drops the connection through bounded recovery. Shared-owner switching and
+clean close stop notifications before disconnecting.
+
+`GoveeBleClient.async_get_state()` issues the mandatory purifier power and
+status queries in sequence without changing their frames or timing. A positive
+profile-defined night-light poll timeout enables
 the optional power/brightness and RGB queries. H7124 sets that timeout to zero,
 restoring its reliable two-query core poll while retaining command-confirmed
 light controls. H7129 retains its reliable back-to-back optional queries; their
@@ -235,16 +253,18 @@ responses are matched independently, may arrive in either order, and use a short
 shared grace period. Missing, partial, malformed, or late optional telemetry does
 not discard the core purifier state or invalidate an otherwise healthy
 connection. H7124 command-confirmed light state remains cached across core polls.
-The underlying connection may have been retained from an earlier transaction.
+The underlying connection and listener may have been retained from an earlier
+transaction.
 The notification handler ignores identified stale handshake traffic and
 validates every candidate frame. During the mandatory phase it accepts only the
 current request's matcher; during optional collection it checks every unresolved
 light matcher. Ignored traffic neither consumes a response slot nor resends a
 request. Commands use the same serialized path and publish no success merely
 because a write completed; they wait for a matching confirmation. Power-on plus
-mode can be sent in one locked transaction. Notification cleanup failure
-preserves an otherwise successful result but discards the connection before
-another operation can use it.
+mode can be sent in one locked transaction. For fallback profiles that still
+use transaction-scoped subscriptions, notification cleanup failure preserves an
+otherwise successful result but discards the connection before another
+operation can use it.
 
 `bluetooth/client.py` owns transaction serialization, writes, notification
 subscription, response matching, notification cleanup, connection reuse, idle
@@ -270,8 +290,10 @@ disconnect cleanup errors are suppressed.
 publication boundary. BLE I/O happens outside `_state_lock`, allowing a control
 to reach the priority lease while a routine poll is waiting. `_command_lock`
 preserves FIFO command semantics, while `_state_lock` serializes only state
-publication. Command revisions prevent a poll that began earlier from
-overwriting newer command-confirmed power or light state.
+publication. Command and per-field push revisions prevent a poll that began
+earlier from overwriting newer command-confirmed or pushed power and light
+state. A newer physical mode observation also wins over an in-flight mode
+command.
 
 A successful poll merges the client's `PurifierState` into coordinator data:
 
@@ -286,6 +308,16 @@ A successful poll merges the client's `PurifierState` into coordinator data:
   RGB report replaces cached color; an unknown discriminator such as H7129
   `0xfc` preserves a command-confirmed runtime color instead of inventing or
   erasing one.
+
+Accepted pushes are merged as partial observations and published immediately
+through `async_set_updated_data()`: `aa01` changes power and clears the displayed
+active mode when off; `ee05` changes only fan mode; and `ee1b01` changes light
+power/brightness while retaining known RGB. Only accepted power pushes increment
+the generalized device-observation revision used by Auto resume. Pushes never
+increment `pm25_sample_revision`, so they cannot become Custom Auto samples.
+H7124 push layouts are physically captured. H7129 manual-mode and night-light
+push layouts are inferred from its matching decrypted profile and remain
+physically unverified; unchanged polling reconciles missed or absent events.
 
 Poll failures become Home Assistant `UpdateFailed` failures. Entity availability
 follows coordinator health rather than the presence of cached values.
@@ -356,9 +388,13 @@ failure.
 `auto_resume.py` owns integration-known automatic-mode intent. It serializes
 explicit fan and switch commands, suspends hardware Auto or Custom Auto after a
 confirmed power-off, and resumes that mode after either a Home Assistant
-turn-on or a fresh poll detects physical power-on. A poll revision distinguishes
-fresh device observations from command-side coordinator publications, so a
-resume command cannot trigger itself recursively.
+turn-on or a fresh poll/power push detects physical power-on. A device-
+observation revision distinguishes polls and unsolicited power from command-side
+coordinator publications, so a resume command cannot trigger itself recursively.
+Physical Auto selects Hardware Auto without writing back over BLE. Physical
+manual, Sleep, or Turbo selection clears remembered automatic ownership, and
+all physical modes deactivate Custom Auto before their pushed state is
+published.
 
 The manager restores the newest replicated fan or Custom Auto entity record
 before platform setup, including migration of the former switch-only Custom
@@ -391,16 +427,18 @@ shared-state publication, and BLE request/notification state.
 
 Config entry setup resolves the profile, creates the client and coordinator,
 performs the first refresh, creates `CustomAutoController` from
-`CustomAutoConfig`, creates `AutoResumeManager`, stores `GoveeRuntimeData`, and
-forwards the active fan, light, sensor, and switch platforms. The light platform
+`CustomAutoConfig`, creates and restores `AutoResumeManager`, attaches the
+coordinator push callback, stores `GoveeRuntimeData`, and forwards the active
+fan, light, sensor, and switch platforms. The light platform
 adds no entity when the profile capability is absent. Any setup failure stops
 the manager and controller if they were created and shuts down the coordinator
 so a successful first refresh cannot leak its retained connection.
 
-After successful platform unload, the Auto resume manager removes its listener
-and cancels reconciliation, the controller removes listeners and cancels
-evaluation and timer tasks, then the coordinator cancels its delayed refresh
-and shuts down polling before closing the BLE client.
+After successful platform unload, the coordinator detaches the push callback and
+cancels or drains coordinator-owned push tasks. The Auto resume manager then
+removes its listener and cancels reconciliation, the controller removes
+listeners and cancels evaluation and timer tasks, and the coordinator cancels
+its delayed refresh and shuts down polling before closing the BLE client.
 
 ## Test Lanes
 

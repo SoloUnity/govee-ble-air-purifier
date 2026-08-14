@@ -31,3 +31,12 @@ class PurifierState:
     filter_life: int | None = None
     fan_mode: str | None = None
     night_light: NightLightState | None = None
+
+
+@dataclass(frozen=True)
+class PurifierPushUpdate:
+    """Partial state reported asynchronously by a connected purifier."""
+
+    is_on: bool | None = None
+    fan_mode: str | None = None
+    night_light: NightLightState | None = None

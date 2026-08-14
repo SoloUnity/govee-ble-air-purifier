@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "polling_interval_seconds": 10,
   "encryption": "none",
   "gatt": {
@@ -23,6 +23,11 @@
   },
   "custom_auto": {
     "thresholds": [3, 5, 9, 15]
+  },
+  "push_notifications": {
+    "power_state": true,
+    "fan_mode": true,
+    "night_light_power_brightness": true
   },
   "night_light": {
     "poll_timeout_seconds": 0,

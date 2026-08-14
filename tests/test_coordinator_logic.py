@@ -5,6 +5,7 @@ import pytest
 
 from custom_components.govee_ble_air_purifier.models import (
     NightLightState,
+    PurifierPushUpdate,
     PurifierState,
 )
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE, get_profile
@@ -22,6 +23,14 @@ class FakeClient:
         self.closed = False
         self.night_light: NightLightState | None = None
         self.fail_night_light_rgb = False
+        self.push_callback = None
+
+    def set_push_callback(self, callback) -> None:
+        self.push_callback = callback
+
+    def emit_push(self, update: PurifierPushUpdate) -> None:
+        assert self.push_callback is not None
+        self.push_callback(update)
 
     async def async_get_state(self) -> PurifierState:
         self.state_fetches += 1
@@ -128,6 +137,53 @@ class PollBlockedClient(FakeClient):
         return await super().async_set_power(is_on)
 
 
+class PushRaceClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.poll_started = asyncio.Event()
+        self.release_poll = asyncio.Event()
+
+    async def async_get_state(self) -> PurifierState:
+        self.poll_started.set()
+        await self.release_poll.wait()
+        return PurifierState(
+            is_on=False,
+            pm25=33,
+            filter_life=76,
+            night_light=NightLightState(
+                is_on=False,
+                brightness_percent=10,
+                rgb_color=(0, 0, 255),
+            ),
+        )
+
+
+class ModeCommandRaceClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.power = True
+        self.mode_command_started = asyncio.Event()
+        self.release_mode_command = asyncio.Event()
+
+    async def async_set_fan_mode(self, mode: str) -> str:
+        self.mode_command_started.set()
+        await self.release_mode_command.wait()
+        await super().async_set_fan_mode(mode)
+        return mode
+
+
+class NightLightCommandRaceClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.light_command_started = asyncio.Event()
+        self.release_light_command = asyncio.Event()
+
+    async def async_set_night_light_power(self, is_on: bool) -> NightLightState:
+        self.light_command_started.set()
+        await self.release_light_command.wait()
+        return await super().async_set_night_light_power(is_on)
+
+
 async def _cleanup_tasks(tasks: list[asyncio.Task]) -> None:
     for task in tasks:
         task.cancel()
@@ -151,6 +207,248 @@ async def test_coordinator_fetches_power_status_pm25_and_filter_life() -> None:
 
     assert coordinator.pm25_sample_revision == 2
     assert coordinator.poll_revision == 2
+
+
+@pytest.mark.asyncio
+async def test_coordinator_publishes_partial_pushes_without_pm25_samples() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = FakeClient()
+    coordinator = GoveeCoordinator(hass, client)
+    coordinator.data = PurifierState(
+        is_on=True,
+        fan_mode="High",
+        pm25=12,
+        filter_life=87,
+        night_light=NightLightState(
+            is_on=False,
+            brightness_percent=25,
+            rgb_color=(255, 0, 0),
+        ),
+    )
+    physical_modes: list[tuple[str, str | None]] = []
+
+    async def handle_mode(mode: str) -> None:
+        physical_modes.append((mode, coordinator.data.fan_mode))
+
+    coordinator.async_enable_push_updates(handle_mode)
+    client.emit_push(PurifierPushUpdate(is_on=False))
+    client.emit_push(PurifierPushUpdate(fan_mode="Sleep"))
+    client.emit_push(
+        PurifierPushUpdate(
+            night_light=NightLightState(is_on=True, brightness_percent=80)
+        )
+    )
+    await asyncio.gather(*tuple(hass.tasks))
+
+    assert physical_modes == [("Sleep", None)]
+    assert coordinator.data == PurifierState(
+        is_on=False,
+        fan_mode="Sleep",
+        pm25=12,
+        filter_life=87,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=80,
+            rgb_color=(255, 0, 0),
+        ),
+    )
+    assert coordinator.device_observation_revision == 1
+    assert coordinator.pm25_sample_revision == 0
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_newer_push_fields_win_over_poll_started_earlier() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = PushRaceClient()
+    coordinator = GoveeCoordinator(
+        hass, client, profile=get_profile("h7129")
+    )
+    coordinator.data = PurifierState(
+        is_on=False,
+        pm25=12,
+        filter_life=87,
+        night_light=NightLightState(
+            is_on=False,
+            brightness_percent=25,
+            rgb_color=(255, 0, 0),
+        ),
+    )
+
+    async def handle_mode(_mode: str) -> None:
+        return None
+
+    coordinator.async_enable_push_updates(handle_mode)
+    poll_task = asyncio.create_task(coordinator._async_update_data())
+    await client.poll_started.wait()
+    client.emit_push(PurifierPushUpdate(is_on=True))
+    client.emit_push(
+        PurifierPushUpdate(
+            night_light=NightLightState(is_on=True, brightness_percent=80)
+        )
+    )
+    await asyncio.gather(*tuple(hass.tasks))
+    client.release_poll.set()
+
+    assert await poll_task == PurifierState(
+        is_on=True,
+        pm25=33,
+        filter_life=76,
+        night_light=NightLightState(
+            is_on=True,
+            brightness_percent=80,
+            rgb_color=(255, 0, 0),
+        ),
+    )
+    assert coordinator.device_observation_revision == 2
+    assert coordinator.pm25_sample_revision == 1
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_physical_mode_push_wins_over_in_flight_ha_mode_command() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = ModeCommandRaceClient()
+    coordinator = GoveeCoordinator(hass, client)
+    coordinator.data = PurifierState(
+        is_on=True, fan_mode="Low", pm25=12, filter_life=87
+    )
+
+    async def handle_mode(_mode: str) -> None:
+        return None
+
+    coordinator.async_enable_push_updates(handle_mode)
+    command_task = asyncio.create_task(coordinator.async_set_fan_mode("High"))
+    await client.mode_command_started.wait()
+    client.emit_push(PurifierPushUpdate(fan_mode="Sleep"))
+    await asyncio.gather(*tuple(hass.tasks))
+    client.release_mode_command.set()
+    await command_task
+
+    assert coordinator.data.fan_mode == "Sleep"
+    assert coordinator._last_fan_mode == "Sleep"
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_physical_power_push_wins_over_in_flight_ha_power_command() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = RacingClient()
+    coordinator = GoveeCoordinator(hass, client)
+    coordinator.data = PurifierState(
+        is_on=True, fan_mode="High", pm25=12, filter_life=87
+    )
+
+    async def handle_mode(_mode: str) -> None:
+        return None
+
+    coordinator.async_enable_push_updates(handle_mode)
+    command_task = asyncio.create_task(coordinator.async_set_power(False))
+    await client.power_off_started.wait()
+    client.emit_push(PurifierPushUpdate(is_on=True))
+    await asyncio.gather(*tuple(hass.tasks))
+    client.release_power_off.set()
+    await command_task
+
+    assert coordinator.data.is_on is True
+    assert coordinator.data.fan_mode == "High"
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_physical_light_push_wins_over_in_flight_ha_light_command() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = NightLightCommandRaceClient()
+    coordinator = GoveeCoordinator(hass, client)
+    coordinator.data = PurifierState(
+        is_on=True,
+        pm25=12,
+        filter_life=87,
+        night_light=NightLightState(
+            is_on=False,
+            brightness_percent=25,
+            rgb_color=(255, 0, 0),
+        ),
+    )
+
+    async def handle_mode(_mode: str) -> None:
+        return None
+
+    coordinator.async_enable_push_updates(handle_mode)
+    command_task = asyncio.create_task(
+        coordinator.async_set_night_light(is_on=True)
+    )
+    await client.light_command_started.wait()
+    client.emit_push(
+        PurifierPushUpdate(
+            night_light=NightLightState(is_on=False, brightness_percent=80)
+        )
+    )
+    await asyncio.gather(*tuple(hass.tasks))
+    client.release_light_command.set()
+    await command_task
+
+    assert coordinator.data.night_light == NightLightState(
+        is_on=False,
+        brightness_percent=80,
+        rgb_color=(255, 0, 0),
+    )
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_disabling_push_updates_detaches_and_cancels_owned_tasks() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = FakeClient()
+    coordinator = GoveeCoordinator(hass, client)
+    handler_started = asyncio.Event()
+
+    async def blocked_handler(_mode: str) -> None:
+        handler_started.set()
+        await asyncio.Event().wait()
+
+    coordinator.async_enable_push_updates(blocked_handler)
+    client.emit_push(PurifierPushUpdate(fan_mode="High"))
+    await handler_started.wait()
+
+    await coordinator.async_disable_push_updates()
+
+    assert client.push_callback is None
+    assert coordinator._push_tasks == set()
+    assert all(task.cancelled() for task in hass.tasks)
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_physical_mode_state_publishes_if_ownership_handler_fails() -> None:
+    from custom_components.govee_ble_air_purifier.coordinator import GoveeCoordinator
+
+    hass = FakeHass()
+    client = FakeClient()
+    coordinator = GoveeCoordinator(hass, client)
+    coordinator.data = PurifierState(is_on=True, fan_mode="Low")
+
+    async def failing_handler(_mode: str) -> None:
+        raise RuntimeError("restore state unavailable")
+
+    coordinator.async_enable_push_updates(failing_handler)
+    client.emit_push(PurifierPushUpdate(fan_mode="Turbo"))
+    await asyncio.gather(*tuple(hass.tasks))
+
+    assert coordinator.data.fan_mode == "Turbo"
+    await coordinator.async_shutdown()
 
 
 @pytest.mark.asyncio

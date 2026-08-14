@@ -1,11 +1,13 @@
 # Repository Structure
 
-This repository contains a locally polling Home Assistant custom integration for
-Govee `H712*` family BLE air purifiers. It has exact plaintext H7124 and encrypted
-H7129 profiles. H7124 commands and polling are physically validated; H7129
+This repository contains a hybrid push-and-poll Home Assistant custom integration
+for Govee `H712*` family BLE air purifiers. It has exact plaintext H7124 and
+encrypted H7129 profiles. H7124 commands, polling, and push layouts are physically
+validated; H7129
 connection, encrypted handshake, polling, disconnect, and recovery are
 physically observed, while H7129 state-changing command validation remains
-pending. Other recognized `H712*` models fall back to the H7124 protocol
+pending and its manual/light push layouts remain inferred. Other recognized
+`H712*` models fall back to the H7124 protocol
 definition and may fail or expose unsupported or mismatched features. Home
 Assistant loads the code under `custom_components/`; the repository is not a
 standalone service.
@@ -74,9 +76,9 @@ bluetooth/
 ```
 
 - `models.py` defines `DecodedStatus`, the output of one decoded status frame
-  (an `aa19` frame for the tested H7124 definition), `NightLightState`, and
+  (an `aa19` frame for the tested H7124 definition), `NightLightState`,
   `PurifierState`, the application-facing snapshot shared above the protocol
-  layer.
+  layer, and the partial internal `PurifierPushUpdate`.
 - `model_profiles/` holds complete per-model JSON definitions. Each file owns
   the model's GATT service and characteristic UUIDs and the exact outbound
   20-byte power, query, and fan-mode command frames plus the transport encryption
@@ -85,6 +87,9 @@ bluetooth/
   that block, preventing unverified fallback models from exposing a light.
   A zero night-light poll timeout keeps controls enabled while disabling routine
   telemetry; H7124 uses this reliability mode, while H7129 continues polling.
+  Schema 3 adds optional push-capability flags. H7124 and H7129 enable power,
+  fan-mode, and night-light power/brightness pushes; `default.json` leaves them
+  disabled.
   Future model files are complete definitions, not partial inheritance over
   another file.
 - Root `protocol.py` retains shared frame validation, response and confirmation
@@ -100,8 +105,10 @@ bluetooth/
   validation, and `ProtocolError`.
 - `bluetooth/govee_v1.py` provides the captured AES/RC4-compatible frame
   transform and handshake frame helpers without owning model commands.
-- `bluetooth/client.py` owns the per-purifier transaction lock, writes,
-  notification subscription and cleanup, response futures, matching, and shared
+- `bluetooth/client.py` owns the per-purifier transaction lock, writes, one
+  connection-owned application notification listener for push-enabled exact
+  profiles, temporary transaction response routes, push decoding/publication,
+  notification cleanup, response futures, matching, and shared
   phase deadlines. It also coordinates one retained connection across entries
   that opt into sharing, while default dedicated entries retain their own;
   reuses connections for same-device activity; uses an exact-client
@@ -110,8 +117,10 @@ bluetooth/
   connection-specific encrypted sessions when selected by the profile, derives
   adaptive idle release from the polling interval, and serializes that release
   with explicit shutdown. The shared lease prioritizes queued controls while
-  bounding command bursts so routine polls cannot starve. Lifecycle logs use a
-  stable short hashed device label.
+  bounding command bursts so routine polls cannot starve. Dedicated push-enabled
+  clients retain their connection regardless of polling interval; shared clients
+  receive pushes only while they own the slot. Lifecycle logs use a stable short
+  hashed device label.
 - `bluetooth/transport.py` owns Home Assistant advertisement and per-scanner
   path preparation, best-effort Home Assistant 2026.6+ temporary
   Automatic-to-Active requests only during new-advertisement waits, BLE-device
@@ -131,14 +140,16 @@ custom_auto/
 ```
 
 - `auto_resume.py` owns the shared automatic-mode intent, serialization of
-  explicit mode changes, physical power-transition reconciliation, and resume
-  retries. The fan and Custom Auto entities replicate its persisted attributes;
-  startup restores the newest available record so either entity may be disabled.
+  explicit mode changes, physical power-transition reconciliation, physical
+  mode ownership overrides, and resume retries. The fan and Custom Auto entities
+  replicate its persisted attributes; startup restores the newest available
+  record so either entity may be disabled.
 - `coordinator.py` defines `GoveeRuntimeData` and `GoveeCoordinator`. The
   coordinator polls, serializes state-changing work without blocking controls
   behind waiting polls, merges `PurifierState`, publishes confirmed commands
-  immediately, tracks command and fresh-poll revisions, and schedules
-  reconciliation refreshes.
+  and pushed partial state immediately, tracks command, push-field, and device-
+  observation revisions, owns push publication tasks, and schedules reconciliation
+  refreshes.
 - `custom_auto/config.py` combines model-profile boundaries with shared timing
   defaults and owns option parsing, validation, and immutable `CustomAutoConfig`.
 - `custom_auto/policy.py` owns pure speed and confirmation constants, mode

@@ -12,12 +12,14 @@ from custom_components.govee_ble_air_purifier.models import (
 from custom_components.govee_ble_air_purifier.profiles import (
     H7124_PROFILE,
     fan_mode_labels,
+    get_profile,
     normalize_ble_address,
     normalize_ble_name,
 )
 from custom_components.govee_ble_air_purifier.protocol import (
     decode_mode_push,
     decode_night_light_power_brightness,
+    decode_night_light_power_brightness_push,
     decode_night_light_rgb_state,
     decode_power_state,
     decode_status,
@@ -30,6 +32,7 @@ from custom_components.govee_ble_air_purifier.protocol import (
 )
 
 FAN_MODE_COMMANDS = H7124_PROFILE.fan_mode_commands
+H7129_PROFILE = get_profile("h7129")
 FAN_MODE_LABELS = fan_mode_labels(H7124_PROFILE)
 POWER_OFF_COMMAND = H7124_PROFILE.power_off_command
 POWER_ON_COMMAND = H7124_PROFILE.power_on_command
@@ -203,32 +206,61 @@ def test_night_light_decoders_reject_unsupported_payload_layouts(
         decoder(frame)
 
 
+@pytest.mark.parametrize("mode", list(FAN_MODE_COMMANDS))
+def test_decode_h7124_mode_pushes_against_profile_commands(mode: str) -> None:
+    command = FAN_MODE_COMMANDS[mode]
+    frame = build_frame(bytes((0xEE,)) + command[1:19])
+
+    assert decode_mode_push(frame, FAN_MODE_COMMANDS) == mode
+    assert is_fan_mode_confirmation(frame, mode, command)
+
+
+def test_mode_push_rejects_cross_model_auto_parameter() -> None:
+    h7124_auto = build_frame(
+        bytes((0xEE,)) + H7124_PROFILE.fan_mode_commands["Auto"][1:19]
+    )
+    h7129_auto = build_frame(
+        bytes((0xEE,)) + H7129_PROFILE.fan_mode_commands["Auto"][1:19]
+    )
+
+    assert decode_mode_push(h7124_auto, H7124_PROFILE.fan_mode_commands) == "Auto"
+    assert decode_mode_push(h7129_auto, H7129_PROFILE.fan_mode_commands) == "Auto"
+    with pytest.raises(ProtocolError, match="does not match"):
+        decode_mode_push(h7129_auto, H7124_PROFILE.fan_mode_commands)
+    with pytest.raises(ProtocolError, match="does not match"):
+        decode_mode_push(h7124_auto, H7129_PROFILE.fan_mode_commands)
+
+
 @pytest.mark.parametrize(
-    ("frame", "mode"),
+    ("frame", "expected"),
     [
         (
-            bytes.fromhex(
-                "ee 05 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ee"
-            ),
-            "Sleep",
+            build_frame(bytes.fromhex("ee 1b 01 01 64")),
+            NightLightState(is_on=True, brightness_percent=100),
         ),
         (
-            bytes.fromhex(
-                "ee 05 03 00 00 14 00 00 00 00 00 00 00 00 00 00 00 00 00 fc"
-            ),
-            "Auto",
-        ),
-        (
-            bytes.fromhex(
-                "ee 05 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ec"
-            ),
-            "Turbo",
+            build_frame(bytes.fromhex("ee 1b 01 00 64")),
+            NightLightState(is_on=False, brightness_percent=100),
         ),
     ],
 )
-def test_decode_mode_push_for_modes_that_emit_ee05(frame: bytes, mode: str) -> None:
-    assert decode_mode_push(frame) == mode
-    assert is_fan_mode_confirmation(frame, mode, FAN_MODE_COMMANDS[mode])
+def test_decode_night_light_power_brightness_push(
+    frame: bytes, expected: NightLightState
+) -> None:
+    assert decode_night_light_power_brightness_push(frame) == expected
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        build_frame(bytes.fromhex("aa 1b 01 01 64")),
+        build_frame(bytes.fromhex("ee 1b 01 01 00")),
+        build_frame(bytes.fromhex("ee 1b 01 01 64 01")),
+    ],
+)
+def test_night_light_push_decoder_rejects_other_layouts(frame: bytes) -> None:
+    with pytest.raises(ProtocolError, match="night-light push"):
+        decode_night_light_power_brightness_push(frame)
 
 
 def test_fan_mode_confirmation_accepts_exact_echo_for_all_modes() -> None:

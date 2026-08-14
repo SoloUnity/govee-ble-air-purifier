@@ -12,13 +12,6 @@ from .models import DecodedStatus, NightLightState
 MAX_PM25_UG_M3 = 999
 
 
-MODE_PUSH_LABELS: dict[int, str] = {
-    0x03: "Auto",
-    0x05: "Sleep",
-    0x07: "Turbo",
-}
-
-
 def is_power_state_response(frame: bytes) -> bool:
     """Return True if frame looks like an aa01 state response."""
 
@@ -143,16 +136,36 @@ def is_power_confirmation(frame: bytes, is_on: bool) -> bool:
         return False
 
 
-def decode_mode_push(frame: bytes) -> str:
-    """Decode Sleep, Auto, or Turbo from an ee05 mode push."""
+def decode_mode_push(frame: bytes, fan_mode_commands: dict[str, bytes]) -> str:
+    """Decode an ee05 push against one model's configured fan commands."""
 
     validate_frame(frame)
     if not is_mode_push(frame):
         raise ProtocolError("Not an ee05 mode push")
-    try:
-        return MODE_PUSH_LABELS[frame[2]]
-    except KeyError as err:
-        raise ProtocolError(f"Unknown mode push byte 0x{frame[2]:02x}") from err
+    for mode, command in fan_mode_commands.items():
+        if frame[2:19] == command[2:19]:
+            return mode
+    raise ProtocolError("Mode push does not match this purifier profile")
+
+
+def decode_night_light_power_brightness_push(frame: bytes) -> NightLightState:
+    """Decode an unsolicited ee1b01 night-light power/brightness update."""
+
+    validate_frame(frame)
+    if not (
+        len(frame) == FRAME_LENGTH
+        and frame[0] == 0xEE
+        and frame[1] == 0x1B
+        and frame[2] == 0x01
+        and frame[3] in (0x00, 0x01)
+        and 1 <= frame[4] <= 100
+        and not any(frame[5:19])
+    ):
+        raise ProtocolError("Not an ee1b01 night-light push")
+    return NightLightState(
+        is_on=frame[3] == 0x01,
+        brightness_percent=frame[4],
+    )
 
 
 def is_fan_mode_confirmation(frame: bytes, mode: str, command: bytes) -> bool:
@@ -161,7 +174,7 @@ def is_fan_mode_confirmation(frame: bytes, mode: str, command: bytes) -> bool:
     if is_command_echo(frame, command):
         return True
     try:
-        return decode_mode_push(frame) == mode
+        return decode_mode_push(frame, {mode: command}) == mode
     except ProtocolError:
         return False
 

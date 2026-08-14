@@ -38,6 +38,11 @@ def test_bundled_h7124_definition_matches_default_fallback() -> None:
     )
 
     assert h7124.pop("night_light") is not None
+    assert h7124.pop("push_notifications") == {
+        "power_state": True,
+        "fan_mode": True,
+        "night_light_power_brightness": True,
+    }
     assert h7124 == default
     assert h7124["schema_version"] == PROFILE_SCHEMA_VERSION
 
@@ -91,6 +96,11 @@ def test_observed_ihoment_h7129_name_uses_exact_encrypted_profile() -> None:
     assert profile.custom_auto_thresholds == (7, 9, 13, 19)
     assert profile.night_light is not None
     assert profile.night_light.poll_timeout_seconds == 1
+    assert profile.push_notifications is not None
+    assert profile.push_notifications.enabled is True
+    assert profile.push_notifications.power_state is True
+    assert profile.push_notifications.fan_mode is True
+    assert profile.push_notifications.night_light_power_brightness is True
     assert H7124_PROFILE.night_light.poll_timeout_seconds == 0
     assert (
         profile.night_light.power_on_command
@@ -193,8 +203,8 @@ def test_profile_loader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
     _write_profile(tmp_path / "default.json", data)
     _write_profile(tmp_path / "h7124.json", data)
     duplicate = json.dumps(data).replace(
-        '"schema_version": 2',
-        '"schema_version": 2, "schema_version": 2',
+        '"schema_version": 3',
+        '"schema_version": 3, "schema_version": 3',
         1,
     )
     (tmp_path / "h7126.json").write_text(duplicate, encoding="utf-8")
@@ -220,10 +230,48 @@ def test_profile_schema_rejects_unknown_keys() -> None:
 def test_profile_schema_allows_absent_optional_night_light() -> None:
     data = _profile_data()
     del data["night_light"]
+    del data["push_notifications"]
 
     definition = _parse_profile_definition(data, source="test.json")
 
     assert definition.night_light is None
+    assert definition.push_notifications is None
+
+
+def test_profile_schema_allows_absent_optional_push_notifications() -> None:
+    data = _profile_data()
+    del data["push_notifications"]
+
+    definition = _parse_profile_definition(data, source="test.json")
+
+    assert definition.push_notifications is None
+
+
+@pytest.mark.parametrize("value", [None, 1, "true", [], {}])
+def test_profile_schema_rejects_invalid_push_notification_boolean(
+    value: object,
+) -> None:
+    data = _profile_data()
+    data["push_notifications"]["power_state"] = value
+
+    with pytest.raises(ValueError, match="power_state must be a boolean"):
+        _parse_profile_definition(data, source="test.json")
+
+
+def test_profile_schema_requires_night_light_for_night_light_push() -> None:
+    data = _profile_data()
+    del data["night_light"]
+
+    with pytest.raises(ValueError, match="requires night_light capability"):
+        _parse_profile_definition(data, source="test.json")
+
+
+def test_profile_schema_rejects_unknown_push_notification_key() -> None:
+    data = _profile_data()
+    data["push_notifications"]["raw_frames"] = True
+
+    with pytest.raises(ValueError, match="unknown raw_frames"):
+        _parse_profile_definition(data, source="test.json")
 
 
 def test_profile_without_custom_auto_thresholds_does_not_support_policy() -> None:
@@ -364,12 +412,12 @@ def test_profile_schema_rejects_invalid_frames(frame: str) -> None:
         _parse_profile_definition(data, source="test.json")
 
 
-@pytest.mark.parametrize("schema_version", [True, 0, 1, 3, "2"])
+@pytest.mark.parametrize("schema_version", [True, 0, 1, 2, 4, "3"])
 def test_profile_schema_rejects_unsupported_versions(schema_version: object) -> None:
     data = _profile_data()
     data["schema_version"] = schema_version
 
-    with pytest.raises(ValueError, match="schema_version must be 2"):
+    with pytest.raises(ValueError, match="schema_version must be 3"):
         _parse_profile_definition(data, source="test.json")
 
 

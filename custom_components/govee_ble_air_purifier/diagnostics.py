@@ -51,6 +51,7 @@ async def async_get_config_entry_diagnostics(
             ),
         }
     options = dict(getattr(entry, "options", {}))
+    client = getattr(coordinator, "client", None) if coordinator is not None else None
     return {
         "entry": data,
         "options": options,
@@ -60,6 +61,11 @@ async def async_get_config_entry_diagnostics(
         "state": state,
         "custom_auto": controller.diagnostics() if controller is not None else None,
         "auto_resume": auto_resume.diagnostics() if auto_resume is not None else None,
+        "bluetooth_push": (
+            client.diagnostics()
+            if client is not None and hasattr(client, "diagnostics")
+            else None
+        ),
     }
 
 

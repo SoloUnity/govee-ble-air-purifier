@@ -30,6 +30,14 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     diagnostics = _import_diagnostics(monkeypatch)
+    push_diagnostics = {
+        "persistent_notifications_enabled": True,
+        "notifications_active": True,
+        "connection_generation": 2,
+        "push_counts": {"power": 1, "fan_mode": 2, "night_light": 3},
+        "ignored_push_count": 0,
+        "last_push_age_seconds": 4.5,
+    }
     runtime_coordinator = SimpleNamespace(
         data=PurifierState(
             is_on=True,
@@ -41,7 +49,8 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
                 brightness_percent=50,
                 rgb_color=(255, 255, 0),
             ),
-        )
+        ),
+        client=SimpleNamespace(diagnostics=lambda: push_diagnostics),
     )
     legacy_coordinator = SimpleNamespace(
         data=PurifierState(is_on=False, fan_mode="Sleep", pm25=99, filter_life=1)
@@ -107,6 +116,7 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
             "custom_speed": 80,
             "reconcile_pending": False,
         },
+        "bluetooth_push": push_diagnostics,
     }
 
 
@@ -143,4 +153,5 @@ async def test_diagnostics_redacts_arbitrary_user_provided_name(
         "state": None,
         "custom_auto": None,
         "auto_resume": None,
+        "bluetooth_push": None,
     }

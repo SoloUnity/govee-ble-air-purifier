@@ -393,7 +393,8 @@ must not be exposed.
   light entity.
 - H7124 disables recurring night-light telemetry for BLE reliability while
   retaining command-confirmed controls and cached state. Its light state starts
-  unknown after restart until Home Assistant receives a command confirmation.
+  unknown after restart until Home Assistant receives a physical push or
+  command confirmation.
   H7129 continues automatic night-light polling.
 - The PM2.5 sensor uses Home Assistant's PM2.5 device class, concentration unit,
   and measurement state class.
@@ -422,7 +423,9 @@ must not be exposed.
   discovery is needed.
 - Transactions are asynchronous and serialized per purifier so commands and
   polls cannot overlap.
-- Purifiers retain dedicated reusable connections by default. Entries with the
+- Push-enabled purifiers retain dedicated reusable connections and one
+  application notification subscription until failure, reload, or shutdown,
+  regardless of polling interval. Entries with the
   connection-sharing option enabled join one integration-owned connection
   lease. A healthy connection is reused for the same shared purifier, but a
   different shared purifier releases it before connecting. Unexpected
@@ -431,8 +434,12 @@ must not be exposed.
   polling, with FIFO ordering inside each class and one poll after at most three
   consecutive priority commands. Admission precedes advertisement recovery and
   connection setup, and coordinator state publication does not hold a waiting
-  poll ahead of a later control.
-- GATT notifications provide query responses and command confirmation.
+  poll ahead of a later control. A shared purifier receives pushes only while
+  it owns the slot; polling reconciles physical changes missed while disconnected.
+- GATT notifications provide query responses, command confirmation, and
+  profile-enabled physical power, mode, and night-light updates. Active
+  transaction responses are consumed before push classification so a response
+  is never published twice.
 - Connection establishment, encrypted negotiation, and application responses
   use separate bounded deadlines, so a slow BlueZ connection does not consume
   the poll or command response budget.
@@ -442,7 +449,8 @@ must not be exposed.
 ### Diagnostics, Localization, And Quality
 
 - Config-entry diagnostics are implemented and sensitive identifiers are
-  redacted.
+  redacted. Listener activity, reconnect generation, recognized push counts,
+  ignored push count, and last-push age contain no raw frames, keys, or address.
 - English source strings and the bundled English translation remain identical;
   additional locales belong under `translations/`.
 - User-facing names use Home Assistant's entity naming and translation model.
@@ -495,8 +503,9 @@ validation are defined in `bluetooth/framing.py`.
 
 ### Model Profile Definitions
 
-Each file in `model_profiles/` is a complete schema-v1 definition of one model's
-transport encryption mode, GATT UUIDs, and outbound command frames. Selection
+Each file in `model_profiles/` is a complete schema-v3 definition of one model's
+transport encryption mode, GATT UUIDs, outbound command frames, and optional
+push capability flags. Selection
 loads the exact lowercase model file when it exists (including `h7129.json`);
 any other recognized `H712*` model falls back to `default.json`, which is the
 tested plaintext H7124 definition. A future model file is a complete definition,
@@ -508,10 +517,18 @@ Turbo, and hardware Auto; profiles with narrower mode sets remain usable for
 their declared fan commands without exposing an incompatible policy switch.
 
 JSON ownership stops at transport selection, outbound frames, and UUIDs. The
+push flags enable model evidence but do not define decoding rules. The
 Govee V1 transform stays in `bluetooth/govee_v1.py`; shared frame validation,
 response matching, command confirmation, and status decoding stay in
 `protocol.py`. H7124 and H7129 therefore reuse the same application protocol
 after the client decrypts H7129 notifications.
+
+H7124 power, all fan modes, and night-light power/brightness push layouts are
+physically captured. H7129 power and special-mode behavior is capture-derived;
+manual Low/Medium/High and night-light push support is inferred from its
+matching decrypted command/profile layout and remains physically unverified.
+If those inferred events are absent, the unchanged H7129 polls retain existing
+state reconciliation.
 
 ## Persisted Contracts
 
@@ -530,6 +547,10 @@ treats these values as compatibility contracts:
   keys.
 - Entity unique-ID suffixes `fan`, `pm25`, `filter_life`, and `custom_auto`.
 - Config flow major version `1` until a migration requires changing it.
+
+The schema version belongs only to bundled profile JSON. It is not stored in a
+config entry, so this change needs no config-entry migration, device removal, or
+re-adding of purifiers.
 
 `tests/test_persistence_contracts.py` guards the stored keys, defaults, profile
 fallback, and active platforms. A change to a persisted contract requires an

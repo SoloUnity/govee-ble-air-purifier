@@ -69,6 +69,8 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     assert H7124_PROFILE.polling_interval_seconds == 10
     assert H7124_PROFILE.night_light.poll_timeout_seconds == 0
     assert H7124_PROFILE.custom_auto_thresholds == (3, 5, 9, 15)
+    assert H7124_PROFILE.push_notifications is not None
+    assert H7124_PROFILE.push_notifications.enabled is True
     assert get_profile(None) is H7124_PROFILE
     assert get_profile("h7124") is H7124_PROFILE
     fallback = get_profile("h712c")
@@ -77,6 +79,7 @@ def test_persisted_defaults_and_profile_fallback_are_stable() -> None:
     assert fallback.fan_mode_commands == H7124_PROFILE.fan_mode_commands
     assert fallback.polling_interval_seconds == 10
     assert fallback.night_light is None
+    assert fallback.push_notifications is None
 
 
 def test_active_platform_contract_is_stable() -> None:

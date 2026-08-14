@@ -51,7 +51,8 @@ Usage notes:
 - Write 20-byte wire frames to `...2b11` using ATT Write Command without a
   response.
 - Subscribe to notifications on `...2b10` to receive responses and pushes.
-- Passive notifications usually produce no data until a command is written.
+- A quiet purifier may produce no passive traffic, but physical power, mode, and
+  night-light actions can emit unsolicited notifications while subscribed.
 - H7124 wire frames are plaintext. Complete the H7129 encrypted-session
   handshake before sending commands, then encrypt ordinary commands and decrypt
   ordinary notifications with that connection's session key. Delayed handshake
@@ -538,6 +539,30 @@ Effect:
 Use `aa 19` for normal status polling. Use `33 18` only when specifically testing push-style status behavior.
 
 ## Push Notifications
+
+### Integration Push Lifecycle
+
+The bundled schema-v3 H7124 and H7129 profiles enable unsolicited power,
+fan-mode, and night-light power/brightness observations. A dedicated exact-model
+client keeps one application notification subscription for the lifetime of its
+retained connection. H7129 starts that listener only after completing the
+encrypted handshake. Polls and commands register temporary matchers with the
+same listener; a matching transaction response is consumed before push
+classification and is not published twice.
+
+The listener recognizes `aa 01` as pushed power, exact profile-matched `ee 05`
+as fan mode, and `ee 1b 01` as light power/brightness. Mode bytes 2 through 18
+must match one of that model profile's existing fan-mode command frames. This
+accepts H7124 Auto parameter `0x14` and H7129 Auto parameter `0x12` without
+accepting one model's Auto frame for the other. H7124's layouts are physically
+captured. H7129 manual Low/Medium/High and `ee 1b 01` support is inferred from
+its matching decrypted profile and remains physically unverified.
+
+Polling remains unchanged as reconciliation and startup state: H7124 sends only
+`aa 01` and `aa 19` every 10 seconds by default, while H7129 sends `aa 01`,
+`aa 19`, `aa 1b 01`, and `aa 1b 05` every 3 seconds by default. Shared purifiers
+receive pushes only while they own the shared GATT slot and can therefore miss
+physical events while disconnected; the next poll reconciles those fields.
 
 ### EE 05: Mode Change Push
 

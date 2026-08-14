@@ -22,7 +22,7 @@ from .protocol import (
     is_status_response,
 )
 
-PROFILE_SCHEMA_VERSION = 2
+PROFILE_SCHEMA_VERSION = 3
 PROFILE_DIRECTORY = Path(__file__).with_name("model_profiles")
 DEFAULT_PROFILE_KEY = "default"
 H7124_PROFILE_KEY = "h7124"
@@ -36,7 +36,7 @@ _TOP_LEVEL_KEYS = {
     "gatt",
     "commands",
 }
-_TOP_LEVEL_OPTIONAL_KEYS = {"custom_auto", "night_light"}
+_TOP_LEVEL_OPTIONAL_KEYS = {"custom_auto", "night_light", "push_notifications"}
 _GATT_KEYS = {"service_uuid", "notify_char_uuid", "write_char_uuid"}
 _CUSTOM_AUTO_KEYS = {"thresholds"}
 _COMMAND_KEYS = {
@@ -54,6 +54,11 @@ _NIGHT_LIGHT_KEYS = {
     "brightness_template",
     "rgb_template",
     "rgb_state_query",
+}
+_PUSH_NOTIFICATION_KEYS = {
+    "power_state",
+    "fan_mode",
+    "night_light_power_brightness",
 }
 _CUSTOM_AUTO_REQUIRED_FAN_MODES = frozenset(
     {"Sleep", "Low", "Medium", "High", "Turbo", "Auto"}
@@ -125,6 +130,21 @@ class NightLightProfile:
 
 
 @dataclass(frozen=True)
+class PushNotificationProfile:
+    """Profile-enabled unsolicited state notifications."""
+
+    power_state: bool
+    fan_mode: bool
+    night_light_power_brightness: bool
+
+    @property
+    def enabled(self) -> bool:
+        """Return whether any persistent push decoder is enabled."""
+
+        return self.power_state or self.fan_mode or self.night_light_power_brightness
+
+
+@dataclass(frozen=True)
 class ModelProfile:
     """BLE protocol and capabilities for one purifier model."""
 
@@ -144,6 +164,7 @@ class ModelProfile:
     fan_mode_commands: dict[str, bytes]
     custom_auto_thresholds: tuple[int, int, int, int] | None
     night_light: NightLightProfile | None
+    push_notifications: PushNotificationProfile | None
     is_power_state_response: Callable[[bytes], bool]
     is_status_response: Callable[[bytes], bool]
     decode_power_state: Callable[[bytes], bool]
@@ -178,6 +199,7 @@ class _ProfileDefinition:
     fan_mode_commands: dict[str, bytes]
     custom_auto_thresholds: tuple[int, int, int, int] | None
     night_light: NightLightProfile | None
+    push_notifications: PushNotificationProfile | None
 
 
 def _require_object(
@@ -347,6 +369,29 @@ def _parse_custom_auto(value: Any, *, source: str) -> tuple[int, int, int, int]:
     return thresholds[0], thresholds[1], thresholds[2], thresholds[3]
 
 
+def _parse_push_notifications(
+    value: Any,
+    *,
+    source: str,
+    has_night_light: bool,
+) -> PushNotificationProfile:
+    """Parse profile-gated unsolicited notification capabilities."""
+
+    push = _require_object(value, _PUSH_NOTIFICATION_KEYS, source=source)
+    for key, enabled in push.items():
+        if type(enabled) is not bool:
+            raise ValueError(f"{source}.{key} must be a boolean")
+    if push["night_light_power_brightness"] and not has_night_light:
+        raise ValueError(
+            f"{source}.night_light_power_brightness requires night_light capability"
+        )
+    return PushNotificationProfile(
+        power_state=push["power_state"],
+        fan_mode=push["fan_mode"],
+        night_light_power_brightness=push["night_light_power_brightness"],
+    )
+
+
 def _parse_encryption(value: Any, *, source: str) -> EncryptionMode:
     """Return one supported profile encryption mode."""
 
@@ -403,6 +448,12 @@ def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
             frame, source=f"{source}.commands.fan_modes.{mode}"
         )
 
+    night_light = (
+        _parse_night_light(profile["night_light"], source=f"{source}.night_light")
+        if "night_light" in profile
+        else None
+    )
+
     return _ProfileDefinition(
         polling_interval_seconds=_parse_polling_interval(
             profile["polling_interval_seconds"],
@@ -438,9 +489,14 @@ def _parse_profile_definition(data: Any, *, source: str) -> _ProfileDefinition:
             if "custom_auto" in profile
             else None
         ),
-        night_light=(
-            _parse_night_light(profile["night_light"], source=f"{source}.night_light")
-            if "night_light" in profile
+        night_light=night_light,
+        push_notifications=(
+            _parse_push_notifications(
+                profile["push_notifications"],
+                source=f"{source}.push_notifications",
+                has_night_light=night_light is not None,
+            )
+            if "push_notifications" in profile
             else None
         ),
     )
@@ -561,6 +617,7 @@ def _build_profile(
         fan_mode_commands=dict(definition.fan_mode_commands),
         custom_auto_thresholds=definition.custom_auto_thresholds,
         night_light=definition.night_light,
+        push_notifications=definition.push_notifications,
         is_power_state_response=is_power_state_response,
         is_status_response=is_status_response,
         decode_power_state=decode_power_state,

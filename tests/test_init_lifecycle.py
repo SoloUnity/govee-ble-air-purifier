@@ -15,6 +15,78 @@ def test_connection_arbiter_is_shared_by_config_entries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_setup_attaches_push_after_restore_before_platforms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+    class FakeCoordinator:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def async_config_entry_first_refresh(self) -> None:
+            calls.append("refresh")
+
+        def async_enable_push_updates(self, handler) -> None:
+            calls.append("push")
+
+        async def async_shutdown(self) -> None:
+            return None
+
+    class FakeController:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+    class FakeAutoResume:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def async_restore_from_hass(self, unique_id: str) -> None:
+            calls.append("restore")
+
+        async def async_handle_physical_fan_mode(self, mode: str) -> None:
+            return None
+
+    class FakeEntry:
+        unique_id = "aabbccddeeff"
+        data = {
+            "address": "AA:BB:CC:DD:EE:FF",
+            "name": "Purifier",
+            "profile": "h7124",
+        }
+        options = {}
+        runtime_data = None
+
+        def add_update_listener(self, listener):
+            return lambda: None
+
+        def async_on_unload(self, callback) -> None:
+            return None
+
+    async def forward_entry_setups(entry, platforms) -> None:
+        calls.append("platforms")
+
+    monkeypatch.setattr(integration, "GoveeBleClient", FakeClient)
+    monkeypatch.setattr(integration, "GoveeCoordinator", FakeCoordinator)
+    monkeypatch.setattr(integration, "CustomAutoController", FakeController)
+    monkeypatch.setattr(integration, "AutoResumeManager", FakeAutoResume)
+    entry = FakeEntry()
+    hass = SimpleNamespace(
+        data={},
+        config_entries=SimpleNamespace(
+            async_forward_entry_setups=forward_entry_setups
+        ),
+    )
+
+    assert await integration.async_setup_entry(hass, entry) is True
+    assert calls == ["refresh", "restore", "push", "platforms"]
+
+
+@pytest.mark.asyncio
 async def test_successful_unload_stops_controller_and_coordinator() -> None:
     calls: list[str] = []
 
@@ -27,6 +99,9 @@ async def test_successful_unload_stops_controller_and_coordinator() -> None:
     async def stop_coordinator() -> None:
         calls.append("coordinator")
 
+    async def disable_push_updates() -> None:
+        calls.append("push")
+
     async def unload_platforms(entry, platforms) -> bool:
         return True
 
@@ -34,7 +109,10 @@ async def test_successful_unload_stops_controller_and_coordinator() -> None:
         runtime_data=SimpleNamespace(
             auto_resume=SimpleNamespace(async_stop=stop_auto_resume),
             controller=SimpleNamespace(async_stop=stop_controller),
-            coordinator=SimpleNamespace(async_shutdown=stop_coordinator),
+            coordinator=SimpleNamespace(
+                async_disable_push_updates=disable_push_updates,
+                async_shutdown=stop_coordinator,
+            ),
         )
     )
     hass = SimpleNamespace(
@@ -42,7 +120,7 @@ async def test_successful_unload_stops_controller_and_coordinator() -> None:
     )
 
     assert await async_unload_entry(hass, entry) is True
-    assert calls == ["auto_resume", "controller", "coordinator"]
+    assert calls == ["push", "auto_resume", "controller", "coordinator"]
 
 
 @pytest.mark.asyncio
@@ -89,6 +167,9 @@ async def test_setup_failure_stops_controller_and_coordinator(
         async def async_shutdown(self) -> None:
             calls.append("coordinator")
 
+        def async_enable_push_updates(self, handler) -> None:
+            return None
+
     class FakeController:
         def __init__(self, hass, coordinator, config, *, config_entry) -> None:
             return None
@@ -107,6 +188,9 @@ async def test_setup_failure_stops_controller_and_coordinator(
 
         async def async_restore_from_hass(self, unique_id: str) -> None:
             calls.append("restore")
+
+        async def async_handle_physical_fan_mode(self, mode: str) -> None:
+            return None
 
     class FakeEntry:
         unique_id = "aabbccddeeff"

@@ -47,7 +47,9 @@ class AutoResumeManager:
         self._state = AutoResumeState()
         self._listeners: set[Callable[[], None]] = set()
         self._lock = asyncio.Lock()
-        self._last_poll_revision = coordinator.poll_revision
+        self._last_device_observation_revision = getattr(
+            coordinator, "device_observation_revision", coordinator.poll_revision
+        )
         self._reconcile_pending = False
         self._reconcile_task: asyncio.Task[Any] | None = None
         self._stopped = False
@@ -285,6 +287,17 @@ class AutoResumeManager:
             )
             self._set_state(AutoResumeState(mode=AUTO_MODE_HARDWARE))
 
+    async def async_handle_physical_fan_mode(self, mode: str) -> None:
+        """Accept a physical mode selection as the newest user intent."""
+
+        async with self._lock:
+            if self.controller.active:
+                await self.controller.async_deactivate()
+            if mode == "Auto":
+                self._set_state(AutoResumeState(mode=AUTO_MODE_HARDWARE))
+            else:
+                self._set_state(AutoResumeState())
+
     async def async_stop(self) -> None:
         """Release coordinator listeners and pending reconciliation work."""
 
@@ -328,10 +341,14 @@ class AutoResumeManager:
         """Capture Custom Auto speed and react only to fresh BLE polls."""
 
         self._sync_custom_speed()
-        revision = self.coordinator.poll_revision
-        if revision == self._last_poll_revision:
+        revision = getattr(
+            self.coordinator,
+            "device_observation_revision",
+            self.coordinator.poll_revision,
+        )
+        if revision == self._last_device_observation_revision:
             return
-        self._last_poll_revision = revision
+        self._last_device_observation_revision = revision
         self._schedule_reconcile()
 
     def _schedule_reconcile(self) -> None:

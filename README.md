@@ -16,7 +16,9 @@ encrypted Govee H7129. The H7124 integration has been physically tested and
 validated. Physical H7129 integration evidence confirms connection, encrypted
 handshake, polling, disconnect, and recovery. State-changing H7129 commands are
 implemented from decrypted physical-device captures but have not yet been
-physically validated through this integration. Other recognized `H712*` models
+physically validated through this integration. H7129 manual-mode and
+night-light physical pushes are decoded from its matching decrypted profile
+layout but remain physically unverified. Other recognized `H712*` models
 use the H7124 protocol fallback and may fail or expose unsupported or mismatched
 features.
 
@@ -28,6 +30,8 @@ features.
 - Fan speed and mode control
 - Optional RGB and brightness night-light control on H7124 and H7129
 - Optional integration-managed Custom Auto fan control
+- Immediate physical power, fan-mode, and night-light power/brightness updates
+  while a push-enabled purifier has a retained BLE connection
 
 ## Installation
 
@@ -70,8 +74,9 @@ same RGB state query, but the captured `0xfc` response does not identify a
 color. Its color therefore remains unknown after restart until a query returns
 an RGB payload or Home Assistant receives an exact echo for a color command.
 For BLE reliability, routine H7124 polls do not query night-light state; its
-state starts unknown after restart and is updated from confirmed Home Assistant
-commands. H7129 continues to poll its night-light state automatically.
+state starts unknown after restart and is updated from physical pushes or
+confirmed Home Assistant commands. H7129 continues to poll its night-light
+state automatically.
 
 ## Custom Auto
 
@@ -104,9 +109,12 @@ forgetting it. A later Home Assistant or physical-button power-on resumes
 hardware Auto or Custom Auto, including the last Custom Auto speed. The Custom
 Auto switch remains on while that selection is suspended. Turning the switch
 off while the purifier is off changes the resume target to hardware Auto without
-powering on the purifier. This intent survives Home Assistant restarts; mode
-changes made directly on the purifier cannot be detected because its verified
-poll responses do not report fan mode.
+powering on the purifier. This intent survives Home Assistant restarts. The
+verified poll responses alone do not report fan mode, but push-enabled H7124 and
+H7129 profiles detect physical mode selection while connected. That physical
+selection turns off Custom Auto and replaces remembered automatic ownership.
+H7129 manual-mode push support is inferred and remains awaiting physical
+verification.
 
 H7124 and fallback profiles use boundaries 3, 5, 9, and 15. H7129 uses 7, 9,
 13, and 19. At each boundary, an upshift occurs above the value and a delayed
@@ -134,14 +142,18 @@ uses `<=`; only a valid reading above that boundary resets its timer.
   night-light telemetry is disabled without removing its confirmed controls.
   H7129 retains its reliable encrypted night-light polling.
 - Each purifier retains its own reusable Bluetooth connection by default for
-  faster controls. If the adapter or proxy has too few GATT connection slots,
+  faster controls and push updates. Push-enabled dedicated H7124 and H7129
+  connections remain subscribed until failure, reload, or shutdown, even with
+  a long polling interval. If the adapter or proxy has too few GATT connection slots,
   turn on `Share a Bluetooth connection slot` in the Options of at least two
   purifiers. Only opted-in entries share one connection lane; for example, two
   dedicated entries plus two shared entries occupy three slots. Shared controls
   enter the priority scheduler before advertisement recovery and BLE connection
   setup, bypassing routine polls that have not started active BLE work. One poll
   is allowed after every three priority commands so background state cannot
-  starve.
+  starve. A shared purifier receives physical pushes only while it owns the
+  shared connection, so changes made while another shared purifier owns the
+  slot are reconciled by the next poll instead of arriving immediately.
 - If setup or controls do not respond, close the Govee app and try again. The
   purifier may only allow one Bluetooth connection at a time, so the app may
   also be unable to connect while Home Assistant is actively polling.
@@ -157,7 +169,9 @@ From the integration's page in **Settings > Devices & services**, select
 **Enable debug logging**, reproduce the problem, and then disable debug logging
 to download the log. Debug output identifies connection, encrypted-handshake,
 notification, request, response, connection-release, and Bluetooth allocator
-stages. The integration's stage messages do not include BLE addresses, packet
+stages. Diagnostics also report listener state, reconnect generation, recognized
+push counts by type, ignored profile-mismatched pushes, and last-push age. The
+integration's stage messages do not include BLE addresses, packet
 payloads, or encryption keys. They include a stable short hashed device label
 so same-model purifiers can be distinguished without exposing a full address.
 Disconnect and release messages include only that label plus connection and

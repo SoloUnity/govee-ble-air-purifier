@@ -19,6 +19,7 @@ from custom_components.govee_ble_air_purifier.bluetooth import (
 from custom_components.govee_ble_air_purifier.bluetooth.framing import build_frame
 from custom_components.govee_ble_air_purifier.models import (
     NightLightState,
+    PurifierPushUpdate,
     PurifierState,
 )
 from custom_components.govee_ble_air_purifier.profiles import H7124_PROFILE, get_profile
@@ -141,6 +142,9 @@ class _TestableGoveeBleClient(GoveeBleClient):
         self, operation: Any, *, deadline: float | None = None
     ) -> Any:
         self.connection_count += 1
+        self._client = self.fake_client
+        if self._disconnect_signal is None:
+            self._disconnect_signal = asyncio.Event()
         return await operation(self.fake_client)
 
 
@@ -579,7 +583,7 @@ async def test_get_state_batches_power_and_status_in_one_subscription() -> None:
 
     assert client.connection_count == 1
     assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
-    assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.stopped_notify == []
     assert fake.writes == [
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.state_query_command, False),
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.status_query_command, False),
@@ -603,6 +607,127 @@ async def test_repeated_h7124_polls_never_query_night_light_state() -> None:
         H7124_PROFILE.state_query_command,
         H7124_PROFILE.status_query_command,
     ]
+    assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.stopped_notify == []
+
+
+@pytest.mark.asyncio
+async def test_persistent_listener_routes_idle_h7124_physical_pushes() -> None:
+    fake = FakeBleakClient()
+    client = _TestableGoveeBleClient(fake)
+    updates: list[PurifierPushUpdate] = []
+    client.set_push_callback(updates.append)
+
+    await client.async_get_state()
+    await client.async_set_power(True)
+
+    assert updates == []
+    assert fake.notify_handler is not None
+    fake.notify_handler(
+        None, build_frame(bytes.fromhex("aa 01 00 00 81 00 01 01"))
+    )
+    low_command = H7124_PROFILE.fan_mode_commands["Low"]
+    fake.notify_handler(None, build_frame(bytes((0xEE,)) + low_command[1:19]))
+    fake.notify_handler(None, build_frame(bytes.fromhex("ee 1b 01 01 32")))
+    h7129_auto = get_profile("h7129").fan_mode_commands["Auto"]
+    fake.notify_handler(None, build_frame(bytes((0xEE,)) + h7129_auto[1:19]))
+
+    assert updates == [
+        PurifierPushUpdate(is_on=False),
+        PurifierPushUpdate(fan_mode="Low"),
+        PurifierPushUpdate(
+            night_light=NightLightState(is_on=True, brightness_percent=50)
+        ),
+    ]
+    assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.stopped_notify == []
+    assert client.diagnostics()["push_counts"] == {
+        "power": 1,
+        "fan_mode": 1,
+        "night_light": 1,
+    }
+    assert client.diagnostics()["ignored_push_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unsolicited_push_during_unrelated_transaction_is_published() -> None:
+    updates: list[PurifierPushUpdate] = []
+
+    class PushBeforeResponseFake(FakeBleakClient):
+        async def write_gatt_char(
+            self, char_uuid: str, command: bytes, *, response: bool
+        ) -> None:
+            assert self.notify_handler is not None
+            sleep_command = H7124_PROFILE.fan_mode_commands["Sleep"]
+            self.notify_handler(
+                None, build_frame(bytes((0xEE,)) + sleep_command[1:19])
+            )
+            await super().write_gatt_char(char_uuid, command, response=response)
+
+    fake = PushBeforeResponseFake()
+    client = _TestableGoveeBleClient(fake)
+    client.set_push_callback(updates.append)
+
+    assert await client.async_set_power(True) is True
+    assert updates == [PurifierPushUpdate(fan_mode="Sleep")]
+
+
+@pytest.mark.asyncio
+async def test_stale_persistent_listener_callback_cannot_publish() -> None:
+    first = FakeBleakClient()
+    client = _TestableGoveeBleClient(first)
+    updates: list[PurifierPushUpdate] = []
+    client.set_push_callback(updates.append)
+    await client.async_get_state()
+    stale_handler = first.notify_handler
+    assert stale_handler is not None
+
+    client._clear_connection_state()
+    second = FakeBleakClient()
+    client.fake_client = second
+    await client.async_get_state()
+    assert second.notify_handler is not None
+
+    power_off = build_frame(bytes.fromhex("aa 01 00 00 81 00 01 01"))
+    stale_handler(None, power_off)
+    second.notify_handler(None, power_off)
+
+    assert updates == [PurifierPushUpdate(is_on=False)]
+
+
+@pytest.mark.asyncio
+async def test_malformed_idle_notification_drops_persistent_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    fake = FakeBleakClient()
+    disconnects: list[Any] = []
+
+    async def async_establish_connection(*args: Any, **kwargs: Any) -> FakeBleakClient:
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        disconnects.append(passed_client)
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+    await client.async_get_state()
+    assert fake.notify_handler is not None
+
+    fake.notify_handler(None, bytes(19) + b"\x01")
+    for _ in range(10):
+        if disconnects:
+            break
+        await asyncio.sleep(0)
+
+    assert disconnects == [fake]
+    assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
+    assert client._client is None
 
 
 @pytest.mark.asyncio
@@ -801,7 +926,7 @@ async def test_optional_write_failure_preserves_core_state_and_drops_connection(
         pm25=42,
         filter_life=85,
     )
-    assert fake.stopped_notify == []
+    assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
     assert disconnects == [fake]
     assert client._client is None
 
@@ -1292,7 +1417,7 @@ async def test_power_command_waits_for_aa01_confirmation() -> None:
 
     assert client.connection_count == 1
     assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
-    assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.stopped_notify == []
     assert fake.writes == [
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.power_on_command, False),
     ]
@@ -1307,7 +1432,7 @@ async def test_fan_mode_command_waits_for_exact_echo_confirmation() -> None:
 
     assert client.connection_count == 1
     assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
-    assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
+    assert fake.stopped_notify == []
     assert fake.writes == [
         (H7124_PROFILE.write_char_uuid, H7124_PROFILE.fan_mode_commands["Low"], False),
     ]
@@ -1368,7 +1493,7 @@ async def test_connection_is_established_once_and_reused(
     assert len(disconnects) == 1
     assert disconnects[0][0] is fake
     assert (
-        f"{client._log_label} BLE idle disconnect scheduled in 15.00 seconds"
+        f"{client._log_label} retaining dedicated BLE connection for push notifications"
         in caplog.text
     )
     assert (
@@ -1377,6 +1502,40 @@ async def test_connection_is_established_once_and_reused(
     )
     assert f"{client._log_label} releasing cached BLE connection" in caplog.text
     assert f"{client._log_label} BLE client closed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_push_enabled_dedicated_connection_ignores_long_poll_idle_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    fake = FakeBleakClient()
+
+    async def async_establish_connection(*args: Any, **kwargs: Any) -> FakeBleakClient:
+        return fake
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    client = GoveeBleClient(
+        None,
+        "AA:BB:CC:DD:EE:FF",
+        profile=H7124_PROFILE,
+        polling_interval_seconds=300,
+    )
+
+    await client.async_get_state()
+
+    assert client._client is fake
+    assert client._idle_disconnect_handle is None
+    assert fake.started_notify == [H7124_PROFILE.notify_char_uuid]
+    await client.async_close()
+    assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
 
 
 @pytest.mark.asyncio
@@ -2166,7 +2325,12 @@ async def test_idle_timeout_disconnects_and_next_operation_reconnects(
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
     monkeypatch.setattr(client_module, "CONNECTION_IDLE_GRACE", 0.0)
-    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", polling_interval_seconds=60)
+    client = GoveeBleClient(
+        None,
+        "AA:BB:CC:DD:EE:FF",
+        profile=get_profile("h7126"),
+        polling_interval_seconds=60,
+    )
     connected_clients = [FakeBleakClient(), FakeBleakClient()]
     establish_count = 0
     disconnected = asyncio.Event()
@@ -2211,7 +2375,9 @@ async def test_notification_cleanup_failure_preserves_result_and_reconnects(
 ) -> None:
     from custom_components.govee_ble_air_purifier.bluetooth import transport
 
-    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    client = GoveeBleClient(
+        None, "AA:BB:CC:DD:EE:FF", profile=get_profile("h7126")
+    )
     connected_clients = [
         FakeBleakClient(fail_stop_notify=True),
         FakeBleakClient(),

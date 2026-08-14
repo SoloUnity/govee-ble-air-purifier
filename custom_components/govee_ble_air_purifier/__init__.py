@@ -73,6 +73,9 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
             config_entry=entry,
         )
         await auto_resume.async_restore_from_hass(entry.unique_id)
+        coordinator.async_enable_push_updates(
+            auto_resume.async_handle_physical_fan_mode
+        )
         runtime_data = GoveeRuntimeData(
             coordinator=coordinator,
             profile=profile,
@@ -102,6 +105,7 @@ async def async_unload_entry(hass: Any, entry: Any) -> bool:
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        await entry.runtime_data.coordinator.async_disable_push_updates()
         await entry.runtime_data.auto_resume.async_stop()
         await entry.runtime_data.controller.async_stop()
         await entry.runtime_data.coordinator.async_shutdown()

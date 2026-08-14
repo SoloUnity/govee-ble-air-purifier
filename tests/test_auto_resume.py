@@ -27,6 +27,7 @@ class FakeCoordinator:
     def __init__(self, *, is_on: bool = True, mode: str | None = "Low") -> None:
         self.data = PurifierState(is_on=is_on, pm25=7, filter_life=90, fan_mode=mode)
         self.poll_revision = 0
+        self.device_observation_revision = 0
         self.commands: list[str] = []
         self.fail_power = False
         self.fail_modes: set[str] = set()
@@ -43,6 +44,18 @@ class FakeCoordinator:
 
     def poll(self, is_on: bool) -> None:
         self.poll_revision += 1
+        self.device_observation_revision += 1
+        self._publish(
+            PurifierState(
+                is_on=is_on,
+                pm25=7,
+                filter_life=90,
+                fan_mode=self.data.fan_mode,
+            )
+        )
+
+    def push_power(self, is_on: bool) -> None:
+        self.device_observation_revision += 1
         self._publish(
             PurifierState(
                 is_on=is_on,
@@ -200,13 +213,13 @@ async def test_physical_power_cycle_resumes_selected_auto_mode(
         await manager.async_enable_custom_auto()
     coordinator.commands.clear()
 
-    coordinator.poll(False)
+    coordinator.push_power(False)
     await settle()
 
     assert manager.state.suspended is True
     assert controller.active is False
 
-    coordinator.poll(True)
+    coordinator.push_power(True)
     await settle()
 
     assert manager.state.mode == auto_mode
@@ -287,6 +300,35 @@ async def test_explicit_manual_mode_clears_auto_resume_intent() -> None:
 
     assert manager.state == AutoResumeState()
     assert coordinator.commands == ["mode:Auto", "mode:High"]
+    await manager.async_stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("physical_mode", "expected_state"),
+    [
+        ("Auto", AutoResumeState(mode=AUTO_MODE_HARDWARE)),
+        ("Low", AutoResumeState()),
+        ("Medium", AutoResumeState()),
+        ("High", AutoResumeState()),
+        ("Sleep", AutoResumeState()),
+        ("Turbo", AutoResumeState()),
+    ],
+)
+async def test_physical_mode_push_overrides_custom_auto_without_ble_command(
+    physical_mode: str,
+    expected_state: AutoResumeState,
+) -> None:
+    manager, coordinator, controller = make_manager()
+    await manager.async_enable_custom_auto()
+    coordinator.commands.clear()
+
+    await manager.async_handle_physical_fan_mode(physical_mode)
+
+    assert manager.state == expected_state
+    assert controller.active is False
+    assert controller.deactivations == 1
+    assert coordinator.commands == []
     await manager.async_stop()
 
 

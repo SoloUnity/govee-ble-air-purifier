@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import timedelta
 import logging
@@ -10,7 +11,7 @@ from typing import Any
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .models import NightLightState, PurifierState
+from .models import NightLightState, PurifierPushUpdate, PurifierState
 from .profiles import H7124_PROFILE, ModelProfile
 
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ def _merge_night_light_state(
             update.rgb_color if update.rgb_color is not None else current.rgb_color
         ),
     )
+
 
 @dataclass
 class GoveeRuntimeData:
@@ -68,11 +70,19 @@ class GoveeCoordinator(DataUpdateCoordinator):
         self.last_pm25_update_success = False
         self.pm25_sample_revision = 0
         self.poll_revision = 0
+        self.device_observation_revision = 0
         self._last_fan_mode: str | None = None
         self._command_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._command_revision = 0
         self._last_published_command_revision = 0
+        self._power_push_revision = 0
+        self._fan_mode_push_revision = 0
+        self._night_light_push_revision = 0
+        self._push_revision = 0
+        self._push_updates_enabled = False
+        self._push_tasks: set[asyncio.Task[Any]] = set()
+        self._physical_mode_handler: Callable[[str], Awaitable[None]] | None = None
         self._background_refresh_task: asyncio.Task[Any] | None = None
         super().__init__(
             hass,
@@ -118,6 +128,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
         """Cancel refreshes, stop polling, and close the BLE client."""
 
         try:
+            await self.async_disable_push_updates()
             task = self._cancel_background_refresh()
             if task is not None:
                 await asyncio.gather(task, return_exceptions=True)
@@ -129,6 +140,8 @@ class GoveeCoordinator(DataUpdateCoordinator):
         """Fetch current state from the BLE client."""
 
         command_revision = self._command_revision
+        power_push_revision = self._power_push_revision
+        night_light_push_revision = self._night_light_push_revision
         try:
             client_data = await self.client.async_get_state()
         except Exception as err:  # pragma: no cover - depends on HA runtime
@@ -139,12 +152,17 @@ class GoveeCoordinator(DataUpdateCoordinator):
         async with self._state_lock:
             self.last_poll_success = True
             self.poll_revision += 1
+            self.device_observation_revision += 1
             self.last_pm25_update_success = client_data.pm25 is not None
             if self.last_pm25_update_success:
                 self.pm25_sample_revision += 1
             current = self.data or PurifierState()
             data = PurifierState(
-                is_on=client_data.is_on,
+                is_on=(
+                    current.is_on
+                    if self._power_push_revision > power_push_revision
+                    else client_data.is_on
+                ),
                 pm25=(
                     client_data.pm25 if client_data.pm25 is not None else current.pm25
                 ),
@@ -153,7 +171,11 @@ class GoveeCoordinator(DataUpdateCoordinator):
                 night_light=(
                     (
                         current.night_light
-                        if self._last_published_command_revision > command_revision
+                        if (
+                            self._last_published_command_revision > command_revision
+                            or self._night_light_push_revision
+                            > night_light_push_revision
+                        )
                         else _merge_night_light_state(
                             current.night_light, client_data.night_light
                         )
@@ -167,6 +189,103 @@ class GoveeCoordinator(DataUpdateCoordinator):
             self.data = data
             return data
 
+    def async_enable_push_updates(
+        self, physical_mode_handler: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Enable client push publication after runtime ownership is restored."""
+
+        self._physical_mode_handler = physical_mode_handler
+        self._push_updates_enabled = True
+        self.client.set_push_callback(self._handle_client_push)
+
+    async def async_disable_push_updates(self) -> None:
+        """Detach the client callback and cancel pending push publications."""
+
+        was_enabled = self._push_updates_enabled
+        self._push_updates_enabled = False
+        self._physical_mode_handler = None
+        if was_enabled:
+            self.client.set_push_callback(None)
+        tasks = tuple(self._push_tasks)
+        current_task = asyncio.current_task()
+        wait_tasks = tuple(task for task in tasks if task is not current_task)
+        for task in wait_tasks:
+            if not task.done():
+                task.cancel()
+        if wait_tasks:
+            await asyncio.gather(*wait_tasks, return_exceptions=True)
+        self._push_tasks.clear()
+
+    def _handle_client_push(self, update: PurifierPushUpdate) -> None:
+        """Schedule one non-blocking purifier push on Home Assistant's loop."""
+
+        if not self._push_updates_enabled:
+            return
+        coroutine = self._async_apply_push_update(update)
+        if self._hass is not None and hasattr(self._hass, "async_create_task"):
+            task = self._hass.async_create_task(coroutine)
+        else:
+            task = asyncio.create_task(coroutine)
+        self._push_tasks.add(task)
+        task.add_done_callback(self._handle_push_task_done)
+
+    def _handle_push_task_done(self, task: asyncio.Task[Any]) -> None:
+        """Observe one completed push task and remove it from lifecycle tracking."""
+
+        self._push_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            LOGGER.error(
+                "Failed to apply purifier push update",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    async def _async_apply_push_update(self, update: PurifierPushUpdate) -> None:
+        """Merge one physical-device observation without treating it as a poll."""
+
+        if not self._push_updates_enabled:
+            return
+        if update.fan_mode is not None and self._physical_mode_handler is not None:
+            try:
+                await self._physical_mode_handler(update.fan_mode)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to update automatic-mode ownership from physical push"
+                )
+        async with self._state_lock:
+            if not self._push_updates_enabled:
+                return
+            current = self.data or PurifierState()
+            data = current
+            self._push_revision += 1
+            revision = self._push_revision
+            if update.is_on is not None:
+                self._power_push_revision = revision
+                self.device_observation_revision += 1
+                if not update.is_on:
+                    self._last_fan_mode = None
+                data = replace(
+                    data,
+                    is_on=update.is_on,
+                    fan_mode=data.fan_mode if update.is_on else None,
+                )
+            if update.fan_mode is not None:
+                self._fan_mode_push_revision = revision
+                self._last_fan_mode = update.fan_mode
+                data = replace(data, fan_mode=update.fan_mode)
+            if update.night_light is not None and self.profile.night_light is not None:
+                self._night_light_push_revision = revision
+                data = replace(
+                    data,
+                    night_light=_merge_night_light_state(
+                        data.night_light, update.night_light
+                    ),
+                )
+            self.data = data
+            self._publish_data(data)
+
     async def async_request_refresh(self) -> None:
         """Request a coordinator refresh."""
 
@@ -178,19 +297,25 @@ class GoveeCoordinator(DataUpdateCoordinator):
         self._cancel_background_refresh()
         self._command_revision += 1
         command_revision = self._command_revision
+        power_push_revision = self._power_push_revision
         async with self._command_lock:
             result = await self.client.async_set_power(is_on)
             confirmed_is_on = is_on if result is None else result
             async with self._state_lock:
-                if not confirmed_is_on:
-                    self._last_fan_mode = None
                 current = self.data or PurifierState()
+                published_is_on = (
+                    current.is_on
+                    if self._power_push_revision > power_push_revision
+                    else confirmed_is_on
+                )
+                if not published_is_on:
+                    self._last_fan_mode = None
                 self._last_published_command_revision = command_revision
                 self._publish_data(
                     replace(
                         current,
-                        is_on=confirmed_is_on,
-                        fan_mode=current.fan_mode if confirmed_is_on else None,
+                        is_on=published_is_on,
+                        fan_mode=current.fan_mode if published_is_on else None,
                     )
                 )
         self._schedule_background_refresh()
@@ -203,6 +328,8 @@ class GoveeCoordinator(DataUpdateCoordinator):
         self._cancel_background_refresh()
         self._command_revision += 1
         command_revision = self._command_revision
+        power_push_revision = self._power_push_revision
+        fan_mode_push_revision = self._fan_mode_push_revision
         async with self._command_lock:
             current_before_command = self.data
             if current_before_command is None or current_before_command.is_on is False:
@@ -230,14 +357,24 @@ class GoveeCoordinator(DataUpdateCoordinator):
                 confirmed_is_on = current_before_command.is_on
                 confirmed_mode = mode if mode_result is None else mode_result
             async with self._state_lock:
-                self._last_fan_mode = confirmed_mode
                 current = self.data or PurifierState()
+                published_is_on = (
+                    current.is_on
+                    if self._power_push_revision > power_push_revision
+                    else confirmed_is_on
+                )
+                published_mode = (
+                    current.fan_mode
+                    if self._fan_mode_push_revision > fan_mode_push_revision
+                    else confirmed_mode
+                )
+                self._last_fan_mode = published_mode
                 self._last_published_command_revision = command_revision
                 self._publish_data(
                     replace(
                         current,
-                        is_on=confirmed_is_on,
-                        fan_mode=confirmed_mode,
+                        is_on=published_is_on,
+                        fan_mode=published_mode,
                     )
                 )
         self._schedule_background_refresh()
@@ -259,6 +396,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
         self._cancel_background_refresh()
         self._command_revision += 1
         command_revision = self._command_revision
+        night_light_push_revision = self._night_light_push_revision
 
         confirmed_any = False
         try:
@@ -272,9 +410,14 @@ class GoveeCoordinator(DataUpdateCoordinator):
                     update = await self.client.async_set_night_light_power(is_on)
                     night_light = _merge_night_light_state(night_light, update)
                     async with self._state_lock:
-                        current = replace(
-                            self.data or current, night_light=night_light
-                        )
+                        current = self.data or current
+                        if (
+                            self._night_light_push_revision
+                            <= night_light_push_revision
+                        ):
+                            current = replace(current, night_light=night_light)
+                        else:
+                            night_light = current.night_light or NightLightState()
                         self._last_published_command_revision = command_revision
                         self._publish_data(current)
                     confirmed_any = True
@@ -285,9 +428,14 @@ class GoveeCoordinator(DataUpdateCoordinator):
                     )
                     night_light = _merge_night_light_state(night_light, update)
                     async with self._state_lock:
-                        current = replace(
-                            self.data or current, night_light=night_light
-                        )
+                        current = self.data or current
+                        if (
+                            self._night_light_push_revision
+                            <= night_light_push_revision
+                        ):
+                            current = replace(current, night_light=night_light)
+                        else:
+                            night_light = current.night_light or NightLightState()
                         self._last_published_command_revision = command_revision
                         self._publish_data(current)
                     confirmed_any = True
@@ -296,9 +444,14 @@ class GoveeCoordinator(DataUpdateCoordinator):
                     update = await self.client.async_set_night_light_rgb(rgb_color)
                     night_light = _merge_night_light_state(night_light, update)
                     async with self._state_lock:
-                        current = replace(
-                            self.data or current, night_light=night_light
-                        )
+                        current = self.data or current
+                        if (
+                            self._night_light_push_revision
+                            <= night_light_push_revision
+                        ):
+                            current = replace(current, night_light=night_light)
+                        else:
+                            night_light = current.night_light or NightLightState()
                         self._last_published_command_revision = command_revision
                         self._publish_data(current)
                     confirmed_any = True
