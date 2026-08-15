@@ -13,6 +13,13 @@ they affect how commands should be used. Commands are shown as decrypted
 20-byte application frames. H7124 sends those frames directly; H7129 encrypts
 them with a connection-specific session key before writing them to GATT.
 
+A sanitized, deterministic subset of the documented frames is checked into
+`tests/fixtures` and exercised against the production framing, protocol,
+profile, and encryption code. See [Protocol Fixture Corpus](protocol-fixtures.md)
+for its provenance, verification, and mandatory sanitization rules. Raw
+captures, device identifiers, timestamps, and key material are deliberately not
+included.
+
 Physical targets and evidence:
 
 | Model | Evidence | BLE name | Firmware | Hardware |
@@ -545,7 +552,7 @@ Use `aa 19` for normal status polling. Use `33 18` only when specifically testin
 
 ### Integration Push Lifecycle
 
-The bundled schema-v4 H7124 and H7129 profiles enable unsolicited power,
+The bundled schema-v5 H7124 and H7129 profiles enable unsolicited power,
 fan-mode, and night-light power/brightness observations. A dedicated exact-model
 client keeps one application notification subscription for the lifetime of its
 retained connection. H7129 starts that listener only after completing the

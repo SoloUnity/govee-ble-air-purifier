@@ -11,7 +11,7 @@ from .const import (
     MAX_POLLING_INTERVAL_SECONDS,
     MIN_POLLING_INTERVAL_SECONDS,
 )
-from .profiles import (
+from .govee_ble_air_purifier_protocol import (
     canonicalize_ble_address,
     match_profile,
     normalize_ble_address,

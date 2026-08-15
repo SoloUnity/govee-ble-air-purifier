@@ -4,6 +4,11 @@ This integration exists first and foremost to expose the purifier's PM2.5 sensor
 
 It also gives you basic control of the purifier and shows remaining filter life.
 
+The protocol, profile, framing, and encrypted-session implementation is also a
+Home Assistant-independent typed package built from the same HACS-shipped
+source. See the [protocol library documentation](docs/protocol-library.md) for
+its public API and packaging boundary.
+
 ## Supported Devices
 
 - Govee `H712*` family BLE air purifiers
@@ -21,6 +26,11 @@ night-light physical pushes are decoded from its matching decrypted profile
 layout but remain physically unverified. Other recognized `H712*` models
 use the H7124 protocol fallback and may fail or expose unsupported or mismatched
 features.
+
+Model profiles record these evidence levels explicitly: H7124 is `verified`,
+H7129 is `read_verified`, and an unbundled H712-family model is `fallback`.
+Home Assistant asks for acknowledgement before continuing setup with any profile
+that is not fully verified, and diagnostics report the resolved status.
 
 ## What You Get
 
@@ -52,14 +62,22 @@ Requires Home Assistant 2024.8.0 or newer.
 
 ## Setup
 
-1. Go to Settings > Devices & services.
-2. Choose Add Integration.
-3. Search for Govee BLE Air Purifier.
-4. Choose your purifier from the recently seen Bluetooth list if it appears, or
-   enter its Bluetooth address manually.
+Home Assistant automatically offers connectable purifiers advertising the
+physically observed `GVH712…` or `ihoment_H712…` name formats. Select
+**Configure**, confirm the discovered purifier, review its support level, and
+choose its polling and Custom Auto options. Discovery never creates an entry
+without that confirmation.
 
-Setup is always this manual flow. The integration does not add itself through
-automatic Bluetooth discovery.
+You can also go to **Settings > Devices & services**, choose **Add
+Integration**, search for **Govee BLE Air Purifier**, and choose a purifier from
+the recently seen list or enter its Bluetooth address manually.
+
+Before either setup path creates an entry, the integration opens a temporary
+GATT connection and validates the selected profile with read-only state and
+status requests. The check has a 65-second operation deadline and a separate
+10-second foreground cleanup deadline; cleanup that exceeds that window stays
+tracked in the background. It never sends power, fan, or light control
+commands. A failed check shows a translated reason and can be retried.
 
 ## Night Light
 
@@ -140,7 +158,10 @@ uses `<=`; only a valid reading above that boundary resets its timer.
 - Fresh-advertisement recovery, connection and service discovery, encrypted
   negotiation, application polling, command confirmation, and disconnect
   cleanup use separate bounded timeouts. Idle cleanup also completes before a
-  poll or command begins its normal queue and response budgets.
+  poll or command begins its normal queue and response budgets. A Bluetooth
+  backend operation that ignores cancellation is quarantined on its old
+  connection and observed in the background; it cannot permanently prevent a
+  later poll from creating a fresh connection.
 - H7124 keeps its proven power and status queries every 10 seconds and adds
   response-paced, best-effort light reconciliation at startup and every five
   minutes. Missing light telemetry backs off without making the purifier

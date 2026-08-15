@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "model": "H7124",
+  "protocol": "govee_h712x_20_byte_xor",
+  "transport": {
+    "application_frame_encoding": "plaintext",
+    "wire_encryption": "none"
+  },
+  "verification_level": "physically_replayed_and_capture_observed",
+  "sanitization": {
+    "identifiers_removed": true,
+    "timestamps_removed": true,
+    "raw_capture_included": false,
+    "key_material_included": false
+  },
+  "provenance": [
+    {
+      "id": "documented_app_control_and_polling",
+      "source_type": "sanitized_packet_capture_transcription",
+      "reference": "docs/govee-ble-air-purifier-protocol.md#canonical-commands"
+    },
+    {
+      "id": "documented_night_light_capture",
+      "source_type": "sanitized_packet_capture_transcription",
+      "reference": "docs/govee-ble-air-purifier-protocol.md#aa-1b--3a-1b-night-light"
+    },
+    {
+      "id": "documented_physical_control_capture",
+      "source_type": "sanitized_packet_capture_transcription",
+      "reference": "docs/govee-ble-air-purifier-protocol.md#push-notifications",
+      "capture_sha256": "1f71ead53c29bd2d24493619e44502e2197faa91f12bf8c31b5c90aeda66c242"
+    }
+  ],
+  "frames": [
+    {
+      "id": "power_state_off",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "aa 01 00 00 81 00 01 01 00 00 00 00 00 00 00 00 00 00 00 2a",
+      "plaintext_sha256": "64308ce81839380d09a062a90bf26816ab05f707e6ff255e3e287479ea37e1f7",
+      "provenance_id": "documented_app_control_and_polling",
+      "verification_level": "capture_observed",
+      "expected": {
+        "decoder": "power_state",
+        "interpretation": "purifier power is off",
+        "is_on": false
+      }
+    },
+    {
+      "id": "power_state_on",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "aa 01 01 00 81 00 01 01 00 00 00 00 00 00 00 00 00 00 00 2b",
+      "plaintext_sha256": "c3c2c557b8973501652af00acfb2147f1ad515771946d7dc9d94037281941a38",
+      "provenance_id": "documented_app_control_and_polling",
+      "verification_level": "capture_observed",
+      "expected": {
+        "decoder": "power_state",
+        "interpretation": "purifier power is on",
+        "is_on": true
+      }
+    },
+    {
+      "id": "status_pm25_1_filter_100",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "aa 19 81 00 01 01 00 64 00 00 00 00 00 00 00 00 00 00 00 56",
+      "plaintext_sha256": "dbb79f888ee503766677c7eb2b3a97f351be61eb9477b3432fff5c61e7282f6d",
+      "provenance_id": "documented_app_control_and_polling",
+      "verification_level": "capture_observed",
+      "expected": {
+        "decoder": "status",
+        "interpretation": "PM2.5 is 1 microgram per cubic metre and filter life is 100 percent",
+        "pm25": 1,
+        "filter_life": 100
+      }
+    },
+    {
+      "id": "physical_mode_medium_push",
+      "direction": "device_to_client",
+      "frame_role": "push",
+      "plaintext_hex": "ee 05 01 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 e8",
+      "plaintext_sha256": "c54830dc31dbfa1fa4a873df89c43ea70a0eaa859a25f796b0b854f5634c030b",
+      "provenance_id": "documented_physical_control_capture",
+      "verification_level": "physically_observed",
+      "expected": {
+        "decoder": "fan_mode_push",
+        "interpretation": "physical fan selection changed to Medium",
+        "mode": "Medium"
+      }
+    },
+    {
+      "id": "physical_mode_auto_default_push",
+      "direction": "device_to_client",
+      "frame_role": "push",
+      "plaintext_hex": "ee 05 03 00 00 14 00 00 00 00 00 00 00 00 00 00 00 00 00 fc",
+      "plaintext_sha256": "c5b52876207d379dbc6d41d164298a8f06c0c1018d2a1034cb11a2caf87f54c6",
+      "provenance_id": "documented_physical_control_capture",
+      "verification_level": "physically_observed",
+      "expected": {
+        "decoder": "fan_mode_push",
+        "interpretation": "physical fan selection changed to Auto Default",
+        "mode": "Auto"
+      }
+    },
+    {
+      "id": "physical_night_light_on_push",
+      "direction": "device_to_client",
+      "frame_role": "push",
+      "plaintext_hex": "ee 1b 01 01 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 91",
+      "plaintext_sha256": "01920286255fd5aba37938c706cfb3645e9aa960cea0bfb8778e6bbaaa9fa27c",
+      "provenance_id": "documented_physical_control_capture",
+      "verification_level": "physically_observed",
+      "expected": {
+        "decoder": "night_light_power_brightness_push",
+        "interpretation": "physical night-light control reported on at 100 percent",
+        "is_on": true,
+        "brightness_percent": 100
+      }
+    },
+    {
+      "id": "physical_night_light_off_push",
+      "direction": "device_to_client",
+      "frame_role": "push",
+      "plaintext_hex": "ee 1b 01 00 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 90",
+      "plaintext_sha256": "334ef40fd3919acc97b6a2be79271200a7890d1e242ac420fde10807b8229502",
+      "provenance_id": "documented_physical_control_capture",
+      "verification_level": "physically_observed",
+      "expected": {
+        "decoder": "night_light_power_brightness_push",
+        "interpretation": "physical night-light control reported off with 100 percent retained",
+        "is_on": false,
+        "brightness_percent": 100
+      }
+    },
+    {
+      "id": "night_light_rgb_red_query_response",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "aa 1b 05 0d ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 46",
+      "plaintext_sha256": "12114bcc948149247a760e27f7275f2c9c7a3ffdd93375495d328737ead7e975",
+      "provenance_id": "documented_night_light_capture",
+      "verification_level": "capture_observed",
+      "expected": {
+        "decoder": "night_light_rgb_state",
+        "interpretation": "night-light color query reported red",
+        "rgb": [255, 0, 0]
+      }
+    }
+  ]
+}

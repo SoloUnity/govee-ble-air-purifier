@@ -14,7 +14,10 @@ from custom_components.govee_ble_air_purifier.custom_auto.config import (
     CUSTOM_AUTO_DEFAULTS,
     MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS,
 )
-from custom_components.govee_ble_air_purifier.profiles import get_profile
+from custom_components.govee_ble_air_purifier.profiles import (
+    get_profile,
+    ModelSupportStatus,
+)
 from tests.helpers.ha_stubs import install_modules
 
 
@@ -22,6 +25,9 @@ MODULE_NAME = "custom_components.govee_ble_air_purifier.config_flow"
 
 
 class _ConfigFlow:
+    def __init__(self) -> None:
+        self.context: dict[str, object] = {}
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__()
 
@@ -160,6 +166,9 @@ def _install_homeassistant_modules(
     monkeypatch: pytest.MonkeyPatch,
     bluetooth_module: ModuleType,
 ) -> None:
+    bluetooth_module.BluetoothServiceInfoBleak = getattr(
+        bluetooth_module, "BluetoothServiceInfoBleak", object
+    )
     modules = install_modules(
         monkeypatch,
         {
@@ -204,7 +213,13 @@ def _import_config_flow(
 ):
     _install_homeassistant_modules(monkeypatch, bluetooth_module)
     sys.modules.pop(MODULE_NAME, None)
-    return importlib.import_module(MODULE_NAME)
+    module = importlib.import_module(MODULE_NAME)
+
+    async def successful_probe(*args: object, **kwargs: object) -> None:
+        return None
+
+    module.async_probe_device = successful_probe
+    return module
 
 
 def _schema_by_key(schema: _VoluptuousSchema) -> dict[str, tuple[object, object]]:
@@ -231,6 +246,202 @@ def test_config_flow_version_is_stable(monkeypatch: pytest.MonkeyPatch) -> None:
     config_flow = _import_config_flow(monkeypatch, bluetooth_module)
 
     assert config_flow.GoveeBleAirPurifierConfigFlow.VERSION == 1
+
+
+@pytest.mark.asyncio
+async def test_bluetooth_discovery_requires_confirmation_before_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+    discovery = SimpleNamespace(
+        address="AA:BB:CC:DD:EE:24",
+        name="GVH7124BEDROOM",
+        connectable=True,
+    )
+
+    result = await flow.async_step_bluetooth(discovery)
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "bluetooth_confirm"
+    assert result["description_placeholders"] == {"name": "GVH7124BEDROOM"}
+    assert flow._unique_id == "aabbccddee24"
+    assert flow._pending_entry["data"] == {
+        "address": "AA:BB:CC:DD:EE:24",
+        "name": "GVH7124BEDROOM",
+        "profile": "h7124",
+    }
+
+    result = await flow.async_step_bluetooth_confirm({})
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "polling"
+
+
+@pytest.mark.asyncio
+async def test_bluetooth_discovery_preserves_model_support_acknowledgement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    await flow.async_step_bluetooth(
+        SimpleNamespace(
+            address="AA:BB:CC:DD:EE:29",
+            name="ihoment_H7129_6A7D",
+            connectable=True,
+        )
+    )
+    result = await flow.async_step_bluetooth_confirm({})
+
+    assert result["step_id"] == "support_read_verified"
+    assert result["description_placeholders"] == {"model": "H7129"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("discovery", "reason"),
+    [
+        (
+            SimpleNamespace(
+                address="AA:BB:CC:DD:EE:01",
+                name="GVH7119OTHER",
+                connectable=True,
+            ),
+            "not_supported",
+        ),
+        (
+            SimpleNamespace(
+                address="AA:BB:CC:DD:EE:02",
+                name="GVH7124BEDROOM",
+                connectable=False,
+            ),
+            "not_connectable",
+        ),
+        (
+            SimpleNamespace(
+                address="not-an-address",
+                name="GVH7124BEDROOM",
+                connectable=True,
+            ),
+            "not_supported",
+        ),
+    ],
+)
+async def test_bluetooth_discovery_rejects_unusable_devices(
+    monkeypatch: pytest.MonkeyPatch,
+    discovery: SimpleNamespace,
+    reason: str,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_bluetooth(discovery)
+
+    assert result == {"type": "abort", "reason": reason}
+
+
+@pytest.mark.asyncio
+async def test_bluetooth_discovery_runs_unique_id_duplicate_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: ()
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+    duplicate_checks: list[dict[str, object]] = []
+    flow._abort_if_unique_id_configured = lambda **kwargs: duplicate_checks.append(
+        kwargs
+    )
+
+    await flow.async_step_bluetooth(
+        SimpleNamespace(
+            address="AA:BB:CC:DD:EE:24",
+            name="GVH7124BEDROOM",
+            connectable=True,
+        )
+    )
+
+    assert flow._unique_id == "aabbccddee24"
+    assert duplicate_checks == [
+        {"updates": {"address": "AA:BB:CC:DD:EE:24"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_entry_creation_waits_for_successful_read_only_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    address = "AA:BB:CC:DD:EE:24"
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: (
+        SimpleNamespace(name="GVH7124BEDROOM", address=address, rssi=-45),
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    probes: list[tuple[object, str, str]] = []
+
+    async def record_probe(hass: object, target: str, profile: object) -> None:
+        probes.append((hass, target, profile.key))
+
+    monkeypatch.setattr(config_flow, "async_probe_device", record_probe)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    await flow.async_step_user({"discovered_device": address})
+    await flow.async_step_polling({"polling_interval": 15})
+    result = await flow.async_step_custom_auto(
+        _sectioned_values(config_flow, dict(CUSTOM_AUTO_DEFAULTS))
+    )
+
+    assert result["type"] == "create_entry"
+    assert probes == [(flow.hass, address, "h7124")]
+
+
+@pytest.mark.asyncio
+async def test_failed_probe_shows_translated_retry_and_never_creates_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    address = "AA:BB:CC:DD:EE:24"
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: (
+        SimpleNamespace(name="GVH7124BEDROOM", address=address, rssi=-45),
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    attempts = 0
+
+    async def fail_then_succeed(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise config_flow.SetupProbeError("cannot_connect")
+
+    monkeypatch.setattr(config_flow, "async_probe_device", fail_then_succeed)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+    await flow.async_step_user({"discovered_device": address})
+    await flow.async_step_polling({"polling_interval": 15})
+
+    failure = await flow.async_step_custom_auto(
+        _sectioned_values(config_flow, dict(CUSTOM_AUTO_DEFAULTS))
+    )
+
+    assert failure["type"] == "form"
+    assert failure["step_id"] == "probe"
+    assert failure["errors"] == {"base": "cannot_connect"}
+
+    success = await flow.async_step_probe({})
+    assert success["type"] == "create_entry"
+    assert attempts == 2
 
 
 @pytest.mark.asyncio
@@ -490,6 +701,9 @@ async def test_discovered_family_model_persists_exact_profile_key(
         }
     )
 
+    assert result["step_id"] == "support_read_verified"
+    assert result["description_placeholders"] == {"model": "H7129"}
+    result = await flow.async_step_support_read_verified({})
     assert result["step_id"] == "polling"
     fields = _schema_by_key(result["data_schema"])
     assert fields["polling_interval"][0].default == 3
@@ -533,6 +747,9 @@ async def test_manual_family_model_uses_model_specific_default_name(
         }
     )
 
+    assert result["step_id"] == "support_read_verified"
+    assert result["description_placeholders"] == {"model": "H7129"}
+    result = await flow.async_step_support_read_verified({})
     assert result["step_id"] == "polling"
     assert _schema_by_key(result["data_schema"])["polling_interval"][0].default == 3
     result = await flow.async_step_polling({"polling_interval": 15})
@@ -565,6 +782,9 @@ async def test_profile_without_custom_auto_modes_skips_policy_setup(
         }
     )
 
+    assert result["step_id"] == "support_fallback"
+    assert result["description_placeholders"] == {"model": "H7126"}
+    result = await flow.async_step_support_fallback({})
     assert result["step_id"] == "polling"
     result = await flow.async_step_polling(
         {
@@ -578,6 +798,31 @@ async def test_profile_without_custom_auto_modes_skips_policy_setup(
         "polling_interval": 15,
         CONF_SHARE_BLUETOOTH_CONNECTION: True,
     }
+
+
+@pytest.mark.asyncio
+async def test_experimental_profile_requires_translated_support_disclosure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    address = "AA:BB:CC:DD:EE:06"
+    bluetooth_module = ModuleType("homeassistant.components.bluetooth")
+    bluetooth_module.async_discovered_service_info = lambda *args, **kwargs: (
+        SimpleNamespace(name="GVH7126LIVING", address=address, rssi=-45),
+    )
+    config_flow = _import_config_flow(monkeypatch, bluetooth_module)
+    experimental = replace(
+        get_profile("h7126"), support_status=ModelSupportStatus.EXPERIMENTAL
+    )
+    monkeypatch.setattr(config_flow, "get_profile", lambda key: experimental)
+    flow = config_flow.GoveeBleAirPurifierConfigFlow()
+    flow.hass = object()
+
+    result = await flow.async_step_user({"discovered_device": address})
+
+    assert result["step_id"] == "support_experimental"
+    assert result["description_placeholders"] == {"model": "H7126"}
+    result = await flow.async_step_support_experimental({})
+    assert result["step_id"] == "polling"
 
 
 @pytest.mark.asyncio

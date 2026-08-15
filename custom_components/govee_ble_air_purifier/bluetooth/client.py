@@ -3,47 +3,52 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from enum import Enum
+from collections.abc import Awaitable, Callable, Coroutine
 import logging
 import time
 from typing import Any
 
-from ..models import NightLightState, PurifierPushUpdate, PurifierState
-from ..profiles import (
+from ..govee_ble_air_purifier_protocol import (
     EncryptionMode,
     H7124_PROFILE,
     ModelProfile,
-    NightLightPollingCadence,
+    NightLightState,
     NightLightPollingRequestOrder,
     NightLightProfile,
-)
-from ..protocol import (
-    decode_mode_push,
+    ProtocolError,
+    PurifierPushUpdate,
+    PurifierState,
+    COMMUNICATION_KEY,
+    build_handshake_request,
     decode_night_light_power_brightness,
-    decode_night_light_power_brightness_push,
     decode_night_light_rgb_state,
+    decrypt_frame,
+    encrypt_frame,
+    identify_handshake_frame,
     is_command_echo,
     is_fan_mode_confirmation,
     is_night_light_brightness_confirmation,
     is_night_light_power_brightness_response,
     is_night_light_power_confirmation,
     is_night_light_rgb_state_response,
-    is_mode_push,
     is_power_confirmation,
+    parse_session_key,
+    validate_frame,
+    validate_handshake_confirmation,
 )
 from . import GoveeBleClientError, GoveeBleDisconnectedError, transport
-from .framing import ProtocolError, validate_frame
-from .govee_v1 import (
-    COMMUNICATION_KEY,
-    build_handshake_request,
-    decrypt_frame,
-    encrypt_frame,
-    identify_handshake_frame,
-    parse_session_key,
-    validate_handshake_confirmation,
+from . import _arbiter
+from ._arbiter import ConnectionLeasePriority as _ConnectionLeasePriority
+from ._connection import ConnectionDependencies, ConnectionManager
+from ._night_light_polling import NightLightPollingTracker
+from ._push import PushDispatcher
+from ._session import GoveeBleSession
+from ._transactions import (
+    ConnectedTransactionSession,
+    ExchangePlan,
+    ExchangeRequest,
+    ExchangeResult,
+    TransactionRunner,
 )
 from .transport import _async_wait_until
 
@@ -51,16 +56,32 @@ DEFAULT_TIMEOUT = 10.0
 POLL_TIMEOUT = 5.0
 COMMAND_CONFIRMATION_TIMEOUT = 2.0
 HANDSHAKE_TIMEOUT = 10.0
-CONNECTION_IDLE_GRACE = 5.0
-MAX_CONNECTION_IDLE_TIMEOUT = 30.0
-DISCONNECT_TIMEOUT = 5.0
-CONNECTION_LEASE_TIMEOUT = (
-    transport.CONNECTION_TIMEOUT + HANDSHAKE_TIMEOUT + POLL_TIMEOUT + DISCONNECT_TIMEOUT
-)
-MAX_PRIORITY_COMMAND_BURST = 3
+CONNECTION_IDLE_GRACE = _arbiter.CONNECTION_IDLE_GRACE
+MAX_CONNECTION_IDLE_TIMEOUT = _arbiter.MAX_CONNECTION_IDLE_TIMEOUT
+DISCONNECT_TIMEOUT = _arbiter.DISCONNECT_TIMEOUT
+CONNECTION_LEASE_TIMEOUT = _arbiter.CONNECTION_LEASE_TIMEOUT
 ADVERTISEMENT_RETRY_DELAYS = (60.0, 120.0, 300.0)
 _LOGGER = logging.getLogger(__name__)
 _ABANDONED_OPERATION_FUTURES: set[asyncio.Future[Any]] = set()
+
+
+def connection_idle_timeout_for_polling_interval(
+    polling_interval_seconds: float,
+) -> float:
+    """Retain through the next poll or release after a short activity grace."""
+
+    next_poll_timeout = polling_interval_seconds + CONNECTION_IDLE_GRACE
+    if next_poll_timeout <= MAX_CONNECTION_IDLE_TIMEOUT:
+        return next_poll_timeout
+    return CONNECTION_IDLE_GRACE
+
+
+class GoveeConnectionArbiter(_arbiter.GoveeConnectionArbiter):
+    """Compatibility facade for the extracted connection scheduler."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lease_timeout = lambda: CONNECTION_LEASE_TIMEOUT
 
 
 def _observe_abandoned_operation(future: asyncio.Future[Any]) -> None:
@@ -84,190 +105,6 @@ def _cancel_and_observe(future: asyncio.Future[Any]) -> None:
     _ABANDONED_OPERATION_FUTURES.add(future)
     future.add_done_callback(_observe_abandoned_operation)
     future.cancel()
-
-
-def connection_idle_timeout_for_polling_interval(
-    polling_interval_seconds: float,
-) -> float:
-    """Retain through the next poll or release after a short activity grace."""
-
-    next_poll_timeout = polling_interval_seconds + CONNECTION_IDLE_GRACE
-    if next_poll_timeout <= MAX_CONNECTION_IDLE_TIMEOUT:
-        return next_poll_timeout
-    return CONNECTION_IDLE_GRACE
-
-
-class _ConnectionLeasePriority(Enum):
-    """Scheduling priority for integration-wide Bluetooth work."""
-
-    COMMAND = "command"
-    POLL = "poll"
-
-
-@dataclass(slots=True)
-class _ConnectionLeaseWaiter:
-    """One task waiting for the integration-wide Bluetooth lease."""
-
-    client: GoveeBleClient
-    priority: _ConnectionLeasePriority
-    future: asyncio.Future[None]
-    granted: bool = False
-
-
-@dataclass(slots=True)
-class _TransactionNotificationRoute:
-    """Connection-level callbacks owned by one active transaction."""
-
-    handle_frame: Callable[[bytes], bool]
-    handle_error: Callable[[ProtocolError], None]
-    handle_stale_handshake: Callable[[int], None]
-    handle_nonmatching: Callable[[], None]
-
-
-class GoveeConnectionArbiter:
-    """Share one retained GATT connection across purifier entries."""
-
-    def __init__(self) -> None:
-        self._lease_held = False
-        self._owner: GoveeBleClient | None = None
-        self._command_waiters: deque[_ConnectionLeaseWaiter] = deque()
-        self._poll_waiters: deque[_ConnectionLeaseWaiter] = deque()
-        self._consecutive_priority_commands = 0
-
-    async def async_run(
-        self,
-        client: GoveeBleClient,
-        operation: Callable[[], Awaitable[Any]],
-        deadline: float | None = None,
-        *,
-        priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
-    ) -> Any:
-        """Run one client's work after releasing a different idle owner."""
-
-        await self.async_acquire(client, deadline, priority=priority)
-        try:
-            return await operation()
-        finally:
-            self.release()
-
-    async def async_acquire(
-        self,
-        client: GoveeBleClient,
-        deadline: float | None = None,
-        *,
-        priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
-    ) -> None:
-        """Acquire the shared lease before a client transaction lock."""
-
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        queue_deadline = deadline or (started + CONNECTION_LEASE_TIMEOUT)
-        waiter = _ConnectionLeaseWaiter(client, priority, loop.create_future())
-        _LOGGER.debug(
-            "%s waiting for %s shared BLE connection lease",
-            client._log_label,
-            priority.value,
-        )
-        # Each holder gets a separate GATT deadline only after it reaches the
-        # front of this queue.  The queue itself must still be bounded so an
-        # unavailable peer cannot leave Home Assistant setup initializing.
-        if not self._lease_held:
-            self._lease_held = True
-            waiter.granted = True
-        else:
-            self._queue_for(priority).append(waiter)
-        try:
-            if not waiter.granted:
-                await _async_wait_until(asyncio.shield(waiter.future), queue_deadline)
-        except (TimeoutError, asyncio.TimeoutError) as err:
-            self._cancel_waiter(waiter)
-            _LOGGER.debug(
-                "%s timed out waiting for %s shared BLE connection lease after "
-                "%.2f seconds",
-                client._log_label,
-                priority.value,
-                loop.time() - started,
-            )
-            raise GoveeBleClientError(
-                "Timed out waiting for another purifier's Bluetooth connection"
-            ) from err
-        except BaseException:
-            self._cancel_waiter(waiter)
-            raise
-        try:
-            owner = self._owner
-            if owner is not None and owner is not client:
-                await owner._async_release_for_connection_switch(
-                    loop.time() + DISCONNECT_TIMEOUT
-                )
-            self._owner = client
-            _LOGGER.debug(
-                "%s acquired %s shared BLE connection lease after %.2f seconds",
-                client._log_label,
-                priority.value,
-                loop.time() - started,
-            )
-        except BaseException:
-            self.release()
-            raise
-
-    def release(self) -> None:
-        """Release a lease acquired by :meth:`async_acquire`."""
-
-        if not self._lease_held:
-            raise RuntimeError("Shared BLE connection lease is not held")
-        waiter = self._next_waiter()
-        if waiter is None:
-            self._lease_held = False
-            return
-        waiter.granted = True
-        waiter.future.set_result(None)
-
-    def _queue_for(
-        self, priority: _ConnectionLeasePriority
-    ) -> deque[_ConnectionLeaseWaiter]:
-        """Return the FIFO queue for one class of Bluetooth work."""
-
-        if priority is _ConnectionLeasePriority.COMMAND:
-            return self._command_waiters
-        return self._poll_waiters
-
-    def _cancel_waiter(self, waiter: _ConnectionLeaseWaiter) -> None:
-        """Remove or relinquish a waiter after timeout or cancellation."""
-
-        if waiter.granted:
-            self.release()
-            return
-        queue = self._queue_for(waiter.priority)
-        try:
-            queue.remove(waiter)
-        except ValueError:
-            return
-        waiter.future.cancel()
-
-    def _next_waiter(self) -> _ConnectionLeaseWaiter | None:
-        """Select the next waiter, prioritizing commands without starving polls."""
-
-        if self._command_waiters and self._poll_waiters:
-            if self._consecutive_priority_commands >= MAX_PRIORITY_COMMAND_BURST:
-                self._consecutive_priority_commands = 0
-                return self._poll_waiters.popleft()
-            self._consecutive_priority_commands += 1
-            return self._command_waiters.popleft()
-        if self._command_waiters:
-            self._consecutive_priority_commands = 0
-            return self._command_waiters.popleft()
-        if self._poll_waiters:
-            self._consecutive_priority_commands = 0
-            return self._poll_waiters.popleft()
-        self._consecutive_priority_commands = 0
-        return None
-
-    def connection_released(self, client: GoveeBleClient) -> None:
-        """Forget an owner after its retained connection is gone."""
-
-        if self._owner is client:
-            self._owner = None
 
 
 class GoveeBleClient:
@@ -294,38 +131,141 @@ class GoveeBleClient:
         )
         self._connection_arbiter = connection_arbiter
         self._lock = asyncio.Lock()
-        self._client: Any = None
-        self._disconnect_signal: asyncio.Event | None = None
-        self._abandoned_connection_operations: set[asyncio.Future[Any]] = set()
-        self._session_key: bytes | None = None
-        self._connected_at: float | None = None
-        self._session_started_at: float | None = None
+        self._session = GoveeBleSession(_cancel_and_observe)
         self._idle_disconnect_handle: asyncio.TimerHandle | None = None
         self._idle_disconnect_task: asyncio.Task[Any] | None = None
         self._fresh_advertisement_after: float | None = None
         self._advertisement_retry_at = 0.0
         self._advertisement_failure_count = 0
-        self._unexpected_disconnect_revision = 0
-        self._connection_generation = 0
-        self._application_notifications_client: Any = None
-        self._notification_recovery_task: asyncio.Task[Any] | None = None
-        self._transaction_notification_route: _TransactionNotificationRoute | None = (
-            None
-        )
-        self._push_callback: Callable[[PurifierPushUpdate], None] | None = None
-        self._push_counts = {"power": 0, "fan_mode": 0, "night_light": 0}
-        self._ignored_push_count = 0
-        self._last_push_at: float | None = None
+        self._push_dispatcher = PushDispatcher(profile, self._log_label)
         self._monotonic: Callable[[], float] = time.monotonic
-        self._night_light_poll_next_at = 0.0
-        self._night_light_poll_last_at: float | None = None
-        self._night_light_poll_last_success_at: float | None = None
-        self._night_light_poll_attempt_count = 0
-        self._night_light_poll_success_count = 0
-        self._night_light_poll_partial_count = 0
-        self._night_light_poll_missed_count = 0
-        self._night_light_poll_consecutive_failures = 0
+        self._night_light_polling = NightLightPollingTracker(profile.night_light)
         self._closed = False
+        self._connection = ConnectionManager(
+            self._session,
+            self._lock,
+            ConnectionDependencies(
+                establish=lambda _callback, deadline: (
+                    transport.async_establish_connection(
+                        self._hass,
+                        self._address,
+                        self._handle_disconnect,
+                        deadline=deadline,
+                    )
+                ),
+                negotiate_session=lambda client, deadline: (
+                    self._async_negotiate_govee_v1_session(client, deadline)
+                ),
+                wait_for_connection=lambda awaitable, signal, deadline: (
+                    self._async_wait_for_connection(awaitable, signal, deadline)
+                ),
+                disconnect=lambda client, deadline: transport.async_disconnect(
+                    client, deadline=deadline
+                ),
+                acquire_recovery_lease=self._async_acquire_connection_lease,
+                release_recovery_lease=self._release_connection_lease,
+                connection_released=self._connection_released,
+                mark_connection_stale=self._mark_connection_stale,
+                schedule_idle_disconnect=self._schedule_idle_disconnect,
+                create_task=self._create_task,
+                is_closed=lambda: self._closed,
+                encryption_mode=lambda: self._profile.encryption,
+                notify_char_uuid=lambda: self._profile.notify_char_uuid,
+                handshake_timeout=lambda: HANDSHAKE_TIMEOUT,
+                disconnect_timeout=lambda: DISCONNECT_TIMEOUT,
+                monotonic=lambda: self._monotonic(),
+                log_stage=self._log_stage,
+            ),
+            log_label=self._log_label,
+            logger=_LOGGER,
+        )
+
+    # Compatibility properties preserve the integration's long-standing private
+    # monkeypatch seams while runtime code delegates connection state to
+    # ``GoveeBleSession`` through its narrow methods.
+    @property
+    def _client(self) -> Any | None:
+        return self._session.client
+
+    @_client.setter
+    def _client(self, client: Any | None) -> None:
+        self._session.compat_set_client(client)
+
+    @property
+    def _disconnect_signal(self) -> asyncio.Event | None:
+        return self._session.disconnect_signal
+
+    @_disconnect_signal.setter
+    def _disconnect_signal(self, signal: asyncio.Event | None) -> None:
+        self._session.compat_set_disconnect_signal(signal)
+
+    @property
+    def _session_key(self) -> bytes | None:
+        return self._session.session_key
+
+    @_session_key.setter
+    def _session_key(self, session_key: bytes | None) -> None:
+        self._session.compat_set_session_key(session_key)
+
+    @property
+    def _connected_at(self) -> float | None:
+        return self._session.connected_at
+
+    @_connected_at.setter
+    def _connected_at(self, connected_at: float | None) -> None:
+        self._session.compat_set_connected_at(connected_at)
+
+    @property
+    def _session_started_at(self) -> float | None:
+        return self._session.session_started_at
+
+    @_session_started_at.setter
+    def _session_started_at(self, started_at: float | None) -> None:
+        self._session.compat_set_session_started_at(started_at)
+
+    @property
+    def _application_notifications_client(self) -> Any | None:
+        return self._session.notifications_client
+
+    @_application_notifications_client.setter
+    def _application_notifications_client(self, client: Any | None) -> None:
+        self._session.compat_set_notifications_client(client)
+
+    @property
+    def _connection_generation(self) -> int:
+        return self._session.generation
+
+    @_connection_generation.setter
+    def _connection_generation(self, generation: int) -> None:
+        self._session.compat_set_generation(generation)
+
+    @property
+    def _unexpected_disconnect_revision(self) -> int:
+        return self._session.unexpected_disconnect_revision
+
+    @_unexpected_disconnect_revision.setter
+    def _unexpected_disconnect_revision(self, revision: int) -> None:
+        self._session.compat_set_unexpected_disconnect_revision(revision)
+
+    @property
+    def _abandoned_connection_operations(self) -> set[asyncio.Future[Any]]:
+        return self._session.abandoned_operations
+
+    @property
+    def _notification_recovery_task(self) -> asyncio.Task[Any] | None:
+        return self._connection.notification_recovery_task
+
+    @_notification_recovery_task.setter
+    def _notification_recovery_task(self, task: asyncio.Task[Any] | None) -> None:
+        self._connection.compat_set_notification_recovery_task(task)
+
+    @property
+    def _notification_recovery_started_at(self) -> float | None:
+        return self._connection.notification_recovery_started_at
+
+    @_notification_recovery_started_at.setter
+    def _notification_recovery_started_at(self, started_at: float | None) -> None:
+        self._connection.compat_set_notification_recovery_started_at(started_at)
 
     @property
     def _persistent_notifications_enabled(self) -> bool:
@@ -339,125 +279,56 @@ class GoveeBleClient:
     ) -> None:
         """Register or detach the coordinator's non-blocking push callback."""
 
-        self._push_callback = callback
+        self._push_dispatcher.set_callback(callback)
 
     def diagnostics(self) -> dict[str, Any]:
         """Return non-sensitive persistent-notification diagnostics."""
 
-        last_push_age = (
-            max(0.0, time.monotonic() - self._last_push_at)
-            if self._last_push_at is not None
-            else None
-        )
+        self._sync_night_light_polling_profile()
         now = self._monotonic()
-        night_light = self._profile.night_light
-        night_light_polling = night_light.polling if night_light is not None else None
-        return {
+        notification_recovery_active = self._connection.notification_recovery_active
+        diagnostics = {
             "persistent_notifications_enabled": self._persistent_notifications_enabled,
             "notifications_active": (
-                self._application_notifications_client is self._client
-                and self._client is not None
+                self._session.client is not None
+                and self._session.notifications_active_for(self._session.client)
             ),
-            "connection_generation": self._connection_generation,
-            "push_counts": dict(self._push_counts),
-            "ignored_push_count": self._ignored_push_count,
-            "last_push_age_seconds": last_push_age,
-            "night_light_polling": (
-                {
-                    "cadence": night_light_polling.cadence.value,
-                    "interval_seconds": night_light_polling.interval_seconds,
-                    "request_order": night_light_polling.request_order.value,
-                    "attempt_count": self._night_light_poll_attempt_count,
-                    "success_count": self._night_light_poll_success_count,
-                    "partial_count": self._night_light_poll_partial_count,
-                    "missed_count": self._night_light_poll_missed_count,
-                    "consecutive_failures": (
-                        self._night_light_poll_consecutive_failures
-                    ),
-                    "last_attempt_age_seconds": (
-                        max(0.0, now - self._night_light_poll_last_at)
-                        if self._night_light_poll_last_at is not None
-                        else None
-                    ),
-                    "last_success_age_seconds": (
-                        max(0.0, now - self._night_light_poll_last_success_at)
-                        if self._night_light_poll_last_success_at is not None
-                        else None
-                    ),
-                    "next_attempt_in_seconds": (
-                        max(0.0, self._night_light_poll_next_at - now)
-                        if night_light_polling.cadence
-                        is NightLightPollingCadence.PERIODIC
-                        else 0.0
-                    ),
-                }
-                if night_light_polling is not None
-                else None
+            "connection_generation": self._session.generation,
+            "quarantined_operation_count": self._session.quarantined_operation_count,
+            "notification_recovery_active": notification_recovery_active,
+            "notification_recovery_age_seconds": (
+                self._connection.notification_recovery_age(now)
             ),
+            "night_light_polling": self._night_light_polling.diagnostics(now),
         }
+        diagnostics.update(self._push_dispatcher.diagnostics())
+        return diagnostics
 
     def _claim_night_light_poll(self, now: float) -> bool:
         """Reserve one due light reconciliation before any transaction await."""
 
-        night_light = self._profile.night_light
-        if night_light is None:
-            return False
-        polling = night_light.polling
-        if (
-            polling.cadence is NightLightPollingCadence.PERIODIC
-            and now < self._night_light_poll_next_at
-        ):
-            return False
-        if polling.cadence is NightLightPollingCadence.PERIODIC:
-            # Reserve the next slot now so concurrent refresh requests cannot
-            # duplicate optional AA1B traffic before the transaction lock.
-            self._night_light_poll_next_at = now + polling.interval_seconds
-        return True
+        self._sync_night_light_polling_profile()
+        return self._night_light_polling.claim(now)
+
+    def _sync_night_light_polling_profile(self) -> None:
+        """Keep the tracker aligned if a test or caller replaces the profile."""
+
+        if self._night_light_polling.profile is not self._profile.night_light:
+            self._night_light_polling = NightLightPollingTracker(
+                self._profile.night_light
+            )
 
     def _release_night_light_poll_claim(self) -> None:
         """Make a periodic reconciliation due again when core polling failed."""
 
-        night_light = self._profile.night_light
-        if (
-            night_light is not None
-            and night_light.polling.cadence is NightLightPollingCadence.PERIODIC
-        ):
-            self._night_light_poll_next_at = 0.0
+        self._night_light_polling.release_claim()
 
     def _record_night_light_poll_result(
         self, frames: tuple[bytes | None, bytes | None]
     ) -> None:
         """Record reconciliation health and schedule profile-defined backoff."""
 
-        night_light = self._profile.night_light
-        if night_light is None:
-            return
-        received_count = sum(frame is not None for frame in frames)
-        now = self._monotonic()
-        self._night_light_poll_attempt_count += 1
-        self._night_light_poll_last_at = now
-        if received_count == len(frames):
-            self._night_light_poll_success_count += 1
-            self._night_light_poll_consecutive_failures = 0
-            self._night_light_poll_last_success_at = now
-        else:
-            if received_count:
-                self._night_light_poll_partial_count += 1
-            else:
-                self._night_light_poll_missed_count += 1
-            self._night_light_poll_consecutive_failures += 1
-
-        polling = night_light.polling
-        if polling.cadence is not NightLightPollingCadence.PERIODIC:
-            return
-        interval = polling.interval_seconds
-        if received_count != len(frames):
-            interval = min(
-                polling.max_backoff_seconds,
-                interval
-                * (2 ** min(self._night_light_poll_consecutive_failures, 16)),
-            )
-        self._night_light_poll_next_at = now + interval
+        self._night_light_polling.record_result(frames, self._monotonic())
 
     async def async_get_state(self) -> PurifierState:
         """Poll power, PM2.5, and filter-life state."""
@@ -524,9 +395,7 @@ class GoveeBleClient:
                     )
                     if power_brightness_frame is not None or rgb_frame is not None:
                         power_brightness = (
-                            decode_night_light_power_brightness(
-                                power_brightness_frame
-                            )
+                            decode_night_light_power_brightness(power_brightness_frame)
                             if power_brightness_frame is not None
                             else NightLightState()
                         )
@@ -663,14 +532,10 @@ class GoveeBleClient:
         """Build a callback bound to one exact cached connection generation."""
 
         def notification_handler(_sender: Any, data: bytearray | bytes) -> None:
-            if (
-                self._closed
-                or self._client is not client
-                or self._connection_generation != generation
-            ):
+            if self._closed or not self._session.is_current(client, generation):
                 return
-            route = self._transaction_notification_route
-            session_key_available = self._session_key is not None
+            route = self._session.transaction_route
+            session_key_available = self._session.session_key is not None
             try:
                 frame = self._decode_application_frame(bytes(data))
                 validate_frame(frame)
@@ -713,142 +578,22 @@ class GoveeBleClient:
     def _schedule_notification_recovery(self, client: Any, generation: int) -> None:
         """Invalidate a malformed idle listener and release its connection."""
 
-        if (
-            self._client is not client
-            or self._connection_generation != generation
-            or self._closed
-        ):
-            return
-        self._application_notifications_client = None
-        self._connection_generation += 1
-        existing = self._notification_recovery_task
-        if existing is not None and not existing.done():
-            return
-        _LOGGER.debug(
-            "%s invalidating application notifications after malformed frame",
-            self._log_label,
-        )
-
-        async def recover() -> None:
-            await self._async_acquire_connection_lease()
-            try:
-                async with self._lock:
-                    if self._client is client:
-                        deadline = (
-                            asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT
-                        )
-                        if client.is_connected:
-                            try:
-                                await self._async_wait_for_connection(
-                                    client.stop_notify(
-                                        self._profile.notify_char_uuid
-                                    ),
-                                    None,
-                                    deadline,
-                                )
-                            except Exception:
-                                _LOGGER.debug(
-                                    "%s suppressing malformed-listener cleanup failure",
-                                    self._log_label,
-                                    exc_info=True,
-                                )
-                        await self._async_drop_connection(deadline)
-            finally:
-                self._release_connection_lease()
-
-        if self._hass is not None and hasattr(self._hass, "async_create_task"):
-            task = self._hass.async_create_task(recover())
-        else:
-            task = asyncio.create_task(recover())
-        self._notification_recovery_task = task
-
-        def clear_recovery(completed: asyncio.Task[Any]) -> None:
-            if self._notification_recovery_task is completed:
-                self._notification_recovery_task = None
-            if not completed.cancelled():
-                error = completed.exception()
-                if error is not None:
-                    _LOGGER.debug(
-                        "%s notification recovery failed",
-                        self._log_label,
-                        exc_info=(type(error), error, error.__traceback__),
-                    )
-
-        task.add_done_callback(clear_recovery)
+        self._connection.schedule_notification_recovery(client, generation)
 
     def _dispatch_push_frame(self, frame: bytes) -> bool:
         """Decode and publish one profile-enabled unsolicited frame."""
 
-        push = self._profile.push_notifications
-        candidate = False
-        update: PurifierPushUpdate | None = None
-        push_kind: str | None = None
-
-        if self._profile.is_power_state_response(frame):
-            candidate = True
-            if push is not None and push.power_state:
-                update = PurifierPushUpdate(
-                    is_on=self._profile.decode_power_state(frame)
-                )
-                push_kind = "power"
-        elif is_mode_push(frame):
-            candidate = True
-            if push is not None and push.fan_mode:
-                try:
-                    mode = decode_mode_push(frame, self._profile.fan_mode_commands)
-                except ProtocolError:
-                    mode = None
-                if mode is not None:
-                    update = PurifierPushUpdate(fan_mode=mode)
-                    push_kind = "fan_mode"
-        elif len(frame) == 20 and frame[:3] == bytes.fromhex("ee 1b 01"):
-            candidate = True
-            if push is not None and push.night_light_power_brightness:
-                try:
-                    night_light = decode_night_light_power_brightness_push(frame)
-                except ProtocolError:
-                    night_light = None
-                if night_light is not None:
-                    update = PurifierPushUpdate(night_light=night_light)
-                    push_kind = "night_light"
-
-        if update is None:
-            if candidate:
-                self._ignored_push_count += 1
-                _LOGGER.debug(
-                    "%s ignored unsupported or profile-mismatched purifier push",
-                    self._log_label,
-                )
-            return candidate
-
-        assert push_kind is not None
-        self._push_counts[push_kind] += 1
-        self._last_push_at = time.monotonic()
-        _LOGGER.debug(
-            "%s received %s purifier push (count: %d)",
-            self._log_label,
-            push_kind,
-            self._push_counts[push_kind],
-        )
-        callback = self._push_callback
-        if callback is not None:
-            try:
-                callback(update)
-            except Exception:
-                _LOGGER.exception(
-                    "%s failed to schedule purifier push update", self._log_label
-                )
-        return True
+        return self._push_dispatcher.dispatch(frame)
 
     async def _async_ensure_application_notifications(
         self, client: Any, deadline: float
     ) -> None:
         """Start one application listener for the current connection."""
 
-        if self._application_notifications_client is client:
+        if self._session.notifications_active_for(client):
             return
-        generation = self._connection_generation
-        disconnect_signal = self._disconnect_signal_for(client)
+        generation = self._session.generation
+        disconnect_signal = self._session.disconnect_signal_for(client)
         await self._async_wait_for_connection(
             client.start_notify(
                 self._profile.notify_char_uuid,
@@ -857,15 +602,7 @@ class GoveeBleClient:
             disconnect_signal,
             deadline,
         )
-        if (
-            self._client is not client
-            or self._connection_generation != generation
-            or not client.is_connected
-        ):
-            raise GoveeBleDisconnectedError(
-                "Purifier disconnected while starting notifications"
-            )
-        self._application_notifications_client = client
+        self._session.mark_notifications_active(client, generation)
         _LOGGER.debug(
             "%s application notifications active for connection generation %d",
             self._log_label,
@@ -877,9 +614,8 @@ class GoveeBleClient:
     ) -> None:
         """Invalidate and best-effort stop one application listener."""
 
-        if self._application_notifications_client is not client:
+        if not self._session.release_notifications(client):
             return
-        self._application_notifications_client = None
         await self._async_wait_for_connection(
             client.stop_notify(self._profile.notify_char_uuid), None, deadline
         )
@@ -899,9 +635,7 @@ class GoveeBleClient:
             disconnect_signal = self._disconnect_signal_for(client)
             try:
                 if self._persistent_notifications_enabled:
-                    await self._async_ensure_application_notifications(
-                        client, deadline
-                    )
+                    await self._async_ensure_application_notifications(client, deadline)
                 for command in commands:
                     await self._async_wait_for_connection(
                         client.write_gatt_char(
@@ -960,9 +694,7 @@ class GoveeBleClient:
         requests: tuple[tuple[bytes, Callable[[bytes], bool]], ...],
         *,
         timeout: float = DEFAULT_TIMEOUT,
-        optional_requests: tuple[
-            tuple[bytes, Callable[[bytes], bool]], ...
-        ] = (),
+        optional_requests: tuple[tuple[bytes, Callable[[bytes], bool]], ...] = (),
         optional_timeout: float = 0.0,
         optional_request_order: NightLightPollingRequestOrder = (
             NightLightPollingRequestOrder.PIPELINED
@@ -970,12 +702,18 @@ class GoveeBleClient:
         lease_priority: _ConnectionLeasePriority = _ConnectionLeasePriority.COMMAND,
     ) -> tuple[bytes | None, ...]:
         loop = asyncio.get_running_loop()
-        total_request_count = len(requests) + len(optional_requests)
-        stage = "waiting for transaction lock"
+        plan = ExchangePlan(
+            required=tuple(ExchangeRequest(*request) for request in requests),
+            optional=tuple(ExchangeRequest(*request) for request in optional_requests),
+            timeout=timeout,
+            optional_timeout=optional_timeout,
+            optional_order=optional_request_order,
+            cleanup_timeout=COMMAND_CONFIRMATION_TIMEOUT,
+        )
         _LOGGER.debug(
             "%s BLE transaction started with %d requests (%.2f second timeout)",
             self._log_label,
-            total_request_count,
+            plan.request_count,
             timeout,
         )
         self._cancel_idle_disconnect()
@@ -985,365 +723,49 @@ class GoveeBleClient:
             await self._async_prepare_connection()
             started = loop.time()
             deadline = started + timeout
-            self._log_stage("BLE transaction", stage, started, deadline)
+            self._log_stage(
+                "BLE transaction", "waiting for transaction lock", started, deadline
+            )
             try:
                 await _async_wait_until(self._lock.acquire(), deadline)
             except (TimeoutError, asyncio.TimeoutError) as err:
-                self._log_timeout("BLE transaction", stage, started)
+                self._log_timeout(
+                    "BLE transaction", "waiting for transaction lock", started
+                )
                 raise GoveeBleClientError(
                     "Timed out waiting for BLE transaction lock"
                 ) from err
-            frames: list[bytes | None] = [None] * total_request_count
-            future: asyncio.Future[bytes] | None = None
-            optional_futures: list[asyncio.Future[bytes]] = []
-            collecting_optional = False
-            initiated_optional_count = 0
-            discard_connection = False
-            current_request_index = 0
-            request_started: float | None = None
-            notification_count = 0
-            ignored_handshake_count = 0
-            nonmatching_notification_count = 0
-
-            def handle_frame(frame: bytes) -> bool:
-                nonlocal collecting_optional
-                nonlocal future
-                nonlocal notification_count
-                if future is None and not collecting_optional:
-                    return False
-                notification_count += 1
-                if collecting_optional:
-                    for index, ((_command, matcher), optional_future) in enumerate(
-                        zip(
-                            optional_requests[:initiated_optional_count],
-                            optional_futures[:initiated_optional_count],
-                            strict=True,
-                        ),
-                        start=len(requests),
-                    ):
-                        if optional_future.done() or not matcher(frame):
-                            continue
-                        frames[index] = frame
-                        optional_future.set_result(frame)
-                        return True
-                    return False
-
-                matcher = requests[current_request_index - 1][1]
-                if not matcher(frame):
-                    return False
-                if future is not None and not future.done():
-                    future.set_result(frame)
-                    return True
-                return False
-
-            def handle_error(err: ProtocolError) -> None:
-                nonlocal discard_connection
-                nonlocal nonmatching_notification_count
-                nonlocal notification_count
-                discard_connection = True
-                notification_count += 1
-                if collecting_optional:
-                    nonmatching_notification_count += 1
-                elif future is not None and not future.done():
-                    future.set_exception(err)
-
-            def handle_stale_handshake(_command: int) -> None:
-                nonlocal ignored_handshake_count, notification_count
-                notification_count += 1
-                ignored_handshake_count += 1
-
-            def handle_nonmatching() -> None:
-                nonlocal nonmatching_notification_count
-                nonlocal notification_count
-                if future is None and not collecting_optional:
-                    return
-                nonmatching_notification_count += 1
-
-            transaction_route = _TransactionNotificationRoute(
-                handle_frame=handle_frame,
-                handle_error=handle_error,
-                handle_stale_handshake=handle_stale_handshake,
-                handle_nonmatching=handle_nonmatching,
-            )
-
-            async def operation(client: Any) -> tuple[bytes | None, ...]:
-                nonlocal collecting_optional
-                nonlocal current_request_index
-                nonlocal deadline, discard_connection, future
-                nonlocal initiated_optional_count
-                nonlocal ignored_handshake_count
-                nonlocal nonmatching_notification_count
-                nonlocal notification_count, request_started, stage, started
-                started = loop.time()
-                deadline = started + timeout
-                disconnect_signal = self._disconnect_signal_for(client)
-                primary_error: BaseException | None = None
-                try:
-                    stage = "starting application notifications"
-                    self._log_stage("BLE transaction", stage, started, deadline)
-                    await self._async_ensure_application_notifications(
-                        client, deadline
-                    )
-                    self._transaction_notification_route = transaction_route
-                    for index, (command, _matcher) in enumerate(requests, start=1):
-                        future = loop.create_future()
-                        current_request_index = index
-                        request_started = loop.time()
-                        notification_count = 0
-                        ignored_handshake_count = 0
-                        nonmatching_notification_count = 0
-                        stage = f"writing request {index}/{total_request_count}"
-                        self._log_stage("BLE transaction", stage, started, deadline)
-                        await self._async_wait_for_connection(
-                            client.write_gatt_char(
-                                self._profile.write_char_uuid,
-                                self._encode_application_frame(command),
-                                response=False,
-                            ),
-                            disconnect_signal,
-                            deadline,
-                        )
-                        _LOGGER.debug(
-                            "%s BLE request %d/%d write completed in %.2f seconds",
-                            self._log_label,
-                            index,
-                            total_request_count,
-                            loop.time() - request_started,
-                        )
-                        stage = f"waiting for response {index}/{total_request_count}"
-                        self._log_stage("BLE transaction", stage, started, deadline)
-                        frame = await self._async_wait_for_connection(
-                            future, disconnect_signal, deadline
-                        )
-                        frames[index - 1] = frame
-                        _LOGGER.debug(
-                            "%s BLE response %d/%d received %.2f seconds after "
-                            "write started (notifications: %d, stale handshakes: %d, "
-                            "nonmatching: %d)",
-                            self._log_label,
-                            index,
-                            total_request_count,
-                            loop.time() - request_started,
-                            notification_count,
-                            ignored_handshake_count,
-                            nonmatching_notification_count,
-                        )
-                    if optional_requests:
-                        collecting_optional = True
-                        future = None
-                        optional_futures.extend(
-                            loop.create_future() for _request in optional_requests
-                        )
-                        optional_started = loop.time()
-                        optional_deadline = optional_started + optional_timeout
-                        for offset, (command, _matcher) in enumerate(
-                            optional_requests, start=len(requests) + 1
-                        ):
-                            initiated_optional_count = offset - len(requests)
-                            current_request_index = offset
-                            request_started = loop.time()
-                            stage = (
-                                f"writing optional request {offset}/"
-                                f"{total_request_count}"
-                            )
-                            self._log_stage(
-                                "BLE transaction", stage, started, optional_deadline
-                            )
-                            try:
-                                await self._async_wait_for_connection(
-                                    client.write_gatt_char(
-                                        self._profile.write_char_uuid,
-                                        self._encode_application_frame(command),
-                                        response=False,
-                                    ),
-                                    disconnect_signal,
-                                    optional_deadline,
-                                )
-                            except GoveeBleDisconnectedError:
-                                discard_connection = True
-                                _LOGGER.debug(
-                                    "%s optional BLE telemetry stopped after "
-                                    "disconnection",
-                                    self._log_label,
-                                )
-                                return tuple(frames)
-                            except Exception:
-                                discard_connection = True
-                                _LOGGER.debug(
-                                    "%s optional BLE telemetry write failed; "
-                                    "preserving core poll result",
-                                    self._log_label,
-                                    exc_info=True,
-                                )
-                                return tuple(frames)
-                            _LOGGER.debug(
-                                "%s optional BLE request %d/%d write completed in "
-                                "%.2f seconds",
-                                self._log_label,
-                                offset,
-                                total_request_count,
-                                loop.time() - request_started,
-                            )
-
-                            if (
-                                optional_request_order
-                                is NightLightPollingRequestOrder.SEQUENTIAL
-                            ):
-                                optional_future = optional_futures[
-                                    offset - len(requests) - 1
-                                ]
-                                stage = (
-                                    f"waiting for optional response {offset}/"
-                                    f"{total_request_count}"
-                                )
-                                self._log_stage(
-                                    "BLE transaction",
-                                    stage,
-                                    optional_started,
-                                    optional_deadline,
-                                )
-                                try:
-                                    await self._async_wait_for_connection(
-                                        optional_future,
-                                        disconnect_signal,
-                                        optional_deadline,
-                                    )
-                                except GoveeBleDisconnectedError:
-                                    discard_connection = True
-                                    _LOGGER.debug(
-                                        "%s sequential optional BLE telemetry "
-                                        "stopped after disconnection",
-                                        self._log_label,
-                                    )
-                                    return tuple(frames)
-                                except (TimeoutError, asyncio.TimeoutError):
-                                    _LOGGER.debug(
-                                        "%s sequential optional BLE telemetry "
-                                        "stopped after a missing response",
-                                        self._log_label,
-                                    )
-                                    break
-
-                        stage = "collecting optional responses"
-                        self._log_stage(
-                            "BLE transaction", stage, optional_started, optional_deadline
-                        )
-                        pending = (
-                            {
-                                optional_future
-                                for optional_future in optional_futures
-                                if not optional_future.done()
-                            }
-                            if optional_request_order
-                            is NightLightPollingRequestOrder.PIPELINED
-                            else set()
-                        )
-                        if pending:
-                            try:
-                                await self._async_wait_for_connection(
-                                    asyncio.gather(*pending),
-                                    disconnect_signal,
-                                    optional_deadline,
-                                )
-                            except GoveeBleDisconnectedError:
-                                discard_connection = True
-                                _LOGGER.debug(
-                                    "%s optional BLE telemetry stopped after "
-                                    "disconnection",
-                                    self._log_label,
-                                )
-                            except (TimeoutError, asyncio.TimeoutError):
-                                pass
-                        received_count = sum(
-                            optional_future.done()
-                            and not optional_future.cancelled()
-                            for optional_future in optional_futures
-                        )
-                        _LOGGER.debug(
-                            "%s optional BLE telemetry received %d/%d responses in "
-                            "%.2f seconds",
-                            self._log_label,
-                            received_count,
-                            len(optional_requests),
-                            loop.time() - optional_started,
-                        )
-                        deadline = loop.time() + COMMAND_CONFIRMATION_TIMEOUT
-                    return tuple(frames)
-                except (TimeoutError, asyncio.TimeoutError) as err:
-                    if (
-                        stage.startswith("waiting for response")
-                        and request_started is not None
-                    ):
-                        _LOGGER.debug(
-                            "%s BLE response timeout diagnostic: request %d/%d, "
-                            "%.2f seconds since write started (notifications: %d, "
-                            "stale handshakes: %d, nonmatching: %d)",
-                            self._log_label,
-                            current_request_index,
-                            total_request_count,
-                            loop.time() - request_started,
-                            notification_count,
-                            ignored_handshake_count,
-                            nonmatching_notification_count,
-                        )
-                    self._log_timeout("BLE transaction", stage, started)
-                    primary_error = GoveeBleClientError(
-                        self._transaction_timeout_message(stage)
-                    )
-                    raise primary_error from err
-                except asyncio.CancelledError as err:
-                    primary_error = err
-                    raise
-                except Exception as err:
-                    primary_error = err
-                    self._log_failure("BLE transaction", stage, started)
-                    raise
-                except BaseException as err:
-                    primary_error = err
-                    raise
-                finally:
-                    if self._transaction_notification_route is transaction_route:
-                        self._transaction_notification_route = None
-                    if future is not None and not future.done():
-                        future.cancel()
-                    for optional_future in optional_futures:
-                        if not optional_future.done():
-                            optional_future.cancel()
-                    connection_disconnected = (
-                        disconnect_signal is not None and disconnect_signal.is_set()
-                    ) or not client.is_connected
-                    if connection_disconnected:
-                        discard_connection = True
-                    if (
-                        not self._persistent_notifications_enabled
-                        and primary_error is None
-                        and not connection_disconnected
-                        and not discard_connection
-                    ):
-                        try:
-                            stage = "stopping application notifications"
-                            self._log_stage("BLE transaction", stage, started, deadline)
-                            await self._async_stop_application_notifications(
-                                client, deadline
-                            )
-                        except Exception:
-                            discard_connection = True
-                            _LOGGER.debug(
-                                "%s suppressing BLE notification cleanup failure%s",
-                                self._log_label,
-                                " to preserve primary error" if primary_error else "",
-                                exc_info=True,
-                            )
+            async def operation(client: Any) -> ExchangeResult:
+                transaction_session = ConnectedTransactionSession(
+                    session=self._session,
+                    client=client,
+                    write_char_uuid=self._profile.write_char_uuid,
+                    encryption=self._profile.encryption,
+                    persistent_notifications_enabled=(
+                        self._persistent_notifications_enabled
+                    ),
+                    ensure_notifications=self._async_ensure_application_notifications,
+                    stop_notifications=self._async_stop_application_notifications,
+                )
+                runner = TransactionRunner(
+                    log_label=self._log_label,
+                    debug=_LOGGER.debug,
+                    log_stage=self._log_stage,
+                    log_timeout=self._log_timeout,
+                    log_failure=self._log_failure,
+                    timeout_message=self._transaction_timeout_message,
+                )
+                return await runner.async_exchange(transaction_session, plan)
 
             try:
                 if self._connection_arbiter is None:
-                    result = await self._async_with_connection(operation)
+                    exchange = await self._async_with_connection(operation)
                 else:
-                    result = await self._async_with_connection_unarbitrated(
+                    exchange = await self._async_with_connection_unarbitrated(
                         operation,
                         deadline=loop.time() + transport.CONNECTION_TIMEOUT,
                     )
-                if discard_connection:
+                if exchange.discard_session:
                     self._cancel_idle_disconnect()
                     await self._async_drop_connection(loop.time() + DISCONNECT_TIMEOUT)
                 _LOGGER.debug(
@@ -1351,7 +773,7 @@ class GoveeBleClient:
                     self._log_label,
                     loop.time() - started,
                 )
-                return result
+                return exchange.frames
             finally:
                 self._lock.release()
         finally:
@@ -1403,6 +825,21 @@ class GoveeBleClient:
             _LOGGER.debug("%s releasing shared BLE connection lease", self._log_label)
             self._connection_arbiter.release()
 
+    def _connection_released(self) -> None:
+        """Notify the optional shared-slot scheduler after detaching transport."""
+
+        if self._connection_arbiter is not None:
+            self._connection_arbiter.connection_released(self)
+
+    def _create_task(
+        self, coroutine: Coroutine[Any, Any, Any]
+    ) -> asyncio.Task[Any]:
+        """Create manager-owned work through Home Assistant when available."""
+
+        if self._hass is not None and hasattr(self._hass, "async_create_task"):
+            return self._hass.async_create_task(coroutine)
+        return asyncio.create_task(coroutine)
+
     async def _async_with_connection_unarbitrated(
         self,
         operation: Callable[[Any], Any],
@@ -1411,155 +848,7 @@ class GoveeBleClient:
     ) -> Any:
         """Run an operation while the integration-wide connection lease is held."""
 
-        if self._closed:
-            raise GoveeBleClientError("BLE client is closed")
-        for future in tuple(self._abandoned_connection_operations):
-            if future.done():
-                self._abandoned_connection_operations.discard(future)
-        if self._abandoned_connection_operations:
-            raise GoveeBleClientError("Previous BLE operation is still stopping")
-        if (
-            self._notification_recovery_task is not None
-            and not self._notification_recovery_task.done()
-        ):
-            raise GoveeBleClientError(
-                "Previous BLE notification listener is still recovering"
-            )
-
-        client = self._client
-        if client is None or not client.is_connected:
-            started = asyncio.get_running_loop().time()
-            connection_revision = self._unexpected_disconnect_revision
-            self._log_stage(
-                "BLE connection", "establishing transport", started, deadline
-            )
-            self._clear_connection_state()
-            # ``asyncio.wait_for`` inside a transport helper can wait forever for
-            # cancellation acknowledgement from a stuck proxy connection attempt.
-            # Keep that attempt owned and cancel it without waiting so it cannot
-            # monopolize the integration-wide connection lease.
-            client = await self._async_wait_for_connection(
-                transport.async_establish_connection(
-                    self._hass,
-                    self._address,
-                    self._handle_disconnect,
-                    deadline=deadline,
-                ),
-                None,
-                deadline,
-            )
-            self._client = client
-            self._disconnect_signal = asyncio.Event()
-            self._connected_at = asyncio.get_running_loop().time()
-            self._log_stage("BLE connection", "transport connected", started, deadline)
-            if not client.is_connected:
-                await self._async_drop_connection(
-                    asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT
-                )
-                raise GoveeBleDisconnectedError(
-                    "Purifier disconnected while connecting"
-                )
-            if self._profile.encryption is EncryptionMode.GOVEE_V1:
-                handshake_deadline = (
-                    asyncio.get_running_loop().time() + HANDSHAKE_TIMEOUT
-                )
-                try:
-                    session_key = await self._async_negotiate_govee_v1_session(
-                        client, handshake_deadline
-                    )
-                    if self._client is not client or not client.is_connected:
-                        raise GoveeBleClientError(
-                            "Purifier disconnected during encrypted-session setup"
-                        )
-                    self._session_key = session_key
-                    self._session_started_at = asyncio.get_running_loop().time()
-                    self._log_stage(
-                        "BLE connection",
-                        "encrypted session ready",
-                        started,
-                        handshake_deadline,
-                    )
-                except (TimeoutError, asyncio.TimeoutError) as err:
-                    disconnected = await self._async_drop_after_error(
-                        client, connection_revision
-                    )
-                    if disconnected:
-                        raise GoveeBleDisconnectedError(
-                            "Purifier disconnected during encrypted-session setup"
-                        ) from err
-                    raise GoveeBleClientError(
-                        "Timed out establishing encrypted purifier session"
-                    ) from err
-                except GoveeBleClientError as err:
-                    disconnected = await self._async_drop_after_error(
-                        client, connection_revision
-                    )
-                    if disconnected and not isinstance(err, GoveeBleDisconnectedError):
-                        raise GoveeBleDisconnectedError(
-                            "Purifier disconnected during encrypted-session setup"
-                        ) from err
-                    raise
-                except Exception as err:
-                    disconnected = await self._async_drop_after_error(
-                        client, connection_revision
-                    )
-                    if disconnected:
-                        raise GoveeBleDisconnectedError(
-                            "Purifier disconnected during encrypted-session setup"
-                        ) from err
-                    raise GoveeBleClientError(
-                        "Failed to establish encrypted purifier session"
-                    ) from err
-                except BaseException:
-                    await self._async_drop_connection(
-                        asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT
-                    )
-                    raise
-        else:
-            _LOGGER.debug("%s reusing active BLE connection", self._log_label)
-
-        if self._closed:
-            await self._async_drop_connection(
-                asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT,
-                prepare_reconnect=False,
-            )
-            raise GoveeBleClientError("BLE client is closed")
-
-        operation_revision = self._unexpected_disconnect_revision
-        try:
-            result = await operation(client)
-        except (TimeoutError, asyncio.TimeoutError) as err:
-            disconnected = await self._async_drop_after_error(
-                client, operation_revision
-            )
-            if disconnected:
-                raise GoveeBleDisconnectedError(
-                    "Purifier disconnected during BLE transaction"
-                ) from err
-            raise GoveeBleClientError("Timed out during BLE transaction") from err
-        except Exception as err:
-            disconnected = await self._async_drop_after_error(
-                client, operation_revision
-            )
-            if disconnected:
-                raise GoveeBleDisconnectedError(
-                    "Purifier disconnected during BLE transaction"
-                ) from err
-            raise
-        except BaseException:
-            await self._async_drop_connection(
-                asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT
-            )
-            raise
-
-        if self._closed:
-            await self._async_drop_connection(
-                asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT,
-                prepare_reconnect=False,
-            )
-        else:
-            self._schedule_idle_disconnect()
-        return result
+        return await self._connection.async_run(operation, deadline=deadline)
 
     async def _async_release_for_connection_switch(self, deadline: float) -> None:
         """Release an idle cached connection so another purifier can connect."""
@@ -1590,79 +879,34 @@ class GoveeBleClient:
     ) -> bool:
         """Drop a failed connection after allowing its callback to run."""
 
-        try:
-            if (
-                self._unexpected_disconnect_revision != disconnect_revision
-                or not client.is_connected
-            ):
-                return True
-            await asyncio.sleep(0)
-            return (
-                self._unexpected_disconnect_revision != disconnect_revision
-                or not client.is_connected
-            )
-        finally:
-            await self._async_drop_connection(
-                asyncio.get_running_loop().time() + DISCONNECT_TIMEOUT
-            )
+        return await self._connection.async_drop_after_error(
+            client, disconnect_revision
+        )
 
     def _handle_disconnect(self, client: Any) -> None:
         """Forget only the connection that actually disconnected."""
 
-        if self._client is client:
-            now = time.monotonic()
-            connection_age = (
-                now - self._connected_at if self._connected_at is not None else 0.0
-            )
-            session_age = (
-                now - self._session_started_at
-                if self._session_started_at is not None
-                else None
-            )
-            _LOGGER.debug(
-                "%s BLE connection disconnected after %.2f seconds%s",
-                self._log_label,
-                connection_age,
-                (
-                    f" (encrypted session age: {session_age:.2f} seconds)"
-                    if session_age is not None
-                    else ""
-                ),
-            )
-            disconnect_signal = self._disconnect_signal
-            if disconnect_signal is not None:
-                disconnect_signal.set()
-            self._clear_connection_state()
-            if self._connection_arbiter is not None:
-                self._connection_arbiter.connection_released(self)
-            self._unexpected_disconnect_revision += 1
-            self._mark_connection_stale()
+        self._connection.handle_disconnect(client)
 
     def _clear_connection_state(self) -> None:
         """Clear all state owned by the current cached connection."""
 
-        self._connection_generation += 1
-        self._client = None
-        self._disconnect_signal = None
-        self._session_key = None
-        self._connected_at = None
-        self._session_started_at = None
-        self._application_notifications_client = None
+        self._session.reset_for_connection_attempt()
 
     def _disconnect_signal_for(self, client: Any) -> asyncio.Event | None:
         """Return the disconnect signal only for the exact cached client."""
 
-        if self._client is client:
-            return self._disconnect_signal
-        return None
+        return self._session.disconnect_signal_for(client)
 
     def _cancel_connection_operation(self, future: asyncio.Future[Any]) -> None:
         """Cancel and retain a connection operation until it actually exits."""
 
-        if not future.done() and future not in self._abandoned_connection_operations:
-            self._abandoned_connection_operations.add(future)
-            future.add_done_callback(self._abandoned_connection_operations.discard)
-        _cancel_and_observe(future)
+        self._session.cancel_operation(future)
+        if not future.done():
+            _LOGGER.debug(
+                "%s quarantined a BLE operation that has not acknowledged cancellation",
+                self._log_label,
+            )
 
     async def _async_wait_for_connection(
         self,
@@ -1672,54 +916,7 @@ class GoveeBleClient:
     ) -> Any:
         """Wait for one connection stage or its exact client's disconnect."""
 
-        operation_task = asyncio.ensure_future(awaitable)
-        if disconnect_signal is not None and disconnect_signal.is_set():
-            self._cancel_connection_operation(operation_task)
-            raise GoveeBleDisconnectedError(
-                "Purifier disconnected during BLE transaction"
-            )
-        if operation_task.done():
-            return await operation_task
-
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            self._cancel_connection_operation(operation_task)
-            raise TimeoutError
-
-        disconnect_task = (
-            asyncio.create_task(disconnect_signal.wait())
-            if disconnect_signal is not None
-            else None
-        )
-        waiters = (
-            (operation_task, disconnect_task)
-            if disconnect_task is not None
-            else (operation_task,)
-        )
-        try:
-            done, _pending = await asyncio.wait(
-                waiters,
-                timeout=remaining,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if disconnect_signal is not None and (
-                disconnect_signal.is_set()
-                or (disconnect_task is not None and disconnect_task in done)
-            ):
-                self._cancel_connection_operation(operation_task)
-                raise GoveeBleDisconnectedError(
-                    "Purifier disconnected during BLE transaction"
-                )
-            if operation_task in done:
-                return await operation_task
-            self._cancel_connection_operation(operation_task)
-            raise TimeoutError
-        except asyncio.CancelledError:
-            self._cancel_connection_operation(operation_task)
-            raise
-        finally:
-            if disconnect_task is not None:
-                _cancel_and_observe(disconnect_task)
+        return await self._session.async_wait(awaitable, disconnect_signal, deadline)
 
     def _mark_connection_stale(self) -> None:
         """Require a post-disconnect advertisement before reconnecting."""
@@ -1733,8 +930,7 @@ class GoveeBleClient:
 
         if self._closed:
             raise GoveeBleClientError("BLE client is closed")
-        client = self._client
-        if client is not None and client.is_connected:
+        if self._session.has_connected_client():
             return
         if self._hass is None:
             self._fresh_advertisement_after = None
@@ -1775,18 +971,14 @@ class GoveeBleClient:
 
         if self._profile.encryption is EncryptionMode.NONE:
             return frame
-        if self._session_key is None:
-            raise GoveeBleClientError("Encrypted purifier session is unavailable")
-        return encrypt_frame(frame, self._session_key)
+        return self._session.encode(frame, self._profile.encryption)
 
     def _decode_application_frame(self, frame: bytes) -> bytes:
         """Decode one wire notification into a plaintext protocol frame."""
 
         if self._profile.encryption is EncryptionMode.NONE:
             return frame
-        if self._session_key is None:
-            raise ProtocolError("Encrypted purifier session is unavailable")
-        return decrypt_frame(frame, self._session_key)
+        return self._session.decode(frame, self._profile.encryption)
 
     async def _async_negotiate_govee_v1_session(
         self, client: Any, deadline: float
@@ -2003,10 +1195,7 @@ class GoveeBleClient:
         self._cancel_idle_disconnect()
         if self._closed:
             return
-        if (
-            self._persistent_notifications_enabled
-            and self._connection_arbiter is None
-        ):
+        if self._persistent_notifications_enabled and self._connection_arbiter is None:
             _LOGGER.debug(
                 "%s retaining dedicated BLE connection for push notifications",
                 self._log_label,
@@ -2050,51 +1239,9 @@ class GoveeBleClient:
     ) -> None:
         """Forget and best-effort disconnect the cached connection."""
 
-        client = self._client
-        now = time.monotonic()
-        connection_age = (
-            now - self._connected_at if self._connected_at is not None else None
+        await self._connection.async_drop(
+            deadline, prepare_reconnect=prepare_reconnect
         )
-        session_age = (
-            now - self._session_started_at
-            if self._session_started_at is not None
-            else None
-        )
-        notifications_active = self._application_notifications_client is client
-        self._clear_connection_state()
-        if self._connection_arbiter is not None:
-            self._connection_arbiter.connection_released(self)
-        if client is not None:
-            _LOGGER.debug(
-                "%s releasing cached BLE connection%s%s",
-                self._log_label,
-                (
-                    f" after {connection_age:.2f} seconds"
-                    if connection_age is not None
-                    else ""
-                ),
-                (
-                    f" (encrypted session age: {session_age:.2f} seconds)"
-                    if session_age is not None
-                    else ""
-                ),
-            )
-            if notifications_active and client.is_connected:
-                try:
-                    await self._async_wait_for_connection(
-                        client.stop_notify(self._profile.notify_char_uuid),
-                        None,
-                        deadline,
-                    )
-                except Exception:
-                    _LOGGER.debug(
-                        "%s suppressing BLE notification cleanup failure",
-                        self._log_label,
-                        exc_info=True,
-                    )
-            await transport.async_disconnect(client, deadline=deadline)
-            if prepare_reconnect:
-                self._mark_connection_stale()
 
     async def async_close(self) -> None:
         """Cancel idle cleanup and close the cached connection."""
@@ -2102,15 +1249,11 @@ class GoveeBleClient:
         _LOGGER.debug(
             "%s BLE client closing (cached connection: %s)",
             self._log_label,
-            self._client is not None,
+            self._session.client is not None,
         )
         self._closed = True
         self._cancel_idle_disconnect()
-        recovery_task = self._notification_recovery_task
-        self._notification_recovery_task = None
-        if recovery_task is not None and not recovery_task.done():
-            recovery_task.cancel()
-            await asyncio.gather(recovery_task, return_exceptions=True)
+        await self._connection.async_cancel_notification_recovery()
         task = self._idle_disconnect_task
         if task is not None and task is not asyncio.current_task():
             await asyncio.gather(task, return_exceptions=True)

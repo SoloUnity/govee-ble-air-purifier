@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Govee BLE Air Purifier",
-        "description": "Choose a recently seen purifier whose BLE name contains H712 followed by one ASCII letter or digit (case-insensitive), or enter its BLE address manually. Only H7124 has been tested. Other H712 models use the H7124 protocol fallback and may not work or may expose mismatched features.",
+        "description": "Choose a recently seen purifier whose BLE name contains H712 followed by one ASCII letter or digit (case-insensitive), or enter its BLE address manually. Setup will disclose the detected model's verification level before using a profile that is not fully verified.",
         "data": {
           "discovered_device": "Recently seen purifier",
           "address": "BLE address for manual setup",
@@ -12,6 +12,22 @@
         "data_description": {
           "address": "Only required when Recently seen purifier is set to Enter address manually."
         }
+      },
+      "bluetooth_confirm": {
+        "title": "Add discovered Govee air purifier",
+        "description": "Home Assistant discovered {name}. Continue to review its support level and settings. Before setup finishes, Home Assistant will connect and verify the purifier using read-only status requests."
+      },
+      "support_read_verified": {
+        "title": "Limited write verification",
+        "description": "The {model} profile has been physically verified for connection, encrypted handshake, polling, and recovery. State-changing commands have not yet been physically verified. Continue only if you accept that controls may not behave as expected."
+      },
+      "support_experimental": {
+        "title": "Experimental model support",
+        "description": "The {model} has a model-specific experimental profile based on protocol evidence, but it has not completed physical verification. Continue only if you accept that state reporting, controls, or exposed features may not behave as expected."
+      },
+      "support_fallback": {
+        "title": "Unverified family fallback",
+        "description": "The {model} does not have a model-specific profile. It will use the limited H712-family fallback, which may fail or expose controls and features that do not match the device. Continue only if you accept this risk."
       },
       "polling": {
         "title": "Polling",
@@ -76,11 +92,19 @@
             }
           }
         }
+      },
+      "probe": {
+        "title": "Could not verify purifier",
+        "description": "Home Assistant could not complete the read-only connection check for {model}. Make sure the purifier is nearby, close the Govee app, and select Submit to retry. No power, fan, or light setting is changed by this check."
       }
     },
     "error": {
       "address_required": "Enter a BLE address or choose a recently seen purifier.",
       "device_not_found": "Home Assistant has not seen this BLE address advertise as a Govee H712-family purifier. Move the purifier closer, wake it, and try again.",
+      "cannot_connect": "Could not connect to the purifier or complete its protocol handshake. Move it closer, close the Govee app, and try again.",
+      "invalid_response": "The purifier connected but did not return valid status data for this model profile.",
+      "probe_cleanup_failed": "The purifier responded, but Home Assistant could not finish closing the temporary setup connection. Wait a moment and try again.",
+      "probe_timeout": "The purifier did not complete the read-only setup check in time. Move it closer, close the Govee app, and try again.",
       "invalid_address": "Enter a complete Bluetooth MAC address or platform UUID.",
       "unsupported_device": "The selected BLE device is not a recognized Govee H712-family air purifier.",
       "invalid_custom_auto_value": "Enter whole numbers within the displayed ranges.",
@@ -88,6 +112,7 @@
     },
     "abort": {
       "already_configured": "This air purifier is already configured.",
+      "not_connectable": "This purifier was seen by a Bluetooth scanner that cannot make outgoing connections. Move it within range of a connectable adapter or Bluetooth proxy.",
       "not_supported": "This BLE device is not a recognized Govee H712-family air purifier.",
       "unknown": "Setup state was lost. Start setup again."
     }

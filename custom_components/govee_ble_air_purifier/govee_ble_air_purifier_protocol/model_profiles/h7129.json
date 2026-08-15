@@ -1,0 +1,48 @@
+{
+  "schema_version": 5,
+  "support_status": "read_verified",
+  "polling_interval_seconds": 3,
+  "encryption": "govee_v1",
+  "gatt": {
+    "service_uuid": "00010203-0405-0607-0809-0a0b0c0d1910",
+    "notify_char_uuid": "00010203-0405-0607-0809-0a0b0c0d2b10",
+    "write_char_uuid": "00010203-0405-0607-0809-0a0b0c0d2b11"
+  },
+  "commands": {
+    "power_off": "33 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 32",
+    "power_on": "33 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33",
+    "state_query": "aa 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ab",
+    "status_query": "aa 19 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 b3",
+    "fan_modes": {
+      "Low": "3a 05 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3f",
+      "Medium": "3a 05 01 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3c",
+      "High": "3a 05 01 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3d",
+      "Sleep": "3a 05 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3a",
+      "Auto": "3a 05 03 00 00 12 00 00 00 00 00 00 00 00 00 00 00 00 00 2e",
+      "Turbo": "3a 05 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 38"
+    }
+  },
+  "custom_auto": {
+    "thresholds": [7, 9, 13, 19]
+  },
+  "push_notifications": {
+    "power_state": true,
+    "fan_mode": true,
+    "night_light_power_brightness": true
+  },
+  "night_light": {
+    "polling": {
+      "cadence": "every_poll",
+      "interval_seconds": 3,
+      "timeout_seconds": 1,
+      "request_order": "pipelined",
+      "max_backoff_seconds": 3
+    },
+    "power_off": "3a 1b 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 21",
+    "power_on": "3a 1b 01 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20",
+    "power_brightness_query": "aa 1b 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 b0",
+    "brightness_template": "3a 1b 01 02 {brightness}",
+    "rgb_template": "3a 1b 05 0d {red} {green} {blue}",
+    "rgb_state_query": "aa 1b 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 b4"
+  }
+}

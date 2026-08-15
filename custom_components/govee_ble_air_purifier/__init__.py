@@ -12,7 +12,7 @@ from .const import CONF_ADDRESS, CONF_PROFILE, DOMAIN, PLATFORMS
 from .coordinator import GoveeCoordinator, GoveeRuntimeData
 from .custom_auto.config import CustomAutoConfig, custom_auto_defaults
 from .custom_auto.controller import CustomAutoController
-from .profiles import get_profile
+from .govee_ble_air_purifier_protocol import get_profile
 from .setup_helpers import (
     connection_sharing_from_options,
     polling_interval_from_options,

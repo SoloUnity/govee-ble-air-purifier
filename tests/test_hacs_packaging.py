@@ -38,20 +38,24 @@ def test_integration_manifest_has_hacs_required_metadata() -> None:
     assert manifest["iot_class"] == "local_polling"
     assert manifest["integration_type"] == "device"
     assert manifest["dependencies"] == ["bluetooth_adapters"]
+    assert manifest["bluetooth"] == [
+        {"connectable": True, "local_name": "GVH712?*"},
+        {"connectable": True, "local_name": "ihoment_H712?*"},
+    ]
     assert manifest["loggers"] == ["bleak_retry_connector", "habluetooth"]
     assert "requirements" not in manifest
-    assert "bluetooth" not in manifest
 
 
-def test_config_flow_is_manual_only() -> None:
+def test_config_flow_supports_confirmed_bluetooth_and_manual_setup() -> None:
     config_flow = (
         ROOT / "custom_components" / DOMAIN / "config_flow.py"
     ).read_text(encoding="utf-8")
 
     assert "async_step_user" in config_flow
     assert "async_request_active_scan" in config_flow
-    assert "async_step_bluetooth" not in config_flow
-    assert "async_step_bluetooth_confirm" not in config_flow
+    assert "async_step_bluetooth" in config_flow
+    assert "async_step_bluetooth_confirm" in config_flow
+    assert "async_probe_device" in config_flow
 
 
 def test_integration_manifest_keys_match_hassfest_order() -> None:
@@ -70,7 +74,13 @@ def test_integration_provides_hacs_brand_icon() -> None:
 
 
 def test_integration_packages_bundled_model_profiles() -> None:
-    profiles = ROOT / "custom_components" / DOMAIN / "model_profiles"
+    profiles = (
+        ROOT
+        / "custom_components"
+        / DOMAIN
+        / "govee_ble_air_purifier_protocol"
+        / "model_profiles"
+    )
 
     default = _read_json(profiles / "default.json")
     h7124 = _read_json(profiles / "h7124.json")
@@ -79,7 +89,10 @@ def test_integration_packages_bundled_model_profiles() -> None:
     assert "night_light" not in default
     assert "night_light" in h7124
     assert "night_light" in h7129
-    assert default["schema_version"] == h7129["schema_version"] == 4
+    assert default["schema_version"] == h7129["schema_version"] == 5
+    assert default["support_status"] == "fallback"
+    assert h7124["support_status"] == "verified"
+    assert h7129["support_status"] == "read_verified"
     assert default["polling_interval_seconds"] == 10
     assert h7124["polling_interval_seconds"] == 10
     assert h7129["polling_interval_seconds"] == 3

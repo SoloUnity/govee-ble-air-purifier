@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "model": "H7129",
+  "protocol": "govee_h712x_20_byte_xor",
+  "transport": {
+    "application_frame_encoding": "plaintext",
+    "wire_encryption": "govee_v1"
+  },
+  "verification_level": "capture_decrypted_and_integration_transport_observed",
+  "sanitization": {
+    "identifiers_removed": true,
+    "timestamps_removed": true,
+    "raw_capture_included": false,
+    "key_material_included": false
+  },
+  "provenance": [
+    {
+      "id": "documented_encrypted_transport_vector",
+      "source_type": "sanitized_existing_test_vector",
+      "reference": "tests/bluetooth/test_govee_v1.py#test_captured_govee_v1_vectors"
+    },
+    {
+      "id": "documented_mode_capture",
+      "source_type": "sanitized_decrypted_packet_capture_transcription",
+      "reference": "docs/govee-ble-air-purifier-protocol.md#3a-05-fan-speed--mode-control"
+    },
+    {
+      "id": "documented_night_light_capture",
+      "source_type": "sanitized_decrypted_packet_capture_transcription",
+      "reference": "docs/govee-ble-air-purifier-protocol.md#aa-1b--3a-1b-night-light",
+      "capture_sha256": "9fb7a73cebee327dd0290473aea45d7caa7317a389134379552a7308cc83a177"
+    }
+  ],
+  "frames": [
+    {
+      "id": "decrypted_power_state_off",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "aa 01 00 00 81 00 02 01 00 00 00 00 00 00 00 00 00 00 00 29",
+      "plaintext_sha256": "a370449c9201cf46d4e4a4668152b6027ed3c378fbf7d5f09373665e9c07c100",
+      "provenance_id": "documented_encrypted_transport_vector",
+      "verification_level": "capture_decrypted",
+      "expected": {
+        "decoder": "power_state",
+        "interpretation": "decrypted purifier state reports power off",
+        "is_on": false
+      }
+    },
+    {
+      "id": "decrypted_auto_default_command",
+      "direction": "client_to_device",
+      "frame_role": "command",
+      "plaintext_hex": "3a 05 03 00 00 12 00 00 00 00 00 00 00 00 00 00 00 00 00 2e",
+      "plaintext_sha256": "e8390cbbe41fa6a703d4ad2713339dc2099c41ec721a12f81ef4231664e16ec2",
+      "provenance_id": "documented_mode_capture",
+      "verification_level": "capture_decrypted_not_physically_replayed",
+      "expected": {
+        "decoder": "profile_command",
+        "interpretation": "decrypted outbound command selects H7129 Auto Default",
+        "profile_command": "Auto"
+      }
+    },
+    {
+      "id": "decrypted_auto_default_push",
+      "direction": "device_to_client",
+      "frame_role": "push",
+      "plaintext_hex": "ee 05 03 00 00 12 00 00 00 00 00 00 00 00 00 00 00 00 00 fa",
+      "plaintext_sha256": "af5acaac6217eed1d5a5ad2b8e8cbdf7333f12db2d02caed5f271d7326cce667",
+      "provenance_id": "documented_mode_capture",
+      "verification_level": "capture_decrypted",
+      "expected": {
+        "decoder": "fan_mode_push",
+        "interpretation": "decrypted push selects H7129 Auto Default",
+        "mode": "Auto"
+      }
+    },
+    {
+      "id": "decrypted_night_light_on_50_response",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "aa 1b 01 01 32 00 00 00 00 00 00 00 00 00 00 00 00 00 00 83",
+      "plaintext_sha256": "116a8749fe0f005612cdc267b044d08897c57ad2b29212e9cf64bc5d0b7e1880",
+      "provenance_id": "documented_night_light_capture",
+      "verification_level": "capture_decrypted",
+      "expected": {
+        "decoder": "night_light_power_brightness",
+        "interpretation": "decrypted night-light query reports on at 50 percent",
+        "is_on": true,
+        "brightness_percent": 50
+      }
+    },
+    {
+      "id": "decrypted_night_light_unknown_color_response",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "aa 1b 05 fc 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 48",
+      "plaintext_sha256": "d7f5b9d090477f01e8be11f51f1cab5475fc34dc430d3cde6eb2d296bc314700",
+      "provenance_id": "documented_night_light_capture",
+      "verification_level": "capture_decrypted",
+      "expected": {
+        "decoder": "night_light_rgb_state",
+        "interpretation": "decrypted color query uses the unknown H7129 discriminator",
+        "rgb": null
+      }
+    },
+    {
+      "id": "decrypted_night_light_on_100_notification",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "3a 1b 01 01 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 45",
+      "plaintext_sha256": "0484f51e89723ee1071f55058646eb8922642f89265a36dbc8d95a8784f2010b",
+      "provenance_id": "documented_night_light_capture",
+      "verification_level": "capture_decrypted_not_physical_output_verified",
+      "expected": {
+        "decoder": "night_light_power_brightness",
+        "interpretation": "decrypted notification reports on at 100 percent",
+        "is_on": true,
+        "brightness_percent": 100
+      }
+    },
+    {
+      "id": "decrypted_red_echo_notification",
+      "direction": "device_to_client",
+      "frame_role": "response",
+      "plaintext_hex": "3a 1b 05 0d ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 d6",
+      "plaintext_sha256": "0fd2e604d1aae65b9aa47a452a7f2e8e3e95d6b80653c489b6e3093e7c618287",
+      "provenance_id": "documented_night_light_capture",
+      "verification_level": "capture_decrypted_echo_not_independent_state",
+      "expected": {
+        "decoder": "command_echo",
+        "interpretation": "decrypted notification exactly echoes the red control frame"
+      }
+    }
+  ]
+}

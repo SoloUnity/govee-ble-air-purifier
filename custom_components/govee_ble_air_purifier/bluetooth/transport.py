@@ -14,6 +14,7 @@ _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
 _ACTIVE_SCAN_TASKS: set[asyncio.Task[None]] = set()
 _ABANDONED_CONNECTION_ATTEMPTS: set[asyncio.Task[Any]] = set()
+_ABANDONED_CLEANUP_OPERATIONS: set[asyncio.Task[Any]] = set()
 FRESH_ADVERTISEMENT_TIMEOUT = 10
 FRESH_ADVERTISEMENT_POLL_INTERVAL = 0.1
 # A distant purifier may need several connection intervals before its GATT
@@ -44,6 +45,50 @@ async def _async_wait_until(awaitable: Awaitable[_T], deadline: float) -> _T:
 
     remaining = max(0.0, deadline - asyncio.get_running_loop().time())
     return await asyncio.wait_for(awaitable, remaining)
+
+
+def _observe_abandoned_cleanup_operation(task: asyncio.Task[Any]) -> None:
+    """Observe a cleanup operation that finished after its caller moved on."""
+
+    _ABANDONED_CLEANUP_OPERATIONS.discard(task)
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except (asyncio.CancelledError, asyncio.InvalidStateError):
+        return
+
+
+def _abandon_cleanup_operation(task: asyncio.Task[Any]) -> None:
+    """Cancel cleanup without waiting for a non-cooperative BLE backend."""
+
+    if task.done():
+        _observe_abandoned_cleanup_operation(task)
+        return
+    _ABANDONED_CLEANUP_OPERATIONS.add(task)
+    task.add_done_callback(_observe_abandoned_cleanup_operation)
+    task.cancel()
+    _LOGGER.debug(
+        "Quarantined BLE cleanup that did not finish within its deadline"
+    )
+
+
+async def _async_wait_cleanup_until(
+    awaitable: Awaitable[_T], deadline: float
+) -> _T:
+    """Bound external BLE cleanup without awaiting cancellation acknowledgement."""
+
+    task = asyncio.ensure_future(awaitable)
+    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+    try:
+        done, _pending = await asyncio.wait((task,), timeout=remaining)
+        if task in done:
+            return await task
+        _abandon_cleanup_operation(task)
+        raise TimeoutError
+    except asyncio.CancelledError:
+        _abandon_cleanup_operation(task)
+        raise
 
 
 def _observe_abandoned_connection_attempt(task: asyncio.Task[Any]) -> None:
@@ -288,7 +333,7 @@ async def async_establish_connection(
 
         stage = "closing stale connections"
         _LOGGER.debug("BLE connection stage: %s (device %s)", stage, log_id)
-        await _async_wait_until(close_stale_connections(ble_device), deadline)
+        await _async_wait_cleanup_until(close_stale_connections(ble_device), deadline)
         stage = "establishing a new connection"
         _LOGGER.debug("BLE connection stage: %s (device %s)", stage, log_id)
         attempt = asyncio.create_task(
@@ -338,7 +383,7 @@ async def async_disconnect(client: Any, *, deadline: float) -> None:
     log_suffix = _client_log_suffix(client)
     try:
         _LOGGER.debug("Disconnecting BLE client%s", log_suffix)
-        await _async_wait_until(client.disconnect(), deadline)
+        await _async_wait_cleanup_until(client.disconnect(), deadline)
         _LOGGER.debug("BLE client disconnected%s", log_suffix)
     except Exception:
         _LOGGER.debug("Suppressing BLE disconnect failure%s", log_suffix, exc_info=True)

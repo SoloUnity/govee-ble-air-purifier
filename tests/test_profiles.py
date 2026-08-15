@@ -7,8 +7,10 @@ import pytest
 from custom_components.govee_ble_air_purifier.profiles import (
     EncryptionMode,
     H7124_PROFILE,
+    ModelSupportStatus,
     NightLightPollingCadence,
     NightLightPollingRequestOrder,
+    PROFILE_DIRECTORY,
     PROFILE_SCHEMA_VERSION,
     _build_profile,
     _load_profile_definitions,
@@ -19,14 +21,12 @@ from custom_components.govee_ble_air_purifier.profiles import (
     normalize_ble_name,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
-PROFILE_DIRECTORY = (
-    ROOT / "custom_components" / "govee_ble_air_purifier" / "model_profiles"
-)
-
-
 def _profile_data() -> dict:
     return json.loads((PROFILE_DIRECTORY / "h7124.json").read_text(encoding="utf-8"))
+
+
+def _default_profile_data() -> dict:
+    return json.loads((PROFILE_DIRECTORY / "default.json").read_text(encoding="utf-8"))
 
 
 def _write_profile(path: Path, data: dict) -> None:
@@ -35,9 +35,7 @@ def _write_profile(path: Path, data: dict) -> None:
 
 def test_bundled_h7124_definition_matches_default_fallback() -> None:
     h7124 = _profile_data()
-    default = json.loads(
-        (PROFILE_DIRECTORY / "default.json").read_text(encoding="utf-8")
-    )
+    default = _default_profile_data()
 
     assert h7124.pop("night_light") is not None
     assert h7124.pop("push_notifications") == {
@@ -45,6 +43,8 @@ def test_bundled_h7124_definition_matches_default_fallback() -> None:
         "fan_mode": True,
         "night_light_power_brightness": True,
     }
+    assert h7124.pop("support_status") == "verified"
+    assert default.pop("support_status") == "fallback"
     assert h7124 == default
     assert h7124["schema_version"] == PROFILE_SCHEMA_VERSION
 
@@ -88,6 +88,8 @@ def test_observed_ihoment_h7129_name_uses_exact_encrypted_profile() -> None:
     assert profile.matches_local_name("ihoment_H7129_6B51")
     assert not profile.matches_local_name("GVH7124BEDROOM")
     assert profile.encryption is EncryptionMode.GOVEE_V1
+    assert profile.support_status is ModelSupportStatus.READ_VERIFIED
+    assert profile.requires_support_acknowledgement is True
     assert profile.polling_interval_seconds == 3
     assert profile.service_uuid == H7124_PROFILE.service_uuid
     assert profile.status_query_command == H7124_PROFILE.status_query_command
@@ -132,6 +134,8 @@ def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> Non
     assert profile.display_name == "Govee H7126 Air Purifier"
     assert profile.local_name_prefixes == ("GVH7126",)
     assert profile.encryption is EncryptionMode.NONE
+    assert profile.support_status is ModelSupportStatus.FALLBACK
+    assert profile.requires_support_acknowledgement is True
     assert profile.polling_interval_seconds == 10
     assert profile.service_uuid == H7124_PROFILE.service_uuid
     assert profile.notify_char_uuid == H7124_PROFILE.notify_char_uuid
@@ -147,6 +151,8 @@ def test_unbundled_family_model_uses_h7124_fallback_with_exact_identity() -> Non
 
 def test_legacy_profile_resolution_keeps_h7124_night_light_capability() -> None:
     assert get_profile(None) is H7124_PROFILE
+    assert H7124_PROFILE.support_status is ModelSupportStatus.VERIFIED
+    assert H7124_PROFILE.requires_support_acknowledgement is False
     assert H7124_PROFILE.night_light is not None
 
 
@@ -187,7 +193,7 @@ def test_night_light_profile_rejects_invalid_rgb(rgb_color: tuple) -> None:
 
 
 def test_exact_model_definition_takes_precedence_over_default(tmp_path: Path) -> None:
-    default = _profile_data()
+    default = _default_profile_data()
     exact = copy.deepcopy(default)
     exact["gatt"]["service_uuid"] = "10010203-0405-0607-0809-0a0b0c0d1910"
     _write_profile(tmp_path / "default.json", default)
@@ -202,7 +208,7 @@ def test_exact_model_definition_takes_precedence_over_default(tmp_path: Path) ->
 
 
 def test_malformed_exact_definition_does_not_fall_back(tmp_path: Path) -> None:
-    default = _profile_data()
+    default = _default_profile_data()
     malformed = copy.deepcopy(default)
     malformed["commands"]["power_on"] = "33 01 01"
     _write_profile(tmp_path / "default.json", default)
@@ -214,12 +220,12 @@ def test_malformed_exact_definition_does_not_fall_back(tmp_path: Path) -> None:
 
 
 def test_profile_loader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
-    data = _profile_data()
+    data = _default_profile_data()
     _write_profile(tmp_path / "default.json", data)
     _write_profile(tmp_path / "h7124.json", data)
     duplicate = json.dumps(data).replace(
-        '"schema_version": 4',
-        '"schema_version": 4, "schema_version": 4',
+        '"schema_version": 5',
+        '"schema_version": 5, "schema_version": 5',
         1,
     )
     (tmp_path / "h7126.json").write_text(duplicate, encoding="utf-8")
@@ -484,12 +490,36 @@ def test_profile_schema_rejects_invalid_frames(frame: str) -> None:
         _parse_profile_definition(data, source="test.json")
 
 
-@pytest.mark.parametrize("schema_version", [True, 0, 1, 2, 3, 5, "4"])
+@pytest.mark.parametrize("schema_version", [True, 0, 1, 2, 3, 4, 6, "5"])
 def test_profile_schema_rejects_unsupported_versions(schema_version: object) -> None:
     data = _profile_data()
     data["schema_version"] = schema_version
 
-    with pytest.raises(ValueError, match="schema_version must be 4"):
+    with pytest.raises(ValueError, match="schema_version must be 5"):
+        _parse_profile_definition(data, source="test.json")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(status.value, status) for status in ModelSupportStatus],
+)
+def test_profile_schema_accepts_all_support_statuses(
+    value: str, expected: ModelSupportStatus
+) -> None:
+    data = _profile_data()
+    data["support_status"] = value
+
+    definition = _parse_profile_definition(data, source="test.json")
+
+    assert definition.support_status is expected
+
+
+@pytest.mark.parametrize("value", [None, True, "untested", 1])
+def test_profile_schema_rejects_invalid_support_status(value: object) -> None:
+    data = _profile_data()
+    data["support_status"] = value
+
+    with pytest.raises(ValueError, match="test.json.support_status"):
         _parse_profile_definition(data, source="test.json")
 
 

@@ -270,7 +270,7 @@ async def test_caller_cancel_skips_notify_cleanup_and_drops_client(
             except asyncio.CancelledError:
                 cancellation_seen.set()
                 await release.wait()
-                raise RuntimeError(f"late {phase} failure")
+                raise RuntimeError(f"late {phase} failure") from None
             finally:
                 finished.set()
 

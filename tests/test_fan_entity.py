@@ -160,7 +160,10 @@ def _install_homeassistant_modules(
             "homeassistant.const": {"STATE_ON": "on"},
             "homeassistant.core": {"HomeAssistant": object},
             "homeassistant.exceptions": {"HomeAssistantError": _HomeAssistantError},
-            "homeassistant.helpers.device_registry": {"DeviceInfo": _DeviceInfo},
+            "homeassistant.helpers.device_registry": {
+                "CONNECTION_BLUETOOTH": "bluetooth",
+                "DeviceInfo": _DeviceInfo,
+            },
             "homeassistant.helpers.entity_registry": {
                 "async_get": lambda hass: hass.entity_registry
             },

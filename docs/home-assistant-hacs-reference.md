@@ -21,9 +21,9 @@ reference is
 | Home Assistant minimum | `2024.8.0` | `hacs.json` |
 | HACS minimum | `1.34.0` | `hacs.json` |
 | Python package baseline | Python 3.12 or newer | `pyproject.toml` |
-| Recognized model family | Govee `H712*` BLE purifiers | `profiles.py` and `model_profiles/` |
-| Exact model profiles | Plaintext H7124 and encrypted H7129 | `model_profiles/h7124.json` and `model_profiles/h7129.json` |
-| Physical integration validation | H7124 commands and polling; H7129 connection, encrypted handshake, polling, disconnect, and recovery | `model_profiles/h7124.json`, `model_profiles/h7129.json`, and field evidence |
+| Recognized model family | Govee `H712*` BLE purifiers | reusable protocol package and its `model_profiles/` |
+| Exact model profiles | Plaintext H7124 and encrypted H7129 | protocol package `model_profiles/h7124.json` and `model_profiles/h7129.json` |
+| Physical integration validation | H7124 commands and polling; H7129 connection, encrypted handshake, polling, disconnect, and recovery | bundled model profiles and field evidence |
 | Recognized BLE local name | Contains `H712` followed by one ASCII letter or digit, case-insensitively (for example `GVH7124`, `GVH712C`, or `ihoment_H7129_6A7D`) | `profiles.py` |
 | Home Assistant integration type | `device` | `manifest.json` |
 | Home Assistant IoT class | `local_polling` | `manifest.json` |
@@ -39,7 +39,7 @@ implemented from decrypted physical-device captures and tested against fixed
 encrypted vectors and simulated connection lifecycles. Physical H7129 evidence
 confirms connection, encrypted handshake, polling, disconnect, and recovery;
 state-changing commands have not yet been physically validated through this
-integration. Other recognized `H712*` models without an exact
+integration. Other recognized `H712*` models without an exact protocol-package
 `model_profiles/<model>.json` file use `default.json`, which supplies the tested
 H7124 protocol behavior. Those fallback models remain unverified.
 
@@ -47,7 +47,7 @@ The CI runtime matrix tests the minimum Home Assistant release, relevant API
 boundaries, and the current target selected by the repository. At the time of
 writing those targets are
 Home Assistant `2024.8.0` on Python 3.12, the 2026.5 and 2026.6 Bluetooth API
-boundaries, and Home Assistant `2026.7.2` on Python 3.14.2. The workflow is the
+boundaries, and Home Assistant `2026.8.2` on Python 3.14.2. The workflow is the
 source of truth when the current target changes.
 
 ## HACS And Home Assistant Responsibilities
@@ -98,7 +98,9 @@ HACS installs this runtime directory:
         |-- translations/
         |-- bluetooth/
         |-- custom_auto/
-        |-- model_profiles/
+        |-- govee_ble_air_purifier_protocol/
+        |   |-- model_profiles/
+        |   `-- schemas/
         `-- active entity and support modules
 ```
 
@@ -133,10 +135,28 @@ Settings
             `-- Search: Govee BLE Air Purifier
 ```
 
-The flow is manually initiated. The manifest does not register an automatic
-Bluetooth discovery flow. Opening the first form requests a one-shot active
-scan when the installed Home Assistant version provides that API, then reads
-Home Assistant's cache of connectable Bluetooth advertisements.
+The manifest registers connectable local-name matchers for the physically
+observed `GVH712?*` and `ihoment_H712?*` formats. A match opens a confirmation
+form; it never creates an entry directly. Manual setup remains available.
+Opening its first form requests a one-shot active scan when the installed Home
+Assistant version provides that API, then reads Home Assistant's cache of
+connectable Bluetooth advertisements.
+
+### Automatic discovery confirmation
+
+```text
+Discovered Govee purifier
+|-- Confirm
+|-- Support acknowledgement (unless fully verified)
+|-- Polling
+|-- Five Air Quality Steps (when supported)
+`-- Read-only connection and protocol probe
+```
+
+The discovery step rejects unsupported names and advertisements from scanners
+that cannot make outgoing connections. It normalizes the BLE address as the
+flow unique ID before showing confirmation, preventing duplicate entries and
+duplicate in-progress discoveries.
 
 ### Step 1: Govee BLE Air Purifier
 
@@ -163,7 +183,10 @@ connectable advertisement for that address whose name contains the recognized
 family token: `H712` followed by one ASCII letter or digit,
 case-insensitively. The purifier does not have to remain visible at the instant
 the form is submitted if Home Assistant still has compatible advertisement
-history. After the model is identified, setup displays a polling form. The
+history. After the model is identified, setup first discloses and asks the user
+to acknowledge any `read_verified`, `experimental`, or `fallback` support
+status, then displays a polling form. Fully verified models proceed directly.
+The
 interval accepts whole seconds from 3 through 300 and defaults to the value in
 the model profile: 10 seconds for H7124 and fallback models, and 3 seconds for
 H7129.
@@ -185,6 +208,13 @@ an exact model file added later takes effect after an update and restart.
 Existing entries that predate the profile key and existing `h7124` entries
 resolve to H7124. Polling and, when supported, Custom Auto values are mutable
 options.
+
+After the last options form, both manual and discovered setup run the same
+temporary read-only probe. The probe performs the profile's state/status poll,
+including the H7129 session handshake, but sends no power, fan, or light
+control. Its operation deadline is 65 seconds, followed by a separate 10-second
+foreground cleanup deadline. A connection, timeout, response-validation, or
+cleanup failure produces a translated retry form and no config entry.
 
 ### Step 3: Five Air Quality Steps
 
@@ -353,6 +383,8 @@ information, addresses, and other sensitive data must not be exposed.
 - `config_flow: true` declares UI-based config-entry setup.
 - `integration_type: device` means one physical purifier is represented by one
   config entry.
+- Two connectable Bluetooth local-name matchers start confirmation-only flows
+  for the evidenced Govee naming formats.
 - `iot_class: local_polling` describes direct local communication with periodic
   reads.
 - `bluetooth_adapters` is a Home Assistant integration dependency.
@@ -366,6 +398,7 @@ information, addresses, and other sensitive data must not be exposed.
 - Home Assistant data-entry sections group each boundary and are expanded by
   default.
 - A normalized BLE address provides the stable unique ID and duplicate guard.
+- Every entry is created only after a bounded, read-only GATT/protocol probe.
 - Setup data identifies the physical device; options hold mutable behavior.
 - `strings.json` and `translations/en.json` define all visible flow labels,
   descriptions, errors, section names, and translated entity names.
@@ -387,6 +420,8 @@ information, addresses, and other sensitive data must not be exposed.
 
 - Device registry identifiers use the integration domain and stable config
   entry unique ID.
+- Device registry connections also include Home Assistant's Bluetooth
+  connection type and the configured BLE address.
 - Every entity has a stable unique ID and `has_entity_name = True` behavior.
 - The main fan entity uses the device name; the light, secondary sensors, and
   switch use translated entity names.
@@ -410,6 +445,8 @@ information, addresses, and other sensitive data must not be exposed.
 
 - Device selection uses Home Assistant's central Bluetooth cache rather than
   starting a private scanner.
+- Manifest discovery is limited to connectable `GVH712?*` and
+  `ihoment_H712?*` local names and always requires user confirmation.
 - Config flow discovery requests Home Assistant's one-shot active scan API when
   available.
 - Runtime connections resolve a connectable `BLEDevice` through Home Assistant
@@ -479,7 +516,8 @@ reference is
 [`govee-ble-air-purifier-protocol.md`](govee-ble-air-purifier-protocol.md).
 
 The values below document the tested H7124 definition stored in
-`model_profiles/h7124.json` and `model_profiles/default.json`:
+the protocol package's `model_profiles/h7124.json` and
+`model_profiles/default.json`:
 
 | Item | Tested H7124 profile value |
 | --- | --- |
@@ -499,15 +537,16 @@ The status response supplies PM2.5 and filter life. PM2.5 values above 999 are
 treated as invalid rather than published as measurements. The supported fan
 commands are Sleep, Low, Medium, High, Auto, and Turbo. The GATT UUIDs and the
 exact outbound 20-byte power, query, and fan-mode frames are defined per model
-in `model_profiles/*.json`; response markers, decoder offsets, confirmation
-rules, and status decoding remain in `protocol.py`; profile selection and
-capabilities are defined in `profiles.py`; generic frame length and checksum
-validation are defined in `bluetooth/framing.py`.
+in the protocol package's `model_profiles/*.json`; response markers, decoder
+offsets, confirmation rules, and status decoding remain in its `protocol.py`;
+profile selection and capabilities are defined in its `profiles.py`; generic
+frame length and checksum validation are defined in its `framing.py`.
 
 ### Model Profile Definitions
 
-Each file in `model_profiles/` is a complete schema-v4 definition of one model's
-transport encryption mode, GATT UUIDs, outbound command frames, and optional
+Each file in the package's `model_profiles/` is a complete schema-v5 definition
+of one model's
+support status, transport encryption mode, GATT UUIDs, outbound command frames, and optional
 push capability flags. Selection
 loads the exact lowercase model file when it exists (including `h7129.json`);
 any other recognized `H712*` model falls back to `default.json`, which is the
@@ -521,9 +560,9 @@ their declared fan commands without exposing an incompatible policy switch.
 
 JSON ownership stops at transport selection, outbound frames, and UUIDs. The
 push flags enable model evidence but do not define decoding rules. The
-Govee V1 transform stays in `bluetooth/govee_v1.py`; shared frame validation,
+Govee V1 transform stays in the reusable package's `govee_v1.py`; shared frame validation,
 response matching, command confirmation, and status decoding stay in
-`protocol.py`. H7124 and H7129 therefore reuse the same application protocol
+the package's `protocol.py`. H7124 and H7129 therefore reuse the same application protocol
 after the client decrypts H7129 notifications.
 
 H7124 power, all fan modes, and night-light power/brightness push layouts are
@@ -555,6 +594,12 @@ The schema version belongs only to bundled profile JSON. It is not stored in a
 config entry, so this change needs no config-entry migration, device removal, or
 re-adding of purifiers.
 
+`schemas/model_profile_v5.schema.json` is the developer-facing structural
+contract for schema-v5 files. The JSON Schema gate validates every bundled
+profile, while the runtime parser continues to enforce semantic constraints
+such as checksums, ascending thresholds, and relationships between polling
+values.
+
 `tests/test_persistence_contracts.py` guards the stored keys, defaults, profile
 fallback, and active platforms. A change to a persisted contract requires an
 explicit migration plan and migration tests; changing only the UI label does
@@ -562,12 +607,13 @@ not require renaming a stored key.
 
 ## Validation Standards
 
-The repository uses four CI boundaries:
+The repository uses five CI boundaries:
 
 | Boundary | Command or action | Purpose |
 | --- | --- | --- |
-| Static quality | `python -m ruff check .` | Python style and static checks. |
-| Fast behavior | `python -m pytest --ignore=tests/test_runtime_smoke.py` | Protocol, Bluetooth, config flow, coordinator, entity, persistence, and packaging behavior with focused substitutes. |
+| Static quality | `python -m ruff check .` | Python correctness checks plus the Ruff bugbear rules. |
+| Strict typing | `python -m mypy` | Strict checks for the protocol, profile, model, crypto, Custom Auto policy/configuration, and clean Bluetooth helper subset. |
+| Fast behavior and coverage | `python -m pytest --ignore=tests/test_runtime_smoke.py --cov --cov-branch --cov-report=term-missing:skip-covered` | Protocol, Bluetooth, config flow, coordinator, entity, persistence, packaging, and JSON Schema behavior, with branch coverage enforced at 89%. |
 | Real Home Assistant | `python -m pytest tests/test_runtime_smoke.py` | Imports, inheritance, signatures, entity construction, config flow, and lifecycle against installed Home Assistant APIs. |
 | Distribution | `hacs/action@main` and `home-assistant/actions/hassfest@master` | HACS repository and Home Assistant integration metadata validation. |
 
@@ -575,6 +621,21 @@ The real-Home-Assistant matrix installs each tested Home Assistant version
 under that release's official package constraints. Physical purifier and BLE
 range testing remain device-level release checks and cannot be replaced by the
 runtime smoke lane.
+
+The coverage gate began from a measured 89.43% branch-inclusive baseline. Its
+89% floor must not be lowered; raise it in small increments whenever the main
+branch has sustained enough headroom. Coverage automatically includes every
+runtime module under the integration package, so newly added modules cannot sit
+outside the measurement boundary.
+
+Mypy intentionally starts with an explicit strict subset and contains no
+per-module error suppressions. `follow_imports = "skip"` keeps Home Assistant's
+runtime-only dependency graph outside that first boundary while all listed
+modules are checked together. Expand the `files` list as modules become clean:
+first `setup_helpers.py` and the remaining pure Bluetooth collaborators, then
+transport/client and Custom Auto controller state, then coordinator and the
+Home Assistant entity/config-flow boundary. Do not weaken `strict` or add
+blanket ignores to expand the list.
 
 ## Authoritative Documentation
 

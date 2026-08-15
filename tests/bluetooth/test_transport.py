@@ -9,6 +9,8 @@ from custom_components.govee_ble_air_purifier.bluetooth import GoveeBleClientErr
 from custom_components.govee_ble_air_purifier.bluetooth import transport
 from tests.helpers.ha_stubs import install_modules
 
+DEFAULT_DEVICE = SimpleNamespace(name="Purifier")
+
 
 class FakeClient:
     def __init__(self, events: list[str], *, disconnect_error: Exception | None = None):
@@ -37,7 +39,7 @@ def _install_connection_modules(
     monkeypatch: pytest.MonkeyPatch,
     events: list[str],
     *,
-    device: Any = SimpleNamespace(name="Purifier"),
+    device: Any = DEFAULT_DEVICE,
     client: FakeClient | None = None,
     disconnected_callbacks: list[Any] | None = None,
     establish_calls: list[dict[str, Any]] | None = None,
@@ -89,13 +91,13 @@ async def test_connection_stages_run_in_order_with_one_deadline(
         establish_calls=establish_calls,
     )
     deadlines: list[float] = []
-    original_wait_until = transport._async_wait_until
+    original_wait_until = transport._async_wait_cleanup_until
 
     async def recording_wait_until(awaitable: Any, deadline: float) -> Any:
         deadlines.append(deadline)
         return await original_wait_until(awaitable, deadline)
 
-    monkeypatch.setattr(transport, "_async_wait_until", recording_wait_until)
+    monkeypatch.setattr(transport, "_async_wait_cleanup_until", recording_wait_until)
     deadline = asyncio.get_running_loop().time() + 10.0
 
     assert (
@@ -150,7 +152,7 @@ async def test_stage_timeout_is_translated_without_extending_deadline(
         awaitable.close()
         raise TimeoutError
 
-    monkeypatch.setattr(transport, "_async_wait_until", timeout_wait_until)
+    monkeypatch.setattr(transport, "_async_wait_cleanup_until", timeout_wait_until)
     caplog.set_level(logging.DEBUG, logger=transport.__name__)
 
     with pytest.raises(GoveeBleClientError, match="Timed out establishing"):
@@ -179,7 +181,7 @@ async def test_connection_timeout_includes_reachability_diagnostics(
         awaitable.close()
         raise TimeoutError
 
-    monkeypatch.setattr(transport, "_async_wait_until", timeout_wait_until)
+    monkeypatch.setattr(transport, "_async_wait_cleanup_until", timeout_wait_until)
     connection_intent = object()
     install_modules(
         monkeypatch,
@@ -262,6 +264,102 @@ async def test_noncooperative_connection_attempt_does_not_extend_deadline(
     release.set()
     await asyncio.sleep(0.01)
     assert events == ["establish", "disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_noncooperative_stale_cleanup_does_not_block_connection_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale-client cleanup that ignores cancellation remains quarantined."""
+
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+    establish_called = False
+
+    async def close_stale_connections(_device: Any) -> None:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+
+    async def establish_connection(**_kwargs: Any) -> FakeClient:
+        nonlocal establish_called
+        establish_called = True
+        return FakeClient([])
+
+    install_modules(
+        monkeypatch,
+        {
+            "bleak_retry_connector": {
+                "BleakClientWithServiceCache": object,
+                "close_stale_connections": close_stale_connections,
+                "establish_connection": establish_connection,
+            },
+            "homeassistant.components.bluetooth": {
+                "async_ble_device_from_address": lambda *_args, **_kwargs: SimpleNamespace(
+                    name="Purifier"
+                ),
+            },
+        },
+    )
+
+    try:
+        with pytest.raises(GoveeBleClientError, match="Timed out establishing"):
+            await transport.async_establish_connection(
+                object(),
+                "AA:BB:CC:DD:EE:FF",
+                lambda _client: None,
+                deadline=asyncio.get_running_loop().time() + 0.01,
+            )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.wait_for(cancellation_seen.wait(), timeout=1)
+        assert establish_called is False
+        assert transport._ABANDONED_CLEANUP_OPERATIONS
+    finally:
+        release.set()
+        await asyncio.sleep(0.01)
+
+    assert not transport._ABANDONED_CLEANUP_OPERATIONS
+
+
+@pytest.mark.asyncio
+async def test_noncooperative_disconnect_returns_at_deadline() -> None:
+    """A backend disconnect cannot hold recovery or a purifier lock forever."""
+
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    class CancellationResistantDisconnectClient:
+        address = "AA:BB:CC:DD:EE:FF"
+
+        async def disconnect(self) -> None:
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancellation_seen.set()
+                await release.wait()
+
+    try:
+        disconnect = asyncio.create_task(
+            transport.async_disconnect(
+                CancellationResistantDisconnectClient(),
+                deadline=asyncio.get_running_loop().time() + 0.01,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.wait_for(cancellation_seen.wait(), timeout=1)
+        await asyncio.wait_for(disconnect, timeout=0.5)
+        assert transport._ABANDONED_CLEANUP_OPERATIONS
+    finally:
+        release.set()
+        await asyncio.sleep(0.01)
+
+    assert not transport._ABANDONED_CLEANUP_OPERATIONS
 
 
 @pytest.mark.asyncio
@@ -623,13 +721,13 @@ async def test_explicit_disconnect_is_bounded(
     events: list[str] = []
     client = FakeClient(events)
     deadlines: list[float] = []
-    original_wait_until = transport._async_wait_until
+    original_wait_until = transport._async_wait_cleanup_until
 
     async def recording_wait_until(awaitable: Any, deadline: float) -> Any:
         deadlines.append(deadline)
         return await original_wait_until(awaitable, deadline)
 
-    monkeypatch.setattr(transport, "_async_wait_until", recording_wait_until)
+    monkeypatch.setattr(transport, "_async_wait_cleanup_until", recording_wait_until)
     deadline = asyncio.get_running_loop().time() + 10.0
 
     await transport.async_disconnect(client, deadline=deadline)
@@ -662,7 +760,7 @@ async def test_disconnect_timeout_is_suppressed(
         awaitable.close()
         raise TimeoutError
 
-    monkeypatch.setattr(transport, "_async_wait_until", timeout_wait_until)
+    monkeypatch.setattr(transport, "_async_wait_cleanup_until", timeout_wait_until)
 
     await transport.async_disconnect(client, deadline=42.0)
 

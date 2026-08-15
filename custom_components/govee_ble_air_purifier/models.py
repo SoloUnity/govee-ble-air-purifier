@@ -1,42 +1,15 @@
-"""Data models for Govee BLE air purifiers."""
+"""Compatibility exports for the reusable protocol data models."""
 
-from __future__ import annotations
+from .govee_ble_air_purifier_protocol.models import (
+    DecodedStatus,
+    NightLightState,
+    PurifierPushUpdate,
+    PurifierState,
+)
 
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class DecodedStatus:
-    """PM2.5 and filter-life values decoded from an aa19 status frame."""
-
-    pm25: int | None = None
-    filter_life: int | None = None
-
-
-@dataclass(frozen=True)
-class NightLightState:
-    """Application-facing snapshot of night-light state."""
-
-    is_on: bool | None = None
-    brightness_percent: int | None = None
-    rgb_color: tuple[int, int, int] | None = None
-
-
-@dataclass(frozen=True)
-class PurifierState:
-    """Application-facing snapshot of purifier state."""
-
-    is_on: bool | None = None
-    pm25: int | None = None
-    filter_life: int | None = None
-    fan_mode: str | None = None
-    night_light: NightLightState | None = None
-
-
-@dataclass(frozen=True)
-class PurifierPushUpdate:
-    """Partial state reported asynchronously by a connected purifier."""
-
-    is_on: bool | None = None
-    fan_mode: str | None = None
-    night_light: NightLightState | None = None
+__all__ = [
+    "DecodedStatus",
+    "NightLightState",
+    "PurifierPushUpdate",
+    "PurifierState",
+]

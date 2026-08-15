@@ -56,7 +56,10 @@ def _install_homeassistant_modules(monkeypatch: pytest.MonkeyPatch) -> None:
                 "PERCENTAGE": "%",
             },
             "homeassistant.core": {"HomeAssistant": object},
-            "homeassistant.helpers.device_registry": {"DeviceInfo": _DeviceInfo},
+            "homeassistant.helpers.device_registry": {
+                "CONNECTION_BLUETOOTH": "bluetooth",
+                "DeviceInfo": _DeviceInfo,
+            },
             "homeassistant.helpers.entity": {"EntityCategory": _EntityCategory},
             "homeassistant.helpers.entity_platform": {"AddEntitiesCallback": object},
             "homeassistant.helpers.update_coordinator": {
@@ -84,7 +87,10 @@ async def test_sensor_platform_surfaces_pm25_and_filter_life(
     )
     entry = SimpleNamespace(
         unique_id="aabbccddeeff",
-        data={"name": "Bedroom Purifier"},
+        data={
+            "address": "AA:BB:CC:DD:EE:FF",
+            "name": "Bedroom Purifier",
+        },
         runtime_data=SimpleNamespace(coordinator=coordinator),
     )
     added_entities = []
@@ -100,6 +106,12 @@ async def test_sensor_platform_surfaces_pm25_and_filter_life(
         "aabbccddeeff_filter_life",
     ]
     assert [entity.native_value for entity in added_entities] == [8, 94]
+    assert added_entities[0]._attr_device_info["connections"] == {
+        ("bluetooth", "AA:BB:CC:DD:EE:FF")
+    }
+    assert added_entities[0]._attr_device_info["identifiers"] == {
+        ("govee_ble_air_purifier", "aabbccddeeff")
+    }
 
 
 def test_sensor_metadata_matches_cloud_style_entities(

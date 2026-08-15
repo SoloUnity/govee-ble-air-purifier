@@ -9,6 +9,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.data_entry_flow import FlowResult, section as data_entry_section
 from homeassistant.helpers.selector import (
@@ -46,11 +47,12 @@ from .custom_auto.config import (
     parse_custom_auto_values,
     validate_custom_auto_values,
 )
-from .profiles import (
+from .govee_ble_air_purifier_protocol import (
     canonicalize_ble_address,
     get_profile,
     match_profile,
     ModelProfile,
+    ModelSupportStatus,
     normalize_ble_address,
 )
 from .setup_helpers import (
@@ -61,6 +63,7 @@ from .setup_helpers import (
     polling_interval_from_options,
     validate_polling_interval_seconds,
 )
+from .setup_probe import SetupProbeError, async_probe_device
 
 SECTION_EXCELLENT_GOOD = "excellent_good"
 SECTION_GOOD_FAIR = "good_fair"
@@ -102,6 +105,43 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._pending_options: dict[str, Any] | None = None
         self._pending_profile: ModelProfile | None = None
         self._custom_auto_defaults: Mapping[str, int] = CUSTOM_AUTO_DEFAULTS
+
+    async def async_step_bluetooth(
+        self, discovery_info: BluetoothServiceInfoBleak
+    ) -> FlowResult:
+        """Handle a connectable purifier discovered over Bluetooth."""
+
+        if not getattr(discovery_info, "connectable", True):
+            return self.async_abort(reason="not_connectable")
+        profile = match_profile(discovery_info.name)
+        if profile is None:
+            return self.async_abort(reason="not_supported")
+        try:
+            address = canonicalize_ble_address(discovery_info.address)
+        except ValueError:
+            return self.async_abort(reason="not_supported")
+
+        await self.async_set_unique_id(_unique_id_from_address(address))
+        self._abort_if_unique_id_configured(updates={CONF_ADDRESS: address})
+        name = discovery_info.name or profile.display_name
+        self.context["title_placeholders"] = {"name": name}
+        self._set_pending_device(address, name, profile)
+        return await self.async_step_bluetooth_confirm()
+
+    async def async_step_bluetooth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Ask the user to confirm an automatically discovered purifier."""
+
+        if self._pending_entry is None or self._pending_profile is None:
+            return self.async_abort(reason="unknown")
+        if user_input is not None:
+            return await self._async_step_after_device_selection()
+        return self.async_show_form(
+            step_id="bluetooth_confirm",
+            data_schema=vol.Schema({}),
+            description_placeholders=self.context.get("title_placeholders"),
+        )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -177,19 +217,60 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             unique_id = _unique_id_from_address(address)
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured(updates={CONF_ADDRESS: address})
-            self._pending_entry = {
-                "title": name,
-                "data": {
-                    CONF_ADDRESS: address,
-                    CONF_NAME: name,
-                    CONF_PROFILE: profile.key,
-                },
-            }
-            self._pending_profile = profile
-            return await self.async_step_polling()
+            self._set_pending_device(address, name, profile)
+            return await self._async_step_after_device_selection()
 
         return self.async_show_form(
             step_id="user", data_schema=_user_schema(discovered_options), errors=errors
+        )
+
+    async def async_step_support_read_verified(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Disclose read-verified model support before setup continues."""
+
+        return await self._async_step_support_acknowledgement(
+            ModelSupportStatus.READ_VERIFIED, user_input
+        )
+
+    async def async_step_support_experimental(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Disclose experimental model support before setup continues."""
+
+        return await self._async_step_support_acknowledgement(
+            ModelSupportStatus.EXPERIMENTAL, user_input
+        )
+
+    async def async_step_support_fallback(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Disclose family-fallback model support before setup continues."""
+
+        return await self._async_step_support_acknowledgement(
+            ModelSupportStatus.FALLBACK, user_input
+        )
+
+    async def _async_step_support_acknowledgement(
+        self,
+        expected_status: ModelSupportStatus,
+        user_input: dict[str, Any] | None,
+    ) -> FlowResult:
+        """Show a translated model-support disclosure and continue on submit."""
+
+        profile = self._pending_profile
+        if (
+            self._pending_entry is None
+            or profile is None
+            or profile.support_status is not expected_status
+        ):
+            return self.async_abort(reason="unknown")
+        if user_input is not None:
+            return await self.async_step_polling()
+        return self.async_show_form(
+            step_id=f"support_{expected_status.value}",
+            data_schema=vol.Schema({}),
+            description_placeholders={"model": profile.model},
         )
 
     async def async_step_polling(
@@ -211,7 +292,7 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
             }
             if not profile.supports_custom_auto:
-                return self._create_pending_entry()
+                return await self._async_probe_and_create_entry()
             self._custom_auto_defaults = custom_auto_defaults(
                 profile.custom_auto_thresholds
             )
@@ -255,7 +336,7 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if self._pending_options is None:
                     return self.async_abort(reason="unknown")
                 self._pending_options.update(submitted_values)
-                return self._create_pending_entry()
+                return await self._async_probe_and_create_entry()
 
         return self.async_show_form(
             step_id="custom_auto",
@@ -263,11 +344,72 @@ class GoveeBleAirPurifierConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    def _create_pending_entry(self) -> FlowResult:
-        """Create the setup entry after all requested forms are complete."""
+    async def async_step_probe(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Retry a failed read-only setup probe."""
 
-        if self._pending_entry is None or self._pending_options is None:
+        if self._pending_entry is None or self._pending_profile is None:
             return self.async_abort(reason="unknown")
+        if user_input is not None:
+            return await self._async_probe_and_create_entry()
+        return self.async_show_form(
+            step_id="probe",
+            data_schema=vol.Schema({}),
+            description_placeholders={"model": self._pending_profile.model},
+        )
+
+    def _set_pending_device(
+        self, address: str, name: str, profile: ModelProfile
+    ) -> None:
+        """Store a validated discovery or manual selection for later steps."""
+
+        self._pending_entry = {
+            "title": name,
+            "data": {
+                CONF_ADDRESS: address,
+                CONF_NAME: name,
+                CONF_PROFILE: profile.key,
+            },
+        }
+        self._pending_profile = profile
+
+    async def _async_step_after_device_selection(self) -> FlowResult:
+        """Continue through support disclosure and profile options."""
+
+        profile = self._pending_profile
+        if self._pending_entry is None or profile is None:
+            return self.async_abort(reason="unknown")
+        if profile.requires_support_acknowledgement:
+            support_step = getattr(
+                self, f"async_step_support_{profile.support_status.value}"
+            )
+            return await support_step()
+        return await self.async_step_polling()
+
+    async def _async_probe_and_create_entry(self) -> FlowResult:
+        """Probe read-only protocol state, clean up, and create the entry."""
+
+        profile = self._pending_profile
+        if (
+            self._pending_entry is None
+            or self._pending_options is None
+            or profile is None
+        ):
+            return self.async_abort(reason="unknown")
+        try:
+            await async_probe_device(
+                self.hass,
+                self._pending_entry["data"][CONF_ADDRESS],
+                profile,
+            )
+        except SetupProbeError as err:
+            return self.async_show_form(
+                step_id="probe",
+                data_schema=vol.Schema({}),
+                errors={"base": err.translation_key},
+                description_placeholders={"model": profile.model},
+            )
         return self.async_create_entry(
             **self._pending_entry, options=self._pending_options
         )

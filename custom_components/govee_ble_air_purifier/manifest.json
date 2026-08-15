@@ -1,6 +1,10 @@
 {
   "domain": "govee_ble_air_purifier",
   "name": "Govee BLE Air Purifier",
+  "bluetooth": [
+    {"connectable": true, "local_name": "GVH712?*"},
+    {"connectable": true, "local_name": "ihoment_H712?*"}
+  ],
   "codeowners": ["@SoloUnity"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],

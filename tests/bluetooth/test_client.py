@@ -280,7 +280,7 @@ async def _cancellation_resistant_operation(
         cancellation_seen.set()
         await release.wait()
         if late_error is not None:
-            raise late_error
+            raise late_error from None
     finally:
         finished.set()
 
@@ -504,7 +504,7 @@ async def test_connection_wait_disconnect_signal_wins_before_waiter_finishes() -
 
 
 @pytest.mark.asyncio
-async def test_failed_transaction_drops_client_and_unlocks_before_inner_exit(
+async def test_failed_transaction_quarantines_old_operation_and_reconnects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from custom_components.govee_ble_air_purifier.bluetooth import transport
@@ -521,7 +521,9 @@ async def test_failed_transaction_drops_client_and_unlocks_before_inner_exit(
                 late_error=RuntimeError("late start-notify failure"),
             )
 
-    fake = CancellationResistantClient()
+    first = CancellationResistantClient()
+    second = FakeBleakClient()
+    clients = iter((first, second))
     establish_count = 0
 
     async def async_establish_connection(
@@ -530,10 +532,10 @@ async def test_failed_transaction_drops_client_and_unlocks_before_inner_exit(
         _disconnected_callback: Any,
         *,
         deadline: float,
-    ) -> CancellationResistantClient:
+    ) -> FakeBleakClient:
         nonlocal establish_count
         establish_count += 1
-        return fake
+        return next(clients)
 
     async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
         await passed_client.disconnect()
@@ -542,7 +544,11 @@ async def test_failed_transaction_drops_client_and_unlocks_before_inner_exit(
         transport, "async_establish_connection", async_establish_connection
     )
     monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
-    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF")
+    client = GoveeBleClient(
+        None,
+        "AA:BB:CC:DD:EE:FF",
+        connection_arbiter=GoveeConnectionArbiter(),
+    )
     transaction = asyncio.create_task(
         client._async_write_and_wait(
             H7124_PROFILE.power_on_command,
@@ -562,19 +568,26 @@ async def test_failed_transaction_drops_client_and_unlocks_before_inner_exit(
             await transaction
 
         assert finished.is_set() is False
-        assert fake.disconnected is True
-        assert fake.stopped_notify == []
+        assert first.disconnected is True
+        assert first.stopped_notify == []
         assert client._client is None
         assert client._disconnect_signal is None
         assert client._lock.locked() is False
         assert client_module._ABANDONED_OPERATION_FUTURES
+        assert client.diagnostics()["quarantined_operation_count"] == 1
 
-        async def no_op(_client: Any) -> None:
-            return None
-
-        with pytest.raises(GoveeBleClientError, match="still stopping"):
-            await client._async_with_connection(no_op)
-        assert establish_count == 1
+        assert await client.async_get_state() == PurifierState(
+            is_on=True,
+            pm25=42,
+            filter_life=85,
+            night_light=NightLightState(
+                is_on=True,
+                brightness_percent=100,
+                rgb_color=(255, 0, 0),
+            ),
+        )
+        assert establish_count == 2
+        assert client._client is second
 
         close_task = asyncio.create_task(client.async_close())
         close_done, _pending = await asyncio.wait((close_task,), timeout=0.5)
@@ -866,6 +879,78 @@ async def test_malformed_idle_notification_drops_persistent_connection(
     assert disconnects == [fake]
     assert fake.stopped_notify == [H7124_PROFILE.notify_char_uuid]
     assert client._client is None
+
+
+@pytest.mark.asyncio
+async def test_stalled_notification_cleanup_does_not_poison_reconnection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A listener cleanup that ignores cancellation stays on the old client."""
+
+    from custom_components.govee_ble_air_purifier.bluetooth import transport
+
+    stop_started, cancellation_seen, release, stop_finished = (
+        _resistant_operation_events()
+    )
+
+    class CancellationResistantStopClient(FakeBleakClient):
+        async def stop_notify(self, char_uuid: str) -> None:
+            await _cancellation_resistant_operation(
+                stop_started,
+                cancellation_seen,
+                release,
+                stop_finished,
+            )
+
+    first = CancellationResistantStopClient()
+    second = FakeBleakClient()
+    clients = iter((first, second))
+    establish_count = 0
+
+    async def async_establish_connection(*args: Any, **kwargs: Any) -> FakeBleakClient:
+        nonlocal establish_count
+        establish_count += 1
+        return next(clients)
+
+    async def async_disconnect(passed_client: Any, *, deadline: float) -> None:
+        await passed_client.disconnect()
+
+    monkeypatch.setattr(
+        transport, "async_establish_connection", async_establish_connection
+    )
+    monkeypatch.setattr(transport, "async_disconnect", async_disconnect)
+    monkeypatch.setattr(client_module, "DISCONNECT_TIMEOUT", 0.01)
+    client = GoveeBleClient(None, "AA:BB:CC:DD:EE:FF", profile=H7124_PROFILE)
+
+    try:
+        await client.async_get_state()
+        assert first.notify_handler is not None
+        first.notify_handler(None, bytes(19) + b"\x01")
+
+        await asyncio.wait_for(cancellation_seen.wait(), timeout=1)
+        for _ in range(20):
+            recovery = client._notification_recovery_task
+            if recovery is None or recovery.done():
+                break
+            await asyncio.sleep(0)
+
+        assert first.disconnected is True
+        assert client._client is None
+        assert client.diagnostics()["quarantined_operation_count"] == 1
+        assert client.diagnostics()["notification_recovery_active"] is False
+
+        state = await client.async_get_state()
+        assert state.is_on is True
+        assert state.pm25 == 42
+        assert establish_count == 2
+        assert client._client is second
+    finally:
+        release.set()
+        await asyncio.wait_for(stop_finished.wait(), timeout=1)
+        await client.async_close()
+        await asyncio.sleep(0)
+
+    assert not client_module._ABANDONED_OPERATION_FUTURES
 
 
 @pytest.mark.asyncio

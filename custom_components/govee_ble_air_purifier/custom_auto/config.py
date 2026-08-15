@@ -17,7 +17,7 @@ from ..const import (
     CONF_CUSTOM_AUTO_THRESHOLD_60,
     CONF_CUSTOM_AUTO_THRESHOLD_80,
 )
-from ..profiles import H7124_PROFILE
+from ..govee_ble_air_purifier_protocol import H7124_PROFILE
 
 DEFAULT_UPSHIFT_CONFIRMATION_DELAY_SECONDS = 3
 MAX_UPSHIFT_CONFIRMATION_DELAY_SECONDS = 300
@@ -85,8 +85,18 @@ class CustomAutoConfig:
             values = dict(defaults)
         return cls(
             confirmation_delay_seconds=values[CONF_CUSTOM_AUTO_CONFIRMATION_DELAY],
-            thresholds=tuple(values[key] for key in THRESHOLD_KEYS),
-            down_delays=tuple(values[key] for key in DOWN_DELAY_KEYS),
+            thresholds=(
+                values[THRESHOLD_KEYS[0]],
+                values[THRESHOLD_KEYS[1]],
+                values[THRESHOLD_KEYS[2]],
+                values[THRESHOLD_KEYS[3]],
+            ),
+            down_delays=(
+                values[DOWN_DELAY_KEYS[0]],
+                values[DOWN_DELAY_KEYS[1]],
+                values[DOWN_DELAY_KEYS[2]],
+                values[DOWN_DELAY_KEYS[3]],
+            ),
         )
 
     def as_options(self) -> dict[str, int]:
@@ -129,5 +139,7 @@ def validate_custom_auto_values(values: Mapping[str, int]) -> None:
     """Validate Custom Auto threshold ordering."""
 
     thresholds = tuple(values[key] for key in THRESHOLD_KEYS)
-    if not all(left < right for left, right in zip(thresholds, thresholds[1:])):
+    if not all(
+        left < right for left, right in zip(thresholds, thresholds[1:], strict=False)
+    ):
         raise ValueError("thresholds_not_ascending")

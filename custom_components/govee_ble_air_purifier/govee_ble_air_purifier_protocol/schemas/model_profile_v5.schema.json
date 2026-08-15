@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SoloUnity/govee-ble-air-purifier/schemas/model_profile_v5.schema.json",
+  "title": "Govee BLE Air Purifier model profile schema v5",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "support_status",
+    "polling_interval_seconds",
+    "encryption",
+    "gatt",
+    "commands"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 5
+    },
+    "support_status": {
+      "enum": ["verified", "read_verified", "experimental", "fallback"]
+    },
+    "polling_interval_seconds": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 300
+    },
+    "encryption": {
+      "enum": ["none", "govee_v1"]
+    },
+    "gatt": {
+      "$ref": "#/$defs/gatt"
+    },
+    "commands": {
+      "$ref": "#/$defs/commands"
+    },
+    "custom_auto": {
+      "$ref": "#/$defs/custom_auto"
+    },
+    "night_light": {
+      "$ref": "#/$defs/night_light"
+    },
+    "push_notifications": {
+      "$ref": "#/$defs/push_notifications"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["push_notifications"],
+        "properties": {
+          "push_notifications": {
+            "required": ["night_light_power_brightness"],
+            "properties": {
+              "night_light_power_brightness": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["night_light"]
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "frame": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{2}( [0-9A-Fa-f]{2}){19}$"
+    },
+    "gatt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service_uuid", "notify_char_uuid", "write_char_uuid"],
+      "properties": {
+        "service_uuid": {
+          "$ref": "#/$defs/uuid"
+        },
+        "notify_char_uuid": {
+          "$ref": "#/$defs/uuid"
+        },
+        "write_char_uuid": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "power_off",
+        "power_on",
+        "state_query",
+        "status_query",
+        "fan_modes"
+      ],
+      "properties": {
+        "power_off": {
+          "$ref": "#/$defs/frame"
+        },
+        "power_on": {
+          "$ref": "#/$defs/frame"
+        },
+        "state_query": {
+          "$ref": "#/$defs/frame"
+        },
+        "status_query": {
+          "$ref": "#/$defs/frame"
+        },
+        "fan_modes": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^\\S(?:.*\\S)?$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/frame"
+          }
+        }
+      }
+    },
+    "custom_auto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["thresholds"],
+      "properties": {
+        "thresholds": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999
+          }
+        }
+      }
+    },
+    "night_light": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "polling",
+        "power_off",
+        "power_on",
+        "power_brightness_query",
+        "brightness_template",
+        "rgb_template",
+        "rgb_state_query"
+      ],
+      "properties": {
+        "polling": {
+          "$ref": "#/$defs/night_light_polling"
+        },
+        "power_off": {
+          "$ref": "#/$defs/frame"
+        },
+        "power_on": {
+          "$ref": "#/$defs/frame"
+        },
+        "power_brightness_query": {
+          "$ref": "#/$defs/frame"
+        },
+        "brightness_template": {
+          "const": "3a 1b 01 02 {brightness}"
+        },
+        "rgb_template": {
+          "const": "3a 1b 05 0d {red} {green} {blue}"
+        },
+        "rgb_state_query": {
+          "$ref": "#/$defs/frame"
+        }
+      }
+    },
+    "night_light_polling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cadence",
+        "interval_seconds",
+        "timeout_seconds",
+        "request_order",
+        "max_backoff_seconds"
+      ],
+      "properties": {
+        "cadence": {
+          "enum": ["every_poll", "periodic"]
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 3600
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "request_order": {
+          "enum": ["pipelined", "sequential"]
+        },
+        "max_backoff_seconds": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 86400
+        }
+      }
+    },
+    "push_notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "power_state",
+        "fan_mode",
+        "night_light_power_brightness"
+      ],
+      "properties": {
+        "power_state": {
+          "type": "boolean"
+        },
+        "fan_mode": {
+          "type": "boolean"
+        },
+        "night_light_power_brightness": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

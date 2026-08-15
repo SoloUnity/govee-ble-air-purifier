@@ -11,8 +11,13 @@ from typing import Any
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .models import NightLightState, PurifierPushUpdate, PurifierState
-from .profiles import H7124_PROFILE, ModelProfile
+from .govee_ble_air_purifier_protocol import (
+    H7124_PROFILE,
+    ModelProfile,
+    NightLightState,
+    PurifierPushUpdate,
+    PurifierState,
+)
 
 LOGGER = logging.getLogger(__name__)
 

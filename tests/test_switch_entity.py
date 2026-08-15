@@ -106,7 +106,10 @@ def _import_switch(monkeypatch: pytest.MonkeyPatch):
             "homeassistant.config_entries": {"ConfigEntry": object},
             "homeassistant.core": {"HomeAssistant": object},
             "homeassistant.exceptions": {"HomeAssistantError": _HomeAssistantError},
-            "homeassistant.helpers.device_registry": {"DeviceInfo": _DeviceInfo},
+            "homeassistant.helpers.device_registry": {
+                "CONNECTION_BLUETOOTH": "bluetooth",
+                "DeviceInfo": _DeviceInfo,
+            },
             "homeassistant.helpers.entity_platform": {"AddEntitiesCallback": object},
             "homeassistant.helpers.restore_state": {"RestoreEntity": _RestoreEntity},
             "homeassistant.helpers.update_coordinator": {

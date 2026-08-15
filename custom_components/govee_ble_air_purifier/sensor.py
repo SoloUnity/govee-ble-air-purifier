@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .entity import GoveeAirPurifierEntity
-from .models import PurifierState
+from .govee_ble_air_purifier_protocol import PurifierState
 
 
 @dataclass(kw_only=True)

@@ -35,6 +35,7 @@ RUNTIME_MODULES = (
     "light",
     "profiles",
     "sensor",
+    "setup_probe",
     "switch",
 )
 
@@ -199,6 +200,7 @@ async def test_real_config_flow_creates_complete_entry(
     from homeassistant.components import bluetooth
     from homeassistant.data_entry_flow import FlowResultType
 
+    import custom_components.govee_ble_air_purifier.config_flow as config_flow_module
     from custom_components.govee_ble_air_purifier.config_flow import (
         GoveeBleAirPurifierConfigFlow,
     )
@@ -218,6 +220,11 @@ async def test_real_config_flow_creates_complete_entry(
         "async_discovered_service_info",
         lambda *args, **kwargs: (service_info,),
     )
+
+    async def successful_probe(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(config_flow_module, "async_probe_device", successful_probe)
 
     config_entries = SimpleNamespace(
         async_entries=lambda *args, **kwargs: (),
@@ -257,6 +264,44 @@ async def test_real_config_flow_creates_complete_entry(
         "share_bluetooth_connection": False,
         **CUSTOM_AUTO_DEFAULTS,
     }
+
+
+@pytest.mark.asyncio
+async def test_real_config_flow_requires_confirmation_for_bluetooth_discovery() -> None:
+    """Exercise discovery and confirmation through Home Assistant's flow base."""
+    from homeassistant.data_entry_flow import FlowResultType
+
+    from custom_components.govee_ble_air_purifier.config_flow import (
+        GoveeBleAirPurifierConfigFlow,
+    )
+
+    address = "AA:BB:CC:DD:EE:24"
+    config_entries = SimpleNamespace(
+        async_entries=lambda *args, **kwargs: (),
+        async_entry_for_domain_unique_id=lambda *args, **kwargs: None,
+        flow=SimpleNamespace(async_progress_by_handler=lambda *args, **kwargs: ()),
+    )
+    flow = GoveeBleAirPurifierConfigFlow()
+    flow.hass = SimpleNamespace(config_entries=config_entries)
+    flow.context = {"source": "bluetooth"}
+    flow.flow_id = "runtime-bluetooth-flow"
+    flow.handler = "govee_ble_air_purifier"
+
+    discovered = await flow.async_step_bluetooth(
+        SimpleNamespace(
+            address=address,
+            name="GVH7124BEDROOM",
+            connectable=True,
+        )
+    )
+
+    assert discovered["type"] is FlowResultType.FORM
+    assert discovered["step_id"] == "bluetooth_confirm"
+    assert discovered["description_placeholders"] == {"name": "GVH7124BEDROOM"}
+
+    confirmed = await flow.async_step_bluetooth_confirm({})
+    assert confirmed["type"] is FlowResultType.FORM
+    assert confirmed["step_id"] == "polling"
 
 
 @pytest.mark.asyncio

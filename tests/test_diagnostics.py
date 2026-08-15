@@ -95,6 +95,11 @@ async def test_diagnostics_reads_runtime_data_before_legacy_hass_data(
             "share_bluetooth_connection": True,
         },
         "connection_mode": "shared",
+        "profile": {
+            "key": "h7124",
+            "model": "H7124",
+            "support_status": "verified",
+        },
         "state": {
             "is_on": True,
             "fan_mode": "Auto",
@@ -150,8 +155,40 @@ async def test_diagnostics_redacts_arbitrary_user_provided_name(
         "entry": {"address": "XX:XX:XX:XX:XX:XX", "name": "REDACTED"},
         "options": {},
         "connection_mode": "dedicated",
+        "profile": {
+            "key": "h7124",
+            "model": "H7124",
+            "support_status": "verified",
+        },
         "state": None,
         "custom_auto": None,
         "auto_resume": None,
         "bluetooth_push": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_exposes_fallback_support_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostics = _import_diagnostics(monkeypatch)
+    entry = SimpleNamespace(
+        data={
+            "address": "AA:BB:CC:DD:EE:FF",
+            "name": "Living room",
+            "profile": "h7126",
+        },
+        options={},
+        entry_id="entry-1",
+        runtime_data=None,
+    )
+
+    result = await diagnostics.async_get_config_entry_diagnostics(
+        SimpleNamespace(data={}), entry
+    )
+
+    assert result["profile"] == {
+        "key": "h7126",
+        "model": "H7126",
+        "support_status": "fallback",
     }

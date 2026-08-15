@@ -7,7 +7,8 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_ADDRESS, CONF_NAME, DOMAIN
+from .const import CONF_ADDRESS, CONF_NAME, CONF_PROFILE, DOMAIN
+from .govee_ble_air_purifier_protocol import get_profile
 from .setup_helpers import connection_sharing_from_options
 
 
@@ -23,6 +24,12 @@ async def async_get_config_entry_diagnostics(
         data[CONF_NAME] = "REDACTED"
 
     runtime_data = getattr(entry, "runtime_data", None)
+    profile = getattr(runtime_data, "profile", None)
+    if profile is None:
+        try:
+            profile = get_profile(entry.data.get(CONF_PROFILE))
+        except ValueError:
+            profile = None
     coordinator = getattr(runtime_data, "coordinator", None)
     controller = getattr(runtime_data, "controller", None)
     auto_resume = getattr(runtime_data, "auto_resume", None)
@@ -57,6 +64,15 @@ async def async_get_config_entry_diagnostics(
         "options": options,
         "connection_mode": (
             "shared" if connection_sharing_from_options(options) else "dedicated"
+        ),
+        "profile": (
+            {
+                "key": profile.key,
+                "model": profile.model,
+                "support_status": profile.support_status.value,
+            }
+            if profile is not None
+            else None
         ),
         "state": state,
         "custom_auto": controller.diagnostics() if controller is not None else None,

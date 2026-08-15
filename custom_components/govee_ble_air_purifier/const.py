@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from .govee_ble_air_purifier_protocol import (
+    MAX_POLLING_INTERVAL_SECONDS as MAX_POLLING_INTERVAL_SECONDS,
+)
+from .govee_ble_air_purifier_protocol import (
+    MIN_POLLING_INTERVAL_SECONDS as MIN_POLLING_INTERVAL_SECONDS,
+)
+
 DOMAIN = "govee_ble_air_purifier"
 MANUFACTURER = "Govee"
 
@@ -22,8 +29,5 @@ CONF_CUSTOM_AUTO_DELAY_20 = "custom_auto_delay_20"
 CONF_CUSTOM_AUTO_DELAY_40 = "custom_auto_delay_40"
 CONF_CUSTOM_AUTO_DELAY_60 = "custom_auto_delay_60"
 CONF_CUSTOM_AUTO_DELAY_80 = "custom_auto_delay_80"
-
-MIN_POLLING_INTERVAL_SECONDS = 3
-MAX_POLLING_INTERVAL_SECONDS = 300
 
 PLATFORMS = ["fan", "sensor", "switch", "light"]

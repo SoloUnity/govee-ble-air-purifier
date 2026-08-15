@@ -23,7 +23,7 @@ from .auto_resume import (
     AUTO_MODE_HARDWARE,
 )
 from .entity import GoveeAirPurifierEntity
-from .profiles import fan_mode_labels
+from .govee_ble_air_purifier_protocol import fan_mode_labels
 
 PRESET_MANUAL = "Manual"
 PRESET_AUTO = "Auto"

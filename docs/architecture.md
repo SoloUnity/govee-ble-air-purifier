@@ -10,9 +10,9 @@ The integration is not a linear stack. Home Assistant setup, polling, direct
 commands, and Custom Auto share runtime objects but follow distinct branches:
 
 ```text
-Home Assistant config flow ---> setup_helpers.py + profiles.py
+Home Assistant config flow ---> setup_helpers.py + protocol package
                                                         |
-                                                model_profiles/*.json
+                                        bundled model_profiles/*.json
 
 Home Assistant config entry ---> __init__.py ---> GoveeRuntimeData
                                                     |       |       \
@@ -26,7 +26,7 @@ Home Assistant config entry ---> __init__.py ---> GoveeRuntimeData
                                                     |
                                               GoveeBleClient
                                               /       |      \
-                                      ModelProfile  protocol  transport
+                                reusable package    |       transport
                                            |          |          |
                               model_profiles/*.json   |          |
                               (per-model GATT UUIDs   |          |
@@ -68,8 +68,10 @@ The branches have these boundaries:
 normalization, and polling interval handling, and `profiles.py` to match a
 recognized `H712*` family model from its advertised name. Manual address entry
 still requires compatible advertisement evidence already available from Home
-Assistant. Setup remains a manually started flow with a recently seen BLE
-picker; there is no automatic integration discovery.
+Assistant. Manifest matchers also start a confirmation-only discovery flow for
+connectable names in the observed `GVH712?*` and `ihoment_H712?*` formats.
+Discovery establishes the normalized address unique ID and checks for an
+existing entry before showing confirmation; it never creates an entry directly.
 
 Config entry data identifies the address, name, and profile. The stored
 profile is the exact detected lowercase model key (for example `h7126`), even
@@ -84,6 +86,14 @@ Custom Auto thresholds and delays. Saving options reloads the entry so
 connection ownership, coordinator interval, and controller configuration are
 rebuilt consistently.
 
+Immediately before creating an entry, `setup_probe.py` uses a temporary client
+to perform the profile's existing read-only state poll. This validates GATT,
+the H7129 encrypted handshake when required, and decoded state without sending
+any state-changing command. The probe has a 65-second outer operation deadline
+and a separately bounded 10-second foreground close; late cleanup remains
+observed. Failure routes to a translated retry step, so neither manual nor
+discovery setup can persist an unprobed entry.
+
 `custom_auto/config.py` combines profile-defined PM2.5 boundaries with shared
 confirmation and downshift-delay defaults. It owns bounded integer parsing,
 ordering validation, and conversion between config-entry options and immutable
@@ -91,7 +101,18 @@ ordering validation, and conversion between config-entry options and immutable
 
 ## Models And Protocol
 
-`models.py` defines four deliberately different immutable values:
+The protocol boundary is a reusable, Home Assistant-independent Python package
+stored at `govee_ble_air_purifier_protocol/` inside the custom component. HACS
+ships that directory with the integration, while `pyproject.toml` maps the same
+source to the independently buildable top-level import
+`govee_ble_air_purifier_protocol`. This avoids duplicated source and an
+unpublished manifest requirement. The former root `models.py`, `profiles.py`,
+`protocol.py`, `bluetooth/framing.py`, and `bluetooth/govee_v1.py` locations are
+thin compatibility facades; runtime integration code imports the new package
+directly.
+
+`govee_ble_air_purifier_protocol/models.py` defines four deliberately
+different immutable values:
 
 - `DecodedStatus` is the narrow result of decoding one status frame (the
   tested H7124 definition decodes an `aa19` frame). It contains PM2.5 and
@@ -104,11 +125,12 @@ ordering validation, and conversion between config-entry options and immutable
 - `PurifierPushUpdate` is a partial internal observation with optional power,
   fan-mode, and night-light fields. It never represents PM2.5 or filter life.
 
-`bluetooth/framing.py` is generic frame infrastructure. It builds 20-byte Govee
-frames and validates frame length and XOR checksum. It does not know model
-commands, response markers, or field offsets.
+`govee_ble_air_purifier_protocol/framing.py` is generic frame infrastructure.
+It builds 20-byte Govee frames and validates frame length and XOR checksum. It
+does not know model commands, response markers, or field offsets.
 
-Root `protocol.py` is shared across the recognized `H712*` family. It retains
+The reusable package's `protocol.py` is shared across the recognized `H712*`
+family. It retains
 shared frame validation, response matching, command confirmation, and status
 decoding. Its decoders call the generic frame validator before interpreting
 bytes. A structurally valid status frame with PM2.5 above the supported range
@@ -116,21 +138,23 @@ decodes to `None` for that measurement. Models whose response semantics or
 framing differ from the tested H7124 behavior still require Python changes
 here; they cannot be added by JSON alone.
 
-`model_profiles/` holds one complete JSON definition per model. `default.json`
+The package's `model_profiles/` holds one complete JSON definition per model.
+`default.json`
 and `h7124.json` contain the physically tested H7124 definition; `h7129.json`
 contains the capture-derived H7129 definition. Each file owns its GATT service
 and characteristic UUIDs, transport encryption selection, exact outbound
 20-byte power, query, and fan-mode command frames, and optional Custom Auto
 PM2.5 boundaries. Exact profiles may also own an optional `night_light`
 capability with static calls, variable brightness/RGB templates, and a polling
-policy. Schema 4 also permits a `push_notifications` capability block. It enables evidence by
-model while Python retains validation and interpretation. H7124 and H7129
+policy. Schema 5 also permits a `push_notifications` capability block. It
+enables evidence by model while Python retains validation and interpretation.
+H7124 and H7129
 enable power, fan-mode, and night-light power/brightness pushes; the fallback
 profile enables none. The JSON does not own encryption mechanics or response
 interpretation. Future model files are complete definitions, not partial
 inheritance over another file.
 
-`profiles.py` searches advertised names case-insensitively for `H712` plus one
+The package's `profiles.py` searches advertised names case-insensitively for `H712` plus one
 ASCII letter or digit (for example `GVH7124`, `GVH712C`, or
 `ihoment_H7129_6A7D`), loads the exact lowercase model JSON when present (for
 example `h7126.json`), and otherwise falls back to `default.json`, which means
@@ -155,7 +179,7 @@ commands, with H7129 encryption remaining a transport concern.
 
 ## Bluetooth Ownership
 
-`bluetooth/govee_v1.py` owns only the H7129 frame transform and handshake frame
+The package's `govee_v1.py` owns only the H7129 frame transform and handshake frame
 semantics. It applies AES-128-ECB to bytes 0-15, applies the captured
 RC4-compatible transform to bytes 16-19, builds `e7 01` and `e7 02` requests,
 and validates their plaintext responses. Application frames remain the same
@@ -178,7 +202,13 @@ back-to-back collection budget on every poll. The application budget starts afte
 complete. Explicit disconnect cleanup has its own 5-second bound. Timeout
 errors identify idle cleanup, lock waiting, a write/setup stage, or an actual
 purifier response rather than claiming a response timeout before a request was
-sent.
+sent. Platform GATT operations that do not acknowledge cancellation remain
+observed against their old client object but do not gate a later connection
+generation. Notification recovery also bounds transaction-lock acquisition,
+notification shutdown, and transport disconnect independently so a stalled
+cleanup cannot permanently hold the purifier unavailable. Diagnostics expose
+the number of quarantined operations plus notification-recovery activity and
+age.
 
 Each entry retains its own healthy GATT connection by default. An entry whose
 `share_bluetooth_connection` option is true instead joins one integration-owned
@@ -269,10 +299,21 @@ use transaction-scoped subscriptions, notification cleanup failure preserves an
 otherwise successful result but discards the connection before another
 operation can use it.
 
-`bluetooth/client.py` owns transaction serialization, writes, notification
-subscription, response matching, notification cleanup, connection reuse, idle
-release, and disconnect-callback state. It delegates Home Assistant connection
-mechanics to `bluetooth/transport.py`.
+`bluetooth/client.py` owns transaction serialization, connection leases,
+read-only replay policy, idle-release scheduling, and the Home Assistant-facing
+callbacks used by its collaborators. `bluetooth/_connection.py` owns connection
+establishment and reuse, encrypted-session setup error normalization,
+exact-client invalidation and cleanup, and notification recovery. It has no
+command, matcher, or replay knowledge. `bluetooth/_session.py` owns the exact transport
+identity, connection generation, disconnect signal, encryption key, listener
+ownership, and cancellation quarantine for that connection.
+`bluetooth/_transactions.py` executes the typed required/optional exchange plan:
+it writes plaintext requests through the session adapter, owns response futures
+and matchers, records notification diagnostics, and returns whether an otherwise
+successful result requires the session to be discarded. It cannot establish or
+replay a connection. The client alone retries one confirmed-disconnect state
+poll; state-changing commands remain at-most-once. Home Assistant connection
+mechanics remain delegated to `bluetooth/transport.py`.
 
 `bluetooth/transport.py` owns Home Assistant's connectable BLE-device lookup,
 fresh-advertisement and per-scanner path preparation, stale-connection cleanup
@@ -285,7 +326,9 @@ is made only while waiting for a new advertisement, never for an accepted
 cached path. Older versions may require an explicitly Active scanner when
 active discovery is needed. Failed waits back off from 60 to 300 seconds. Transport
 connection stages share a dedicated deadline and bounded upstream retry count;
-disconnect cleanup errors are suppressed.
+stale-client cleanup and disconnect use cancellation-independent deadline
+wrappers, and cleanup errors are suppressed. A late cleanup result is observed
+without holding a config entry or the shared connection lease.
 
 ## Coordinator Publication
 
@@ -463,10 +506,11 @@ the separate advertisement-history and on-demand Active-scan API boundaries.
 
 The main test boundaries are:
 
-- `tests/bluetooth/test_framing.py`, `test_client.py`, and `test_transport.py`
-  cover generic framing, serialized notification transactions, deadlines,
-  connection reuse, idle release, reconnection, and Home Assistant connection
-  ownership.
+- `tests/bluetooth/test_framing.py`, `test_session.py`,
+  `test_transactions.py`, `test_client.py`, and `test_transport.py` cover
+  generic framing, connection-generation state, isolated required/optional
+  exchanges, serialized client orchestration, deadlines, connection reuse, idle
+  release, reconnection, and Home Assistant connection ownership.
 - `tests/custom_auto/test_config.py`, `test_policy.py`, and `test_controller.py`
   cover parsing and validation, pure speed selection, and mutable timer and
   ownership behavior.
